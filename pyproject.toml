@@ -1,0 +1,21 @@
+[project]
+name = "urine-color-analysis"
+version = "0.1.0"
+description = "Automated urine color analysis system for Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "opencv-python",
+    "numpy",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+urine-analyzer = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

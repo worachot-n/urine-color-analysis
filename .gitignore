@@ -1,0 +1,8 @@
+__pycache__/
+.vscode/
+.venv/
+img_dataset/
+table/
+.claude/
+output.jpg
+result.json

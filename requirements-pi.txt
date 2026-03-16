@@ -1,0 +1,5 @@
+# Raspberry Pi-specific dependencies (Linux only)
+# Install on the Pi with: pip install -r requirements-pi.txt
+picamera2
+RPi.GPIO
+smbus2
