@@ -45,14 +45,14 @@ _wifi_config_result = {}   # {"ssid": ..., "password": ...}
 # ---------------------------------------------------------------------------
 
 def is_wifi_connected() -> bool:
-    """Return True if any wireless interface has an active IP address."""
+    """Return True if any WiFi device is in 'connected' state."""
     try:
         result = subprocess.run(
-            ["nmcli", "-t", "-f", "TYPE,STATE", "con", "show", "--active"],
+            ["nmcli", "-t", "-f", "TYPE,STATE", "dev"],
             capture_output=True, text=True, timeout=5
         )
         for line in result.stdout.splitlines():
-            if line.startswith("wifi:") and "activated" in line:
+            if line.startswith("wifi:") and "connected" in line:
                 return True
         return False
     except Exception as e:
@@ -181,9 +181,21 @@ def connect_wifi(ssid: str, password: str) -> bool:
 
     Returns True if connected within WIFI_CONNECT_TIMEOUT seconds.
     """
+    # Rescan so nmcli has fresh security info for the target network
+    iface = get_wifi_interface()
+    try:
+        subprocess.run(
+            ["nmcli", "dev", "wifi", "rescan", "ifname", iface],
+            capture_output=True, timeout=8
+        )
+        time.sleep(2)
+    except Exception:
+        pass
+
     try:
         result = subprocess.run(
-            ["nmcli", "dev", "wifi", "connect", ssid, "password", password],
+            ["nmcli", "dev", "wifi", "connect", ssid, "password", password,
+             "ifname", iface],
             capture_output=True, text=True, timeout=WIFI_CONNECT_TIMEOUT
         )
         if result.returncode != 0:
