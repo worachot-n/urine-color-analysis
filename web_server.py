@@ -246,6 +246,7 @@ _CALIBRATE_HTML = """<!doctype html>
   let corners    = [];          // canvas-space [[x,y] x4]
   let gridPts    = null;        // canvas-space [15 rows][17 cols][2]
   let dragging   = null;        // {type:'h'|'v', index:n, startX, startY}
+  let hover      = null;        // {type:'h'|'v', index:n} | null
 
   const canvas   = document.getElementById('calib-canvas');
   const ctx      = canvas.getContext('2d');
@@ -371,18 +372,25 @@ _CALIBRATE_HTML = """<!doctype html>
 
     // Grid lines
     if (!gridPts) return;
-    ctx.lineWidth = 1;
     // Horizontal lines (15 rows)
     for (let r = 0; r < gridPts.length; r++) {
+      const isHov = hover && hover.type === 'h' && hover.index === r;
+      ctx.lineWidth   = isHov ? 3 : 1;
+      ctx.strokeStyle = isHov      ? 'rgba(0,220,255,0.95)'
+                      : r === 0    ? 'rgba(255,220,0,0.75)'
+                                   : 'rgba(0,230,80,0.65)';
       ctx.beginPath();
-      ctx.strokeStyle = r === 0 ? 'rgba(255,220,0,0.75)' : 'rgba(0,230,80,0.65)';
       gridPts[r].forEach(([x, y], c) => c === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
       ctx.stroke();
     }
     // Vertical lines (17 cols)
     for (let c = 0; c < gridPts[0].length; c++) {
+      const isHov = hover && hover.type === 'v' && hover.index === c;
+      ctx.lineWidth   = isHov ? 3 : 1;
+      ctx.strokeStyle = isHov      ? 'rgba(0,220,255,0.95)'
+                      : c === 0    ? 'rgba(255,80,80,0.6)'
+                                   : 'rgba(0,230,80,0.65)';
       ctx.beginPath();
-      ctx.strokeStyle = c === 0 ? 'rgba(255,80,80,0.6)' : 'rgba(0,230,80,0.65)';
       gridPts.forEach((row, r) => r === 0 ? ctx.moveTo(row[c][0], row[c][1])
                                           : ctx.lineTo(row[c][0], row[c][1]));
       ctx.stroke();
@@ -428,21 +436,28 @@ _CALIBRATE_HTML = """<!doctype html>
   });
 
   canvas.addEventListener('mousemove', e => {
-    if (!dragging) return;
     const [mx, my] = getEventPos(e);
-    const dx = mx - dragging.startX;
-    const dy = my - dragging.startY;
-    dragging.startX = mx; dragging.startY = my;
-    if (dragging.type === 'h') {
-      gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
-    } else {
-      gridPts.forEach(row => { row[dragging.index][0] += dx; });
+    if (dragging) {
+      const dx = mx - dragging.startX;
+      const dy = my - dragging.startY;
+      dragging.startX = mx; dragging.startY = my;
+      if (dragging.type === 'h') {
+        gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
+      } else {
+        gridPts.forEach(row => { row[dragging.index][0] += dx; });
+      }
+      draw();
+    } else if (gridPts) {
+      const hit = lineHitTest(mx, my);
+      const changed = JSON.stringify(hover) !== JSON.stringify(hit);
+      hover = hit;
+      canvas.style.cursor = hit ? 'grab' : 'crosshair';
+      if (changed) draw();
     }
-    draw();
   });
 
-  canvas.addEventListener('mouseup',    () => { dragging = null; });
-  canvas.addEventListener('mouseleave', () => { dragging = null; });
+  canvas.addEventListener('mouseup',    () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
+  canvas.addEventListener('mouseleave', () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
 
   // Touch equivalents
   canvas.addEventListener('touchstart', e => {
