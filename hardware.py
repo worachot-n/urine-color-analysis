@@ -1,5 +1,6 @@
 """
-Hardware abstraction layer: relay (LED tower), TM1637 displays, LCD 20x4.
+Hardware abstraction layer: relay (LED tower), TM1637 displays, LCD 16x4,
+and push button.
 
 All GPIO and I2C calls are wrapped in try/except so hardware failures
 never crash the main pipeline. When running on a non-Pi host (no RPi.GPIO),
@@ -19,10 +20,15 @@ Public API:
     tm1637_show(level, count)   — update one display
     tm1637_show_all(counts)     — update all 5 (dict {0:n … 4:n})
 
-  LCD 20×4 I2C:
+  LCD 16×4 I2C:
     lcd_init()                  — initialize display
-    lcd_message(text, line)     — write text to line 1-4 (max 20 chars)
+    lcd_message(text, line)     — write text to line 1-4 (max 16 chars)
     lcd_clear()                 — blank all lines
+
+  Push button (GPIO24):
+    button_init()               — configure input with pull-up
+    button_wait_press()         — block until button is pressed (active LOW)
+    button_cleanup()            — release GPIO pin
 """
 
 import time
@@ -30,7 +36,8 @@ import time
 from config import (
     RELAY_LED_RED, RELAY_LED_YELLOW, RELAY_LED_GREEN,
     TM1637_DISPLAYS,
-    LCD_I2C_ADDRESS, LCD_I2C_BUS,
+    LCD_I2C_ADDRESS, LCD_I2C_BUS, LCD_COLS,
+    PIN_BUTTON, BUTTON_DEBOUNCE_MS,
 )
 
 # ---------------------------------------------------------------------------
@@ -259,7 +266,7 @@ def lcd_init():
 
 def lcd_message(text, line):
     """
-    Write text to a LCD line (1-4). Truncated/padded to 20 characters.
+    Write text to a LCD line (1-4). Truncated/padded to LCD_COLS characters.
 
     Args:
         text: str
@@ -268,7 +275,7 @@ def lcd_message(text, line):
     if _lcd_bus is None:
         return
     try:
-        padded = str(text)[:20].ljust(20)
+        padded = str(text)[:LCD_COLS].ljust(LCD_COLS)
         _lcd_write_byte(_LCD_LINE.get(line, 0x80), _LCD_CMD)
         for char in padded:
             _lcd_write_byte(ord(char) if ord(char) < 128 else 0x3F, _LCD_CHR)
@@ -310,3 +317,57 @@ def _lcd_toggle(bits):
         time.sleep(_E_DELAY)
     except Exception:
         pass
+
+
+# ===========================================================================
+# Push Button — GPIO24, active LOW, internal pull-up
+# ===========================================================================
+
+def button_init():
+    """
+    Configure PIN_BUTTON as input with internal pull-up resistor.
+    Button is active LOW (press connects pin to GND).
+
+    Returns True on success, False if GPIO unavailable.
+    """
+    if not _GPIO_AVAILABLE:
+        return False
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(PIN_BUTTON, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        return True
+    except Exception as e:
+        print(f"button_init error: {e}")
+        return False
+
+
+def button_wait_press():
+    """
+    Block until the push button is pressed (active LOW with debounce).
+    Falls back to keyboard Enter when GPIO is unavailable (for development).
+    """
+    if not _GPIO_AVAILABLE:
+        input("[SIM] Press Enter to simulate button press...")
+        return
+
+    # Wait for LOW edge (button pressed)
+    try:
+        GPIO.wait_for_edge(PIN_BUTTON, GPIO.FALLING)
+        time.sleep(BUTTON_DEBOUNCE_MS / 1000.0)
+        # Confirm it's still held (debounce)
+        if GPIO.input(PIN_BUTTON) == GPIO.LOW:
+            return
+        # Spurious edge — wait again
+        button_wait_press()
+    except Exception as e:
+        print(f"button_wait_press error: {e}")
+
+
+def button_cleanup():
+    """Release the button GPIO pin."""
+    if not _GPIO_AVAILABLE:
+        return
+    try:
+        GPIO.cleanup([PIN_BUTTON])
+    except Exception as e:
+        print(f"button_cleanup error: {e}")

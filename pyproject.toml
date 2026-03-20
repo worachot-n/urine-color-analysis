@@ -7,6 +7,9 @@ requires-python = ">=3.9"
 dependencies = [
     "opencv-python",
     "numpy",
+    "flask",
+    "python-dotenv",
+    "requests",
 ]
 
 [dependency-groups]

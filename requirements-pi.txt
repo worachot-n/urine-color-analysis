@@ -3,3 +3,5 @@
 picamera2
 RPi.GPIO
 smbus2
+# Network management (nmcli is pre-installed on Raspberry Pi OS with desktop)
+# No extra pip packages needed for nmcli — it's a system tool

@@ -16,10 +16,10 @@ TM1637_DISPLAYS = {
     "H4": {"CLK": 26, "DIO": 16},   # Level 4 (Dehydrated)
 }
 
-# --- LCD 20x4 via I2C ---
+# --- LCD 16x4 via I2C ---
 LCD_I2C_ADDRESS = 0x27
 LCD_I2C_BUS     = 1          # Bus 1 on Raspberry Pi 3/4/5
-LCD_COLS        = 20
+LCD_COLS        = 16
 LCD_ROWS        = 4
 
 # --- 3-Channel Relay Module (controls LED Tower, ACTIVE LOW) ---
@@ -28,10 +28,9 @@ RELAY_LED_YELLOW = 21        # Relay 2 → Yellow LED
 RELAY_LED_GREEN  = 12        # Relay 3 → Green LED
 RELAY_ACTIVE_LOW = True      # GPIO.LOW = relay energized
 
-# --- PIR Sensor (HC-SR501) ---
-PIN_PIR              = 23
-PIR_COOLDOWN_SEC     = 5     # Minimum seconds between triggers
-PIR_SETTLE_DELAY_SEC = 2.5   # Seconds after trigger for hand to leave frame
+# --- Push Button (replaces PIR) ---
+PIN_BUTTON           = 24    # GPIO24 / Pin 18 — active LOW, internal pull-up
+BUTTON_DEBOUNCE_MS   = 50    # Debounce time in milliseconds
 
 # =============================================================================
 # CAMERA SETTINGS
@@ -80,6 +79,25 @@ GRID_ROWS      = 14          # 14 rows of lines (row 0 = reference, 1-12 = sampl
 GROUPS         = ["A1", "A2", "A3", "A4"]
 SLOTS_PER_GROUP = 9          # Slots 1-9 per group
 LEVELS         = [0, 1, 2, 3, 4]
+
+# =============================================================================
+# NETWORK / HOTSPOT
+# =============================================================================
+HOTSPOT_SSID        = "signal"
+HOTSPOT_PASSWORD    = "angad"
+HOTSPOT_IP          = "192.168.4.1"    # Default AP gateway IP (dnsmasq)
+WIFI_CONNECT_TIMEOUT = 30              # Seconds to wait for WiFi association
+
+# =============================================================================
+# WEB SERVER
+# =============================================================================
+WEB_SERVER_PORT = 5000
+
+# =============================================================================
+# TELEGRAM (override with .env — these are fallback defaults)
+# =============================================================================
+TELEGRAM_TOKEN   = ""
+TELEGRAM_CHAT_ID = ""
 
 # =============================================================================
 # SYSTEM SAFETY
