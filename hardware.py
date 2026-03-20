@@ -364,14 +364,15 @@ def button_wait_press():
         input("[SIM] Press Enter to simulate button press...")
         return
 
-    # Wait for LOW edge (button pressed)
+    # Poll for LOW (button pressed) — compatible with I2C and all GPIO pins
     try:
-        GPIO.wait_for_edge(PIN_BUTTON, GPIO.FALLING)
+        while GPIO.input(PIN_BUTTON) != GPIO.LOW:
+            time.sleep(0.05)
         time.sleep(BUTTON_DEBOUNCE_MS / 1000.0)
-        # Confirm it's still held (debounce)
+        # Confirm still held after debounce
         if GPIO.input(PIN_BUTTON) == GPIO.LOW:
             return
-        # Spurious edge — wait again
+        # Spurious press — keep waiting
         button_wait_press()
     except Exception as e:
         print(f"button_wait_press error: {e}")
