@@ -168,16 +168,18 @@ def connect_wifi(ssid: str, password: str) -> bool:
         logger.error("connect_wifi: %s", e)
         return False
 
-    # Poll for connection
-    deadline = time.time() + WIFI_CONNECT_TIMEOUT
-    while time.time() < deadline:
-        if is_wifi_connected():
-            logger.info("Connected to '%s'", ssid)
-            return True
-        time.sleep(1)
-
-    logger.warning("connect_wifi: failed to associate with '%s'", ssid)
-    return False
+    # nmcli already blocked until the connection succeeded or failed.
+    # Just do a quick verification rather than another 30-second poll.
+    if is_wifi_connected():
+        logger.info("Connected to '%s'", ssid)
+        return True
+    time.sleep(2)   # brief grace period for DHCP
+    connected = is_wifi_connected()
+    if connected:
+        logger.info("Connected to '%s'", ssid)
+    else:
+        logger.warning("connect_wifi: failed to associate with '%s'", ssid)
+    return connected
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +286,8 @@ def run_network_setup(lcd_lines=None) -> tuple[str | None, str | None]:
     ap_ip = start_hotspot(HOTSPOT_SSID, HOTSPOT_PASSWORD)
     portal_url = f"{ap_ip}:{CAPTIVE_PORTAL_PORT}"
     show("WiFi Not Found", f"Hotspot:{HOTSPOT_SSID}", f"Pass:{HOTSPOT_PASSWORD}", portal_url)
+    print(f"\n  WiFi Setup:  http://{portal_url}/wifi-setup\n"
+          f"  (Connect to hotspot '{HOTSPOT_SSID}' first, password: {HOTSPOT_PASSWORD})\n")
 
     # Import here to avoid circular dependency (web_server imports network)
     from web_server import start_captive_portal, stop_captive_portal
@@ -304,6 +308,7 @@ def run_network_setup(lcd_lines=None) -> tuple[str | None, str | None]:
             if connect_wifi(ssid, password):
                 ip = get_current_ip() or "?.?.?.?"
                 show("WiFi Connected", f"SSID:{ssid[:11]}", f"IP:{ip}", "Press NEXT to")
+                print(f"\n  WiFi Connected!  SSID: {ssid}  IP: {ip}\n")
                 return ssid, ip
             else:
                 # Retry — restart hotspot

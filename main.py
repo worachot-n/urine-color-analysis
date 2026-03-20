@@ -321,6 +321,7 @@ def main():
     # ---- Web server ----
     web_server.start_web_server(port=config.WEB_SERVER_PORT)
     logger.info("Web dashboard: http://%s:%d", web_ip, config.WEB_SERVER_PORT)
+    print(f"\n  Dashboard:  http://{web_ip}:{config.WEB_SERVER_PORT}\n")
 
     # ---- Grid load (or prompt to calibrate via web) ----
     grid_cfg = None

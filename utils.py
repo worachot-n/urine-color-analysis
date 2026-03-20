@@ -27,35 +27,39 @@ from config import LOG_DIR, DEBUG_MODE
 
 def setup_logger(name="urine_analyzer"):
     """
-    Configure a logger that writes to both a daily log file and the console.
+    Configure the root logger with a console handler and a daily file handler.
+
+    Attaching handlers to the root logger ensures that ALL module loggers
+    (network, web_server, calibration, etc.) automatically inherit them and
+    their logger.info() calls reach the terminal.
 
     Returns:
-        logging.Logger instance
+        logging.Logger instance named `name`
     """
     log_dir  = Path(LOG_DIR)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     log_file = log_dir / f"system_{datetime.now().strftime('%Y-%m-%d')}.log"
 
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG if DEBUG_MODE else logging.INFO)
-
-    if not logger.handlers:
-        fh = logging.FileHandler(log_file)
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        ))
+    root = logging.getLogger()
+    if not root.handlers:
+        root.setLevel(logging.DEBUG if DEBUG_MODE else logging.INFO)
 
         ch = logging.StreamHandler()
         ch.setLevel(logging.INFO)
         ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
 
-        logger.addHandler(fh)
-        logger.addHandler(ch)
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
 
-    return logger
+        root.addHandler(ch)
+        root.addHandler(fh)
+
+    return logging.getLogger(name)
 
 
 # ---------------------------------------------------------------------------
