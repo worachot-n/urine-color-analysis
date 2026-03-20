@@ -246,18 +246,30 @@ def _tm1637_write(clk, dio, num):
 
 def lcd_init():
     """
-    Initialize the LCD 20×4 via I2C.
+    Initialize the LCD 16×4 via I2C (HD44780 + PCF8574).
 
     Returns True on success, False if hardware unavailable or error.
     """
     global _lcd_bus
     if not _SMBUS_AVAILABLE:
+        print("lcd_init: smbus not available")
         return False
     try:
         _lcd_bus = smbus.SMBus(LCD_I2C_BUS)
-        for cmd in [0x33, 0x32, 0x06, 0x0C, 0x28, 0x01]:
-            _lcd_write_byte(cmd, _LCD_CMD)
+        time.sleep(0.05)                          # >40 ms power-on delay
+
+        _lcd_write_byte(0x33, _LCD_CMD)           # Wake up (sends 0x30 twice)
         time.sleep(0.005)
+        _lcd_write_byte(0x32, _LCD_CMD)           # Switch to 4-bit mode
+        time.sleep(0.001)
+        _lcd_write_byte(0x28, _LCD_CMD)           # Function set: 4-bit, 2-line, 5×8
+        time.sleep(0.001)
+        _lcd_write_byte(0x0C, _LCD_CMD)           # Display ON, cursor OFF, blink OFF
+        time.sleep(0.001)
+        _lcd_write_byte(0x01, _LCD_CMD)           # Clear display
+        time.sleep(0.005)                          # Clear needs >1.52 ms
+        _lcd_write_byte(0x06, _LCD_CMD)           # Entry mode: increment, no shift
+        time.sleep(0.001)
         return True
     except Exception as e:
         print(f"lcd_init error: {e}")
