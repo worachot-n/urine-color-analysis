@@ -29,7 +29,7 @@ RELAY_LED_GREEN = 12  # Relay 3 → Green LED
 RELAY_ACTIVE_LOW = True  # GPIO.LOW = relay energized
 
 # --- Push Button (replaces PIR) ---
-PIN_BUTTON = 24  # GPIO24 / Pin 18 — active LOW, internal pull-up
+PIN_BUTTON = 2   # GPIO2 / Pin 3 — active LOW, internal pull-up
 BUTTON_DEBOUNCE_MS = 50  # Debounce time in milliseconds
 
 # =============================================================================
