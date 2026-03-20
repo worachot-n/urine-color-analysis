@@ -76,8 +76,24 @@ def get_current_ssid() -> str | None:
         return None
 
 
-def get_current_ip(iface: str = "wlan0") -> str | None:
-    """Return the IPv4 address of *iface*, or None."""
+def get_wifi_interface() -> str:
+    """Return the first WiFi interface name detected by nmcli, e.g. 'wlan0'."""
+    try:
+        result = subprocess.run(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE", "dev"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            if ":wifi" in line:
+                return line.split(":")[0]
+    except Exception:
+        pass
+    return "wlan0"  # safe fallback
+
+
+def get_current_ip(iface: str | None = None) -> str | None:
+    """Return the IPv4 address of *iface* (defaults to detected WiFi interface), or None."""
+    iface = iface or get_wifi_interface()
     try:
         result = subprocess.run(
             ["ip", "-4", "-o", "addr", "show", iface],
@@ -100,11 +116,13 @@ def start_hotspot(ssid: str = HOTSPOT_SSID, password: str = HOTSPOT_PASSWORD) ->
     """
     Create a WiFi hotspot using nmcli.
 
-    Returns the AP IP address string (HOTSPOT_IP) on success,
-    or the configured HOTSPOT_IP as a fallback if the command fails.
+    Returns the actual AP IP address detected after the hotspot starts,
+    or HOTSPOT_IP as a fallback if detection fails.
     """
+    iface = get_wifi_interface()
+
+    # Remove any stale hotspot connection profile first
     try:
-        # Remove any stale hotspot connection profile first
         subprocess.run(
             ["nmcli", "con", "delete", _HOTSPOT_CON_NAME],
             capture_output=True, timeout=5
@@ -113,21 +131,28 @@ def start_hotspot(ssid: str = HOTSPOT_SSID, password: str = HOTSPOT_PASSWORD) ->
         pass
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             [
                 "nmcli", "dev", "wifi", "hotspot",
-                "ifname", "wlan0",
+                "ifname", iface,
                 "ssid", ssid,
                 "password", password,
                 "con-name", _HOTSPOT_CON_NAME,
             ],
-            capture_output=True, timeout=15
+            capture_output=True, text=True, timeout=15
         )
-        logger.info("Hotspot '%s' started", ssid)
+        if result.returncode != 0:
+            logger.error("start_hotspot failed: %s", result.stderr.strip())
+            return HOTSPOT_IP
     except Exception as e:
         logger.error("start_hotspot: %s", e)
+        return HOTSPOT_IP
 
-    return HOTSPOT_IP
+    # Wait for the interface to get its IP, then read the actual AP address
+    time.sleep(2)
+    ap_ip = get_current_ip(iface) or HOTSPOT_IP
+    logger.info("Hotspot '%s' started on %s, AP IP: %s", ssid, iface, ap_ip)
+    return ap_ip
 
 
 def stop_hotspot() -> None:

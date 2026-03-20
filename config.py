@@ -84,8 +84,8 @@ LEVELS = [0, 1, 2, 3, 4]
 # NETWORK / HOTSPOT
 # =============================================================================
 HOTSPOT_SSID = "signal"
-HOTSPOT_PASSWORD = "angad"
-HOTSPOT_IP = "192.168.4.1"  # Default AP gateway IP (dnsmasq)
+HOTSPOT_PASSWORD = "angad@1234"
+HOTSPOT_IP = "10.42.0.1"  # nmcli hotspot default on Pi OS / NetworkManager
 WIFI_CONNECT_TIMEOUT = 30  # Seconds to wait for WiFi association
 
 # =============================================================================
