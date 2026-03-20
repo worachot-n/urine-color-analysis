@@ -38,6 +38,7 @@ BUTTON_DEBOUNCE_MS = 50  # Debounce time in milliseconds
 CAPTURE_RESOLUTION = (4608, 2592)  # Camera Module 3 maximum resolution
 AWB_LOCK = True  # Lock auto white-balance after warm-up
 AE_LOCK = True  # Lock auto exposure after warm-up
+CAMERA_ROTATE_180 = True  # Camera is mounted upside-down
 
 # =============================================================================
 # IMAGE PROCESSING — Red Cap Detection

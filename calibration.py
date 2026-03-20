@@ -39,6 +39,7 @@ from config import (
     CAPTURE_RESOLUTION,
     AWB_LOCK,
     AE_LOCK,
+    CAMERA_ROTATE_180,
 )
 
 # Grid dimensions (lines, not cells).
@@ -95,6 +96,8 @@ def capture_white_balance_frame():
         time.sleep(0.5)
 
         frame = cam.capture_array()
+        if CAMERA_ROTATE_180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
         cam.stop()
         cam.close()
 
@@ -129,6 +132,8 @@ def capture_frame(locked_controls=None):
         cam.start()
         time.sleep(1)
         frame = cam.capture_array()
+        if CAMERA_ROTATE_180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
         cam.stop()
         cam.close()
         return frame

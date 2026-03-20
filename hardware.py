@@ -92,6 +92,7 @@ def relay_init():
         return False
     try:
         GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
         for pin in [RELAY_LED_RED, RELAY_LED_YELLOW, RELAY_LED_GREEN]:
             GPIO.setup(pin, GPIO.OUT)
             GPIO.output(pin, _RELAY_OFF)
