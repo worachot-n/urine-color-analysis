@@ -31,6 +31,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from werkzeug.serving import make_server
+
 import cv2
 import numpy as np
 from flask import (
@@ -827,17 +829,20 @@ def _create_captive_portal_app() -> Flask:
 # Server lifecycle
 # ---------------------------------------------------------------------------
 
+_dashboard_server = None
 _dashboard_thread = None
+_portal_server    = None
 _portal_thread    = None
 
 
 def start_web_server(port: int = config.WEB_SERVER_PORT) -> None:
     """Start the dashboard + calibration Flask app in a background daemon thread."""
-    global _dashboard_thread
+    global _dashboard_server, _dashboard_thread
 
     app = _create_dashboard_app()
+    _dashboard_server = make_server("0.0.0.0", port, app)
     _dashboard_thread = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False),
+        target=_dashboard_server.serve_forever,
         daemon=True,
         name="dashboard-server",
     )
@@ -846,17 +851,23 @@ def start_web_server(port: int = config.WEB_SERVER_PORT) -> None:
 
 
 def stop_web_server() -> None:
-    logger.info("Dashboard server will stop when main process exits")
+    """Gracefully shut down the dashboard server and free its port."""
+    global _dashboard_server
+    if _dashboard_server:
+        _dashboard_server.shutdown()
+        _dashboard_server = None
+        logger.info("Dashboard server stopped")
 
 
 def start_captive_portal(ap_ip: str = config.HOTSPOT_IP) -> None:
     """Start the captive-portal WiFi setup server on CAPTIVE_PORTAL_PORT in a daemon thread."""
-    global _portal_thread
+    global _portal_server, _portal_thread
 
     port = config.CAPTIVE_PORTAL_PORT
     app  = _create_captive_portal_app()
+    _portal_server = make_server("0.0.0.0", port, app)
     _portal_thread = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False),
+        target=_portal_server.serve_forever,
         daemon=True,
         name="captive-portal",
     )
@@ -865,4 +876,9 @@ def start_captive_portal(ap_ip: str = config.HOTSPOT_IP) -> None:
 
 
 def stop_captive_portal() -> None:
-    logger.info("Captive portal will stop when main process exits")
+    """Gracefully shut down the captive portal and free its port."""
+    global _portal_server
+    if _portal_server:
+        _portal_server.shutdown()
+        _portal_server = None
+        logger.info("Captive portal stopped")
