@@ -27,6 +27,7 @@ from config import (
     HOTSPOT_PASSWORD,
     HOTSPOT_IP,
     WIFI_CONNECT_TIMEOUT,
+    CAPTIVE_PORTAL_PORT,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,46 @@ def connect_wifi(ssid: str, password: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# WiFi network scan
+# ---------------------------------------------------------------------------
+
+def scan_wifi_networks() -> list[dict]:
+    """
+    Scan for nearby WiFi networks using nmcli.
+
+    Returns a list of dicts sorted by signal strength (strongest first):
+        [{"ssid": str, "signal": int (0-100), "security": str}, ...]
+
+    Duplicate SSIDs are collapsed — only the entry with the strongest signal
+    is kept. Hidden networks (empty SSID) are labelled "<Hidden>".
+    """
+    try:
+        result = subprocess.run(
+            ["nmcli", "--terse", "--fields", "SSID,SIGNAL,SECURITY",
+             "dev", "wifi", "list"],
+            capture_output=True, text=True, timeout=10
+        )
+    except Exception as e:
+        logger.warning("scan_wifi_networks: %s", e)
+        return []
+
+    seen: dict = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 2:
+            continue
+        ssid     = parts[0].strip() or "<Hidden>"
+        signal   = int(parts[1]) if parts[1].strip().isdigit() else 0
+        security = parts[2].strip() if len(parts) > 2 else ""
+        if ssid not in seen or signal > seen[ssid]["signal"]:
+            seen[ssid] = {"ssid": ssid, "signal": signal, "security": security}
+
+    networks = sorted(seen.values(), key=lambda x: x["signal"], reverse=True)
+    logger.info("WiFi scan found %d network(s)", len(networks))
+    return networks
+
+
+# ---------------------------------------------------------------------------
 # Captive-portal signal (called by web_server.py when form is submitted)
 # ---------------------------------------------------------------------------
 
@@ -241,7 +282,8 @@ def run_network_setup(lcd_lines=None) -> tuple[str | None, str | None]:
 
     # --- No connection — start hotspot and captive portal ---
     ap_ip = start_hotspot(HOTSPOT_SSID, HOTSPOT_PASSWORD)
-    show("WiFi Not Found", f"Hotspot:{HOTSPOT_SSID}", f"Pass:{HOTSPOT_PASSWORD}", f"IP:{ap_ip}")
+    portal_url = f"{ap_ip}:{CAPTIVE_PORTAL_PORT}"
+    show("WiFi Not Found", f"Hotspot:{HOTSPOT_SSID}", f"Pass:{HOTSPOT_PASSWORD}", portal_url)
 
     # Import here to avoid circular dependency (web_server imports network)
     from web_server import start_captive_portal, stop_captive_portal

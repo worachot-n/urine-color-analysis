@@ -517,18 +517,33 @@ _WIFI_SETUP_HTML = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WiFi Setup</title>
   <style>
-    body { font-family: sans-serif; background:#f5f5f5; display:flex;
-           justify-content:center; padding-top:3rem; }
-    .card { background:#fff; padding:2rem; border-radius:8px;
-            box-shadow:0 2px 8px rgba(0,0,0,.2); min-width:300px; }
-    h2   { margin-top:0; }
-    input { width:100%; padding:0.5rem; margin:0.4rem 0 1rem;
-            box-sizing:border-box; border:1px solid #ccc; border-radius:4px; }
-    button { width:100%; padding:0.6rem; background:#2196F3; color:#fff;
+    body   { font-family: sans-serif; background:#f5f5f5; display:flex;
+             justify-content:center; padding-top:2rem; margin:0; }
+    .card  { background:#fff; padding:1.8rem; border-radius:8px;
+             box-shadow:0 2px 8px rgba(0,0,0,.2); width:100%;
+             max-width:360px; box-sizing:border-box; }
+    h2     { margin-top:0; }
+    label  { display:block; font-size:0.9rem; color:#555;
+             margin-bottom:0.25rem; }
+    .row   { display:flex; gap:0.5rem; align-items:stretch;
+             margin-bottom:1rem; }
+    select, input {
+             flex:1; padding:0.5rem; border:1px solid #ccc;
+             border-radius:4px; font-size:1rem; box-sizing:border-box; }
+    .btn-rescan {
+             padding:0.5rem 0.7rem; background:#555; color:#fff;
+             border:none; border-radius:4px; cursor:pointer;
+             font-size:1rem; white-space:nowrap; }
+    .btn-rescan:disabled { opacity:0.5; cursor:default; }
+    .scan-status { font-size:0.8rem; color:#888; margin:-0.6rem 0 0.8rem; }
+    button[type=submit] {
+             width:100%; padding:0.65rem; background:#2196F3; color:#fff;
              border:none; border-radius:4px; cursor:pointer; font-size:1rem; }
-    .msg { margin-top:1rem; color:{{ msg_color }}; }
+    button[type=submit]:disabled { opacity:0.4; cursor:default; }
+    .msg   { margin-top:1rem; color:{{ msg_color }}; }
   </style>
 </head>
 <body>
@@ -536,13 +551,65 @@ _WIFI_SETUP_HTML = """<!doctype html>
     <h2>WiFi Setup</h2>
     <form method="post" action="/wifi-setup">
       <label>Network name (SSID)</label>
-      <input name="ssid" type="text" placeholder="MyNetwork" required>
+      <div class="row">
+        <select id="ssid-select" name="ssid" required>
+          <option value="">-- scanning --</option>
+        </select>
+        <button type="button" class="btn-rescan" id="btn-rescan"
+                onclick="scanNetworks()" disabled>&#8635;</button>
+      </div>
+      <div class="scan-status" id="scan-status">Scanning...</div>
+
       <label>Password</label>
-      <input name="password" type="password" placeholder="Password">
-      <button type="submit">Connect</button>
+      <input name="password" type="password" placeholder="Password"
+             style="margin-bottom:1rem">
+
+      <button type="submit" id="btn-submit" disabled>Connect</button>
     </form>
     {% if message %}<p class="msg">{{ message }}</p>{% endif %}
   </div>
+
+  <script>
+  const select    = document.getElementById('ssid-select');
+  const btnRescan = document.getElementById('btn-rescan');
+  const btnSubmit = document.getElementById('btn-submit');
+  const scanStatus= document.getElementById('scan-status');
+
+  async function scanNetworks() {
+    scanStatus.textContent = 'Scanning...';
+    btnRescan.disabled = true;
+    btnSubmit.disabled = true;
+    select.innerHTML = '<option value="">-- scanning --</option>';
+
+    try {
+      const res  = await fetch('/api/wifi/scan');
+      const data = await res.json();
+      select.innerHTML = '';
+
+      if (data.networks && data.networks.length > 0) {
+        data.networks.forEach(n => {
+          const opt  = document.createElement('option');
+          opt.value  = (n.ssid === '<Hidden>') ? '' : n.ssid;
+          const sec  = n.security ? ` [${n.security}]` : ' [Open]';
+          opt.textContent = `${n.ssid}  ${n.signal}%${sec}`;
+          select.appendChild(opt);
+        });
+        scanStatus.textContent = `${data.networks.length} network(s) found`;
+        btnSubmit.disabled = false;
+      } else {
+        select.innerHTML = '<option value="">No networks found</option>';
+        scanStatus.textContent = 'No networks found — try rescan.';
+      }
+    } catch(e) {
+      select.innerHTML = '<option value="">Scan failed</option>';
+      scanStatus.textContent = 'Scan error: ' + e;
+    }
+
+    btnRescan.disabled = false;
+  }
+
+  window.addEventListener('load', scanNetworks);
+  </script>
 </body>
 </html>"""
 
@@ -718,6 +785,16 @@ def _create_captive_portal_app() -> Flask:
     app = Flask(__name__ + "_portal")
     app.logger.setLevel(logging.WARNING)
 
+    @app.route("/api/wifi/scan")
+    def wifi_scan():
+        try:
+            import network as net
+            networks = net.scan_wifi_networks()
+            return jsonify({"networks": networks, "error": None})
+        except Exception as e:
+            logger.error("wifi_scan: %s", e)
+            return jsonify({"networks": [], "error": str(e)})
+
     @app.route("/wifi-setup", methods=["GET"])
     def wifi_setup_get():
         return render_template_string(_WIFI_SETUP_HTML, message=None, msg_color="#333")
@@ -730,8 +807,8 @@ def _create_captive_portal_app() -> Flask:
             return render_template_string(
                 _WIFI_SETUP_HTML, message="SSID is required.", msg_color="red"
             )
-        import network
-        network.notify_wifi_credentials(ssid, password)
+        import network as net
+        net.notify_wifi_credentials(ssid, password)
         return render_template_string(
             _WIFI_SETUP_HTML,
             message="Connecting... The device will restart once connected.",
@@ -773,17 +850,18 @@ def stop_web_server() -> None:
 
 
 def start_captive_portal(ap_ip: str = config.HOTSPOT_IP) -> None:
-    """Start the captive-portal WiFi setup server on port 80 in a daemon thread."""
+    """Start the captive-portal WiFi setup server on CAPTIVE_PORTAL_PORT in a daemon thread."""
     global _portal_thread
 
-    app = _create_captive_portal_app()
+    port = config.CAPTIVE_PORTAL_PORT
+    app  = _create_captive_portal_app()
     _portal_thread = threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=80, debug=False, use_reloader=False),
+        target=lambda: app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False),
         daemon=True,
         name="captive-portal",
     )
     _portal_thread.start()
-    logger.info("Captive portal started at http://%s/wifi-setup", ap_ip)
+    logger.info("Captive portal started at http://%s:%d/wifi-setup", ap_ip, port)
 
 
 def stop_captive_portal() -> None:
