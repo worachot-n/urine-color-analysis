@@ -237,24 +237,45 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
 # Live loop
 # ===========================================================================
 
-def run_live_mode(grid_cfg, web_ip: str = ""):
+def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
     """
     Continuous button-triggered scan loop.
 
-    Checks for a grid reload signal (from web calibration save) at the top
-    of each iteration so new grid_config.json takes effect without restarting.
+    Checks for a grid reload signal (from web calibration save) and WiFi
+    connectivity at the top of each iteration. If WiFi is lost, automatically
+    falls back to hotspot + captive-portal mode and resumes once reconnected.
     """
-    lcd_clear()
-    lcd_message("Ready", 1)
-    lcd_message("Press button", 2)
-    if web_ip:
-        lcd_message(f"{web_ip}:5000", 4)
-    led_off()
+    from network import run_network_setup, is_wifi_connected
+
+    def _show_ready():
+        lcd_clear()
+        lcd_message("Ready", 1)
+        lcd_message("Press button", 2)
+        if web_ip:
+            lcd_message(f"{web_ip}:5000", 4)
+        led_off()
+
+    _show_ready()
     logger.info("Live mode: waiting for button press on GPIO%d", config.PIN_BUTTON)
 
     try:
         while True:
-            # Check if calibration was saved via web — reload grid if so
+            # --- WiFi loss detection & automatic fallback ---
+            if not is_wifi_connected():
+                logger.warning("WiFi connection lost — falling back to network setup")
+                lcd_clear()
+                lcd_message("WiFi Lost!", 1)
+                lcd_message("Restarting net", 2)
+                led_off()
+                try:
+                    new_ssid, new_ip = run_network_setup(lcd_lines=lcd_lines)
+                    web_ip = new_ip or ""
+                    logger.info("Network restored: ssid=%s ip=%s", new_ssid, new_ip)
+                except Exception as e:
+                    logger.error("Network setup failed: %s", e)
+                _show_ready()
+
+            # --- Grid reload after web calibration save ---
             if web_server.consume_grid_saved():
                 try:
                     grid_cfg = GridConfig()
@@ -359,15 +380,19 @@ def main():
             sys.exit(1)
 
     # ---- Wait for first button press then enter main loop ----
+    # Show WiFi status on LCD so user can confirm connectivity before scanning
+    from network import get_current_ssid, get_current_ip
+    _cur_ssid = get_current_ssid() or ssid or "Unknown"
+    _cur_ip   = get_current_ip()   or web_ip or "?.?.?.?"
     lcd_clear()
-    lcd_message("Press button", 1)
-    lcd_message("to start", 2)
-    if web_ip:
-        lcd_message(f"{web_ip}:5000", 4)
+    lcd_message("WiFi Status: OK", 1)
+    lcd_message(f"SSID:{_cur_ssid[:10]}", 2)
+    lcd_message(f"IP:{_cur_ip}", 3)
+    lcd_message("Press NEXT(GP24)", 4)
     button_wait_press()
 
     try:
-        run_live_mode(grid_cfg, web_ip=web_ip)
+        run_live_mode(grid_cfg, web_ip=web_ip, lcd_lines=_lcd4)
     finally:
         relay_cleanup()
         button_cleanup()

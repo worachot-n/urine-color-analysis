@@ -811,11 +811,41 @@ def _create_captive_portal_app() -> Flask:
             )
         import network as net
         net.notify_wifi_credentials(ssid, password)
-        return render_template_string(
-            _WIFI_SETUP_HTML,
-            message="Connecting... The device will restart once connected.",
-            msg_color="green",
-        )
+        connecting_html = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connecting...</title>
+  <style>
+    body   { font-family: sans-serif; background:#f5f5f5; display:flex;
+             justify-content:center; padding-top:2rem; margin:0; }
+    .card  { background:#fff; padding:1.8rem; border-radius:8px;
+             box-shadow:0 2px 8px rgba(0,0,0,.2); width:100%;
+             max-width:360px; box-sizing:border-box; }
+    h2     { margin-top:0; color:#333; }
+    .row   { margin-bottom:0.8rem; }
+    label  { font-size:0.85rem; color:#777; display:block; }
+    .value { font-size:1rem; color:#222; word-break:break-all; }
+    .status { margin-top:1.2rem; color:#2196F3; font-weight:bold; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Connecting...</h2>
+    <div class="row">
+      <label>Network (SSID)</label>
+      <div class="value">{{ ssid }}</div>
+    </div>
+    <div class="row">
+      <label>Password</label>
+      <div class="value">{{ password }}</div>
+    </div>
+    <p class="status">&#9654; Connecting to WiFi. This may take up to 30 seconds.</p>
+  </div>
+</body>
+</html>"""
+        return render_template_string(connecting_html, ssid=ssid, password=password)
 
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")

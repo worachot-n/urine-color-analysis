@@ -70,7 +70,8 @@ _LCD_BACKLIGHT = 0x08
 _ENABLE        = 0b00000100
 _E_PULSE       = 0.0005
 _E_DELAY       = 0.0005
-_LCD_LINE      = {1: 0x80, 2: 0xC0, 3: 0x94, 4: 0xD4}
+# HD44780 DDRAM addresses for 16×4 LCD (rows at 0x00, 0x40, 0x10, 0x50)
+_LCD_LINE      = {1: 0x80, 2: 0xC0, 3: 0x90, 4: 0xD0}
 
 # 7-segment digit codes for TM1637
 _SEG = [0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F]
@@ -240,7 +241,7 @@ def _tm1637_write(clk, dio, num):
 
 
 # ===========================================================================
-# LCD 20×4 I2C
+# LCD 16×4 I2C
 # ===========================================================================
 
 def lcd_init():

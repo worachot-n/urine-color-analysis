@@ -182,10 +182,12 @@ def connect_wifi(ssid: str, password: str) -> bool:
     Returns True if connected within WIFI_CONNECT_TIMEOUT seconds.
     """
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["nmcli", "dev", "wifi", "connect", ssid, "password", password],
-            capture_output=True, timeout=WIFI_CONNECT_TIMEOUT
+            capture_output=True, text=True, timeout=WIFI_CONNECT_TIMEOUT
         )
+        if result.returncode != 0:
+            logger.error("connect_wifi nmcli error: %s", result.stderr.strip() or result.stdout.strip())
     except subprocess.TimeoutExpired:
         logger.warning("connect_wifi: timeout connecting to '%s'", ssid)
         return False
@@ -303,8 +305,9 @@ def run_network_setup(lcd_lines=None) -> tuple[str | None, str | None]:
     if is_wifi_connected():
         ssid = get_current_ssid() or "Unknown"
         ip   = get_current_ip()   or "?.?.?.?"
-        show("WiFi Connected", f"SSID: {ssid[:14]}", f"IP:{ip}", "Press NEXT to")
+        show("WiFi Status: OK", f"SSID:{ssid[:10]}", f"IP:{ip}", "Press NEXT(GP24)")
         logger.info("Already connected: ssid=%s ip=%s", ssid, ip)
+        print(f"\n  WiFi connected — SSID: {ssid}  IP: {ip}\n")
         return ssid, ip
 
     # --- No connection — start hotspot and captive portal ---
