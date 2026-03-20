@@ -92,7 +92,7 @@ WIFI_CONNECT_TIMEOUT = 30              # Seconds to wait for WiFi association
 # WEB SERVER
 # =============================================================================
 WEB_SERVER_PORT      = 5000
-CAPTIVE_PORTAL_PORT  = 8080   # Port 80 may be reserved; use 8080 for WiFi setup
+CAPTIVE_PORTAL_PORT  = 8081   # Port 80 reserved; use 8081 for WiFi setup portal
 
 # =============================================================================
 # TELEGRAM (override with .env — these are fallback defaults)
