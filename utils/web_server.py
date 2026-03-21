@@ -37,13 +37,15 @@ from werkzeug.serving import make_server
 import cv2
 import numpy as np
 from flask import (
-    Flask, jsonify, render_template_string,
+    Flask, jsonify, render_template,
     request, send_file, redirect,
 )
 
 import configs.config as config
 
 logger = logging.getLogger(__name__)
+
+_TEMPLATES_DIR = str(Path(__file__).parent.parent / "templates")
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -119,551 +121,8 @@ _calib_state: dict = {
 _calib_lock = threading.Lock()
 
 
-# ---------------------------------------------------------------------------
-# Shared navbar snippet (injected into all pages)
-# ---------------------------------------------------------------------------
-_NAVBAR = """
-<nav>
-  <a href="/" class="{% if active == 'results' %}active{% endif %}">&#128202; Results</a>
-  <a href="/calibrate" class="{% if active == 'calibrate' %}active{% endif %}">&#127919; Calibrate</a>
-</nav>
-"""
-
-_NAV_STYLE = """
-nav { background:#1a1a2e; padding:0.6rem 1rem; margin-bottom:1.2rem;
-      border-radius:6px; display:flex; gap:1.2rem; }
-nav a { color:#7cf; text-decoration:none; font-size:1rem; padding:0.2rem 0.5rem;
-        border-radius:4px; }
-nav a.active, nav a:hover { background:#2a2a4e; color:#fff; }
-"""
-
-# ---------------------------------------------------------------------------
-# Dashboard HTML
-# ---------------------------------------------------------------------------
-_DASHBOARD_HTML = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Urine Color Analyzer</title>
-  <meta http-equiv="refresh" content="10">
-  <style>
-    body   { font-family: monospace; background:#111; color:#eee; padding:1rem; }
-    h1     { color:#7cf; margin-bottom:0.4rem; }
-    .ts    { color:#888; font-size:0.85rem; margin-bottom:1rem; }
-    table  { border-collapse:collapse; margin-bottom:1rem; }
-    th, td { border:1px solid #444; padding:0.4rem 0.8rem; text-align:center; }
-    th     { background:#222; }
-    .ok    { color:#4f4; }
-    .errors-list { color:#fa0; }
-    img    { max-width:100%; border:1px solid #444; margin-top:0.5rem; }
-    """ + _NAV_STYLE + """
-  </style>
-</head>
-<body>
-  """ + _NAVBAR + """
-  <h1>Urine Color Analyzer</h1>
-  <div class="ts">Last scan: {{ last_scan_time or "No scan yet" }}</div>
-
-  <table>
-    <tr>{% for lvl in range(5) %}<th>L{{ lvl }}</th>{% endfor %}</tr>
-    <tr>{% for lvl in range(5) %}<td>{{ counts[lvl] }}</td>{% endfor %}</tr>
-  </table>
-
-  {% if errors %}
-    <p class="errors-list">Errors: {{ errors | join(", ") }}</p>
-  {% else %}
-    <p class="ok">&#10003; No errors</p>
-  {% endif %}
-
-  {% if image_path %}
-    <img src="/image/latest" alt="Latest scan">
-  {% endif %}
-
-  <div style="margin-top:1.2rem; display:flex; gap:0.8rem; flex-wrap:wrap;">
-    <button onclick="reloadGrid()" style="padding:0.6rem 1.2rem; background:#ff9800; color:#000; border:none; border-radius:5px; cursor:pointer; font-size:1rem;">
-      &#8635; Reload Grid
-    </button>
-    <a href="/calibrate" style="padding:0.6rem 1.2rem; background:#2196F3; color:#fff; border-radius:5px; text-decoration:none; font-size:1rem;">
-      &#127919; Recalibrate
-    </a>
-  </div>
-  <div id="reload-msg" style="margin-top:0.5rem; color:#4f4; display:none;">Grid reload triggered — system will reload on next cycle.</div>
-
-  <script>
-    async function reloadGrid() {
-      const res = await fetch('/api/grid/reload', {method: 'POST'});
-      if (res.ok) {
-        document.getElementById('reload-msg').style.display = 'block';
-        setTimeout(() => document.getElementById('reload-msg').style.display = 'none', 5000);
-      }
-    }
-  </script>
-</body>
-</html>"""
 
 
-# ---------------------------------------------------------------------------
-# Calibration HTML
-# ---------------------------------------------------------------------------
-_CALIBRATE_HTML = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Calibrate Grid</title>
-  <style>
-    body    { font-family: monospace; background:#111; color:#eee;
-              padding:1rem; margin:0; }
-    h1      { color:#7cf; margin-bottom:0.4rem; }
-    """ + _NAV_STYLE + """
-    .source-btns { display:flex; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; }
-    .btn    { padding:0.6rem 1.2rem; border:none; border-radius:5px;
-              cursor:pointer; font-size:1rem; }
-    .btn-blue  { background:#2196F3; color:#fff; }
-    .btn-green { background:#4caf50; color:#fff; }
-    .btn-red   { background:#f44336; color:#fff; }
-    .btn:disabled { opacity:0.4; cursor:default; }
-    #upload-input { display:none; }
-    #canvas-wrap  { position:relative; display:inline-block;
-                    border:2px solid #444; border-radius:4px; }
-    #calib-canvas { display:block; cursor:crosshair;
-                    max-width:90vw; max-height:72vh; }
-    #status { margin-top:0.8rem; color:#fa0; min-height:1.2rem; }
-    #instructions { color:#888; font-size:0.85rem; margin-bottom:0.6rem; }
-    .step-label { color:#7cf; font-weight:bold; }
-  </style>
-</head>
-<body>
-  """ + _NAVBAR + """
-  <h1>Grid Calibration</h1>
-
-  <div class="source-btns">
-    <button id="btn-capture" class="btn btn-blue" onclick="captureFromCamera()">
-      &#128247; Capture from Camera
-    </button>
-    <label class="btn btn-blue" style="display:inline-block">
-      &#128193; Upload Image
-      <input id="upload-input" type="file" accept="image/*" onchange="uploadImage(this)">
-    </label>
-  </div>
-
-  <p id="instructions">
-    <span class="step-label">Step 1:</span> Choose an image source above.<br>
-    <span class="step-label">Step 2:</span> Click the <b>4 outer corners</b> of the grid
-      in order: Top-Left &#8594; Top-Right &#8594; Bottom-Right &#8594; Bottom-Left.<br>
-    <span class="step-label">Step 3:</span> Drag grid lines to fine-tune if needed.<br>
-    <span class="step-label">Step 4:</span> Click <b>Save Calibration</b>.
-  </p>
-
-  <div id="canvas-wrap" style="display:none">
-    <canvas id="calib-canvas"></canvas>
-  </div>
-
-  <div style="margin-top:0.8rem; display:flex; gap:0.8rem; flex-wrap:wrap">
-    <button id="btn-reset" class="btn btn-red" onclick="resetCorners()" disabled>
-      &#8635; Reset Corners
-    </button>
-    <button id="btn-save" class="btn btn-green" onclick="saveCalibration()" disabled>
-      &#10003; Save Calibration
-    </button>
-  </div>
-
-  <div id="status"></div>
-
-  <script>
-  // -------------------------------------------------------------------------
-  // State
-  // -------------------------------------------------------------------------
-  let img        = null;
-  let origW      = 0, origH = 0;
-  let scaleX     = 1, scaleY = 1;
-  let corners    = [];          // canvas-space [[x,y] x4]
-  let gridPts    = null;        // canvas-space [15 rows][17 cols][2]
-  let dragging   = null;        // {type:'h'|'v', index:n, startX, startY}
-  let hover      = null;        // {type:'h'|'v', index:n} | null
-
-  const canvas   = document.getElementById('calib-canvas');
-  const ctx      = canvas.getContext('2d');
-  const wrap     = document.getElementById('canvas-wrap');
-  const statusEl = document.getElementById('status');
-  const btnSave  = document.getElementById('btn-save');
-  const btnReset = document.getElementById('btn-reset');
-
-  // -------------------------------------------------------------------------
-  // Source selection
-  // -------------------------------------------------------------------------
-  async function captureFromCamera() {
-    setStatus('Capturing from camera...');
-    try {
-      const res  = await fetch('/api/calibrate/capture', {method:'POST'});
-      const data = await res.json();
-      if (data.error) { setStatus('Error: ' + data.error); return; }
-      await loadCalibImage(data.width, data.height);
-    } catch(e) { setStatus('Capture failed: ' + e); }
-  }
-
-  async function uploadImage(input) {
-    if (!input.files.length) return;
-    setStatus('Uploading...');
-    const fd = new FormData();
-    fd.append('file', input.files[0]);
-    try {
-      const res  = await fetch('/api/calibrate/upload', {method:'POST', body:fd});
-      const data = await res.json();
-      if (data.error) { setStatus('Error: ' + data.error); return; }
-      await loadCalibImage(data.width, data.height);
-    } catch(e) { setStatus('Upload failed: ' + e); }
-  }
-
-  async function loadCalibImage(w, h) {
-    origW = w; origH = h;
-    img   = new Image();
-    img.onload = () => {
-      // Size canvas to fit viewport
-      const maxW = Math.min(window.innerWidth * 0.92, 1400);
-      const maxH = Math.min(window.innerHeight * 0.70, 900);
-      scaleX = Math.min(maxW / origW, maxH / origH);
-      scaleY = scaleX;
-      canvas.width  = Math.round(origW * scaleX);
-      canvas.height = Math.round(origH * scaleY);
-      wrap.style.display = 'inline-block';
-      resetCorners();
-      setStatus('Click the 4 outer corners of the grid (TL \u2192 TR \u2192 BR \u2192 BL).');
-    };
-    img.src = '/api/calibrate/image?t=' + Date.now();
-  }
-
-  // -------------------------------------------------------------------------
-  // Corner clicks
-  // -------------------------------------------------------------------------
-  function getEventPos(e) {
-    const rect = canvas.getBoundingClientRect();
-    if (e.touches) {
-      return [e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top];
-    }
-    return [e.clientX - rect.left, e.clientY - rect.top];
-  }
-
-  canvas.addEventListener('click', async (e) => {
-    if (corners.length >= 4 || gridPts) return;
-    const [cx, cy] = getEventPos(e);
-    corners.push([cx, cy]);
-    draw();
-    if (corners.length === 4) {
-      setStatus('Computing grid overlay...');
-      await computeGrid();
-    } else {
-      const labels = ['Top-Left', 'Top-Right', 'Bottom-Right', 'Bottom-Left'];
-      setStatus('Click corner ' + (corners.length + 1) + ': ' + labels[corners.length]);
-    }
-    btnReset.disabled = false;
-  });
-
-  // -------------------------------------------------------------------------
-  // Grid computation
-  // -------------------------------------------------------------------------
-  async function computeGrid() {
-    const origCorners = corners.map(([cx, cy]) => [cx / scaleX, cy / scaleY]);
-    try {
-      const res  = await fetch('/api/calibrate/compute-grid', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({corners: origCorners}),
-      });
-      const data = await res.json();
-      if (data.error) { setStatus('Error: ' + data.error); return; }
-      // Scale grid_pts to canvas coordinates
-      gridPts = data.grid_pts.map(row =>
-        row.map(([x, y]) => [x * scaleX, y * scaleY])
-      );
-      draw();
-      btnSave.disabled  = false;
-      setStatus('Grid computed. Drag lines to fine-tune, then click Save.');
-    } catch(e) { setStatus('Grid computation failed: ' + e); }
-  }
-
-  // -------------------------------------------------------------------------
-  // Draw
-  // -------------------------------------------------------------------------
-  function draw() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-    // Corner markers
-    const cornerLabels = ['1 TL', '2 TR', '3 BR', '4 BL'];
-    corners.forEach(([cx, cy], i) => {
-      ctx.beginPath();
-      ctx.arc(cx, cy, 9, 0, 2*Math.PI);
-      ctx.fillStyle = 'rgba(255,60,60,0.85)';
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 11px monospace';
-      ctx.fillText(cornerLabels[i] || (i+1), cx + 11, cy + 4);
-    });
-
-    // Grid lines
-    if (!gridPts) return;
-    // Horizontal lines (15 rows)
-    for (let r = 0; r < gridPts.length; r++) {
-      const isHov = hover && hover.type === 'h' && hover.index === r;
-      ctx.lineWidth   = isHov ? 3 : 1;
-      ctx.strokeStyle = isHov      ? 'rgba(0,220,255,0.95)'
-                      : r === 0    ? 'rgba(255,220,0,0.75)'
-                                   : 'rgba(0,230,80,0.65)';
-      ctx.beginPath();
-      gridPts[r].forEach(([x, y], c) => c === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
-      ctx.stroke();
-    }
-    // Vertical lines (17 cols)
-    for (let c = 0; c < gridPts[0].length; c++) {
-      const isHov = hover && hover.type === 'v' && hover.index === c;
-      ctx.lineWidth   = isHov ? 3 : 1;
-      ctx.strokeStyle = isHov      ? 'rgba(0,220,255,0.95)'
-                      : c === 0    ? 'rgba(255,80,80,0.6)'
-                                   : 'rgba(0,230,80,0.65)';
-      ctx.beginPath();
-      gridPts.forEach((row, r) => r === 0 ? ctx.moveTo(row[c][0], row[c][1])
-                                          : ctx.lineTo(row[c][0], row[c][1]));
-      ctx.stroke();
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Line drag (Phase 2 fine-tuning)
-  // -------------------------------------------------------------------------
-  function lineHitTest(mx, my) {
-    const THRESH = 10;
-    if (!gridPts) return null;
-    // Check horizontal lines
-    for (let r = 0; r < gridPts.length; r++) {
-      for (let c = 0; c < gridPts[r].length - 1; c++) {
-        const [x1, y1] = gridPts[r][c];
-        const [x2, y2] = gridPts[r][c + 1];
-        if (mx < Math.min(x1,x2) - THRESH || mx > Math.max(x1,x2) + THRESH) continue;
-        const dist = Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) /
-                     Math.hypot(y2-y1, x2-x1);
-        if (dist < THRESH) return {type:'h', index:r};
-      }
-    }
-    // Check vertical lines
-    for (let c = 0; c < gridPts[0].length; c++) {
-      for (let r = 0; r < gridPts.length - 1; r++) {
-        const [x1, y1] = gridPts[r][c];
-        const [x2, y2] = gridPts[r+1][c];
-        if (my < Math.min(y1,y2) - THRESH || my > Math.max(y1,y2) + THRESH) continue;
-        const dist = Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) /
-                     Math.hypot(y2-y1, x2-x1);
-        if (dist < THRESH) return {type:'v', index:c};
-      }
-    }
-    return null;
-  }
-
-  canvas.addEventListener('mousedown', e => {
-    if (!gridPts || corners.length < 4) return;
-    const [mx, my] = getEventPos(e);
-    const hit = lineHitTest(mx, my);
-    if (hit) { dragging = {...hit, startX:mx, startY:my}; e.preventDefault(); }
-  });
-
-  canvas.addEventListener('mousemove', e => {
-    const [mx, my] = getEventPos(e);
-    if (dragging) {
-      const dx = mx - dragging.startX;
-      const dy = my - dragging.startY;
-      dragging.startX = mx; dragging.startY = my;
-      if (dragging.type === 'h') {
-        gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
-      } else {
-        gridPts.forEach(row => { row[dragging.index][0] += dx; });
-      }
-      draw();
-    } else if (gridPts) {
-      const hit = lineHitTest(mx, my);
-      const changed = JSON.stringify(hover) !== JSON.stringify(hit);
-      hover = hit;
-      canvas.style.cursor = hit ? 'grab' : 'crosshair';
-      if (changed) draw();
-    }
-  });
-
-  canvas.addEventListener('mouseup',    () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
-  canvas.addEventListener('mouseleave', () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
-
-  // Touch equivalents
-  canvas.addEventListener('touchstart', e => {
-    if (!gridPts) return;
-    const [mx, my] = getEventPos(e);
-    const hit = lineHitTest(mx, my);
-    if (hit) { dragging = {...hit, startX:mx, startY:my}; e.preventDefault(); }
-  }, {passive:false});
-
-  canvas.addEventListener('touchmove', e => {
-    if (!dragging) return;
-    const [mx, my] = getEventPos(e);
-    const dx = mx - dragging.startX, dy = my - dragging.startY;
-    dragging.startX = mx; dragging.startY = my;
-    if (dragging.type === 'h') {
-      gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
-    } else {
-      gridPts.forEach(row => { row[dragging.index][0] += dx; });
-    }
-    draw(); e.preventDefault();
-  }, {passive:false});
-
-  canvas.addEventListener('touchend', () => { dragging = null; });
-
-  // -------------------------------------------------------------------------
-  // Controls
-  // -------------------------------------------------------------------------
-  function resetCorners() {
-    corners  = [];
-    gridPts  = null;
-    dragging = null;
-    btnSave.disabled  = true;
-    btnReset.disabled = true;
-    draw();
-    setStatus('Click the 4 outer corners of the grid (TL \u2192 TR \u2192 BR \u2192 BL).');
-  }
-
-  async function saveCalibration() {
-    if (!gridPts) return;
-    btnSave.disabled = true;
-    setStatus('Saving calibration...');
-    const origCorners = corners.map(([cx, cy]) => [cx / scaleX, cy / scaleY]);
-    const origGridPts = gridPts.map(row => row.map(([x, y]) => [x / scaleX, y / scaleY]));
-    try {
-      const res  = await fetch('/api/calibrate/save', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({corners: origCorners, grid_pts: origGridPts}),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setStatus('\u2713 Calibration saved! Redirecting to Results...');
-        setTimeout(() => window.location = '/', 1800);
-      } else {
-        setStatus('Save failed: ' + (data.error || 'Unknown error'));
-        btnSave.disabled = false;
-      }
-    } catch(e) {
-      setStatus('Save request failed: ' + e);
-      btnSave.disabled = false;
-    }
-  }
-
-  function setStatus(msg) { statusEl.textContent = msg; }
-  </script>
-</body>
-</html>"""
-
-
-# ---------------------------------------------------------------------------
-# WiFi setup (captive-portal) HTML
-# ---------------------------------------------------------------------------
-_WIFI_SETUP_HTML = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WiFi Setup</title>
-  <style>
-    body   { font-family: sans-serif; background:#f5f5f5; display:flex;
-             justify-content:center; padding-top:2rem; margin:0; }
-    .card  { background:#fff; padding:1.8rem; border-radius:8px;
-             box-shadow:0 2px 8px rgba(0,0,0,.2); width:100%;
-             max-width:360px; box-sizing:border-box; }
-    h2     { margin-top:0; }
-    label  { display:block; font-size:0.9rem; color:#555;
-             margin-bottom:0.25rem; }
-    .row   { display:flex; gap:0.5rem; align-items:stretch;
-             margin-bottom:1rem; }
-    select, input {
-             flex:1; padding:0.5rem; border:1px solid #ccc;
-             border-radius:4px; font-size:1rem; box-sizing:border-box; }
-    .btn-rescan {
-             padding:0.5rem 0.7rem; background:#555; color:#fff;
-             border:none; border-radius:4px; cursor:pointer;
-             font-size:1rem; white-space:nowrap; }
-    .btn-rescan:disabled { opacity:0.5; cursor:default; }
-    .scan-status { font-size:0.8rem; color:#888; margin:-0.6rem 0 0.8rem; }
-    button[type=submit] {
-             width:100%; padding:0.65rem; background:#2196F3; color:#fff;
-             border:none; border-radius:4px; cursor:pointer; font-size:1rem; }
-    button[type=submit]:disabled { opacity:0.4; cursor:default; }
-    .msg   { margin-top:1rem; color:{{ msg_color }}; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>WiFi Setup</h2>
-    <form method="post" action="/wifi-setup">
-      <label>Network name (SSID)</label>
-      <div class="row">
-        <select id="ssid-select" name="ssid" required>
-          <option value="">-- scanning --</option>
-        </select>
-        <button type="button" class="btn-rescan" id="btn-rescan"
-                onclick="scanNetworks()" disabled>&#8635;</button>
-      </div>
-      <div class="scan-status" id="scan-status">Scanning...</div>
-
-      <label>Password</label>
-      <input name="password" type="password" placeholder="Password"
-             style="margin-bottom:1rem">
-
-      <button type="submit" id="btn-submit" disabled>Connect</button>
-    </form>
-    {% if message %}<p class="msg">{{ message }}</p>{% endif %}
-  </div>
-
-  <script>
-  const select    = document.getElementById('ssid-select');
-  const btnRescan = document.getElementById('btn-rescan');
-  const btnSubmit = document.getElementById('btn-submit');
-  const scanStatus= document.getElementById('scan-status');
-
-  async function scanNetworks() {
-    scanStatus.textContent = 'Scanning...';
-    btnRescan.disabled = true;
-    btnSubmit.disabled = true;
-    select.innerHTML = '<option value="">-- scanning --</option>';
-
-    try {
-      const res  = await fetch('/api/wifi/scan');
-      const data = await res.json();
-      select.innerHTML = '';
-
-      if (data.networks && data.networks.length > 0) {
-        data.networks.forEach(n => {
-          const opt  = document.createElement('option');
-          opt.value  = (n.ssid === '<Hidden>') ? '' : n.ssid;
-          const sec  = n.security ? ` [${n.security}]` : ' [Open]';
-          opt.textContent = `${n.ssid}  ${n.signal}%${sec}`;
-          select.appendChild(opt);
-        });
-        scanStatus.textContent = `${data.networks.length} network(s) found`;
-        btnSubmit.disabled = false;
-      } else {
-        select.innerHTML = '<option value="">No networks found</option>';
-        scanStatus.textContent = 'No networks found — try rescan.';
-      }
-    } catch(e) {
-      select.innerHTML = '<option value="">Scan failed</option>';
-      scanStatus.textContent = 'Scan error: ' + e;
-    }
-
-    btnRescan.disabled = false;
-  }
-
-  window.addEventListener('load', scanNetworks);
-  </script>
-</body>
-</html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +130,7 @@ _WIFI_SETUP_HTML = """<!doctype html>
 # ---------------------------------------------------------------------------
 
 def _create_dashboard_app() -> Flask:
-    app = Flask(__name__ + "_dashboard")
+    app = Flask(__name__ + "_dashboard", template_folder=_TEMPLATES_DIR)
     app.logger.setLevel(logging.WARNING)
     app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB upload limit
 
@@ -680,8 +139,8 @@ def _create_dashboard_app() -> Flask:
     def index():
         with _state_lock:
             state = dict(_scan_state)
-        return render_template_string(
-            _DASHBOARD_HTML,
+        return render_template(
+            "dashboard.html",
             active         = "results",
             counts         = state["counts"],
             errors         = state["errors"],
@@ -712,7 +171,7 @@ def _create_dashboard_app() -> Flask:
     # ---- Calibration page ----
     @app.route("/calibrate")
     def calibrate_page():
-        return render_template_string(_CALIBRATE_HTML, active="calibrate")
+        return render_template("calibrate.html", active="calibrate")
 
     @app.route("/api/calibrate/image")
     def calib_image():
@@ -841,7 +300,7 @@ def _create_dashboard_app() -> Flask:
 # ---------------------------------------------------------------------------
 
 def _create_captive_portal_app() -> Flask:
-    app = Flask(__name__ + "_portal")
+    app = Flask(__name__ + "_portal", template_folder=_TEMPLATES_DIR)
     app.logger.setLevel(logging.WARNING)
 
     @app.route("/api/wifi/scan")
@@ -856,53 +315,17 @@ def _create_captive_portal_app() -> Flask:
 
     @app.route("/wifi-setup", methods=["GET"])
     def wifi_setup_get():
-        return render_template_string(_WIFI_SETUP_HTML, message=None, msg_color="#333")
+        return render_template("wifi_setup.html", message=None, msg_color="#333")
 
     @app.route("/wifi-setup", methods=["POST"])
     def wifi_setup_post():
         ssid     = (request.form.get("ssid")     or "").strip()
         password = (request.form.get("password") or "").strip()
         if not ssid:
-            return render_template_string(
-                _WIFI_SETUP_HTML, message="SSID is required.", msg_color="red"
-            )
+            return render_template("wifi_setup.html", message="SSID is required.", msg_color="red")
         import utils.network as net
         net.notify_wifi_credentials(ssid, password)
-        connecting_html = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connecting...</title>
-  <style>
-    body   { font-family: sans-serif; background:#f5f5f5; display:flex;
-             justify-content:center; padding-top:2rem; margin:0; }
-    .card  { background:#fff; padding:1.8rem; border-radius:8px;
-             box-shadow:0 2px 8px rgba(0,0,0,.2); width:100%;
-             max-width:360px; box-sizing:border-box; }
-    h2     { margin-top:0; color:#333; }
-    .row   { margin-bottom:0.8rem; }
-    label  { font-size:0.85rem; color:#777; display:block; }
-    .value { font-size:1rem; color:#222; word-break:break-all; }
-    .status { margin-top:1.2rem; color:#2196F3; font-weight:bold; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Connecting...</h2>
-    <div class="row">
-      <label>Network (SSID)</label>
-      <div class="value">{{ ssid }}</div>
-    </div>
-    <div class="row">
-      <label>Password</label>
-      <div class="value">{{ password }}</div>
-    </div>
-    <p class="status">&#9654; Connecting to WiFi. This may take up to 30 seconds.</p>
-  </div>
-</body>
-</html>"""
-        return render_template_string(connecting_html, ssid=ssid, password=password)
+        return render_template("wifi_connecting.html", ssid=ssid, password=password)
 
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")

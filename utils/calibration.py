@@ -73,9 +73,7 @@ def capture_white_balance_frame():
         import time
 
         cam = Picamera2()
-        cfg = cam.create_still_configuration(
-            main={"size": CAPTURE_RESOLUTION, "format": "RGB888"}
-        )
+        cfg = cam.create_still_configuration(main={"size": CAPTURE_RESOLUTION})
         cam.configure(cfg)
         cam.start()
         time.sleep(2)  # Let AWB/AE settle
@@ -95,12 +93,14 @@ def capture_white_balance_frame():
         cam.set_controls(controls)
         time.sleep(0.5)
 
-        frame = cam.capture_array()
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # picamera2 returns RGB
-        if CAMERA_ROTATE_180:
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        tmp = "/tmp/awb_frame.jpg"
+        cam.capture_file(tmp)
         cam.stop()
         cam.close()
+
+        frame = cv2.imread(tmp)   # imread gives BGR — correct colors
+        if frame is not None and CAMERA_ROTATE_180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
 
         return frame, controls
 
@@ -124,20 +124,21 @@ def capture_frame(locked_controls=None):
         import time
 
         cam = Picamera2()
-        cfg = cam.create_still_configuration(
-            main={"size": CAPTURE_RESOLUTION, "format": "RGB888"}
-        )
+        cfg = cam.create_still_configuration(main={"size": CAPTURE_RESOLUTION})
         cam.configure(cfg)
         if locked_controls:
             cam.set_controls(locked_controls)
         cam.start()
         time.sleep(1)
-        frame = cam.capture_array()
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # picamera2 returns RGB
-        if CAMERA_ROTATE_180:
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
+
+        tmp = "/tmp/capture_frame.jpg"
+        cam.capture_file(tmp)
         cam.stop()
         cam.close()
+
+        frame = cv2.imread(tmp)   # imread gives BGR — correct colors
+        if frame is not None and CAMERA_ROTATE_180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
         return frame
 
     except Exception as e:

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    nav { background:#1a1a2e; padding:0.6rem 1rem; margin-bottom:1.2rem;
+          border-radius:6px; display:flex; gap:1.2rem; }
+    nav a { color:#7cf; text-decoration:none; font-size:1rem; padding:0.2rem 0.5rem;
+            border-radius:4px; }
+    nav a.active, nav a:hover { background:#2a2a4e; color:#fff; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <a href="/" class="{% if active == 'results' %}active{% endif %}">&#128202; Results</a>
+    <a href="/calibrate" class="{% if active == 'calibrate' %}active{% endif %}">&#127919; Calibrate</a>
+  </nav>
+  {% block content %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,350 @@
+{% extends 'base.html' %}
+
+{% block head %}
+<title>Calibrate Grid</title>
+<style>
+  body          { font-family: monospace; background:#111; color:#eee;
+                  padding:1rem; margin:0; }
+  h1            { color:#7cf; margin-bottom:0.4rem; }
+  .source-btns  { display:flex; gap:1rem; margin-bottom:1rem; flex-wrap:wrap; }
+  .btn          { padding:0.6rem 1.2rem; border:none; border-radius:5px;
+                  cursor:pointer; font-size:1rem; }
+  .btn-blue     { background:#2196F3; color:#fff; }
+  .btn-green    { background:#4caf50; color:#fff; }
+  .btn-red      { background:#f44336; color:#fff; }
+  .btn:disabled { opacity:0.4; cursor:default; }
+  #upload-input { display:none; }
+  #canvas-wrap  { position:relative; display:inline-block;
+                  border:2px solid #444; border-radius:4px; }
+  #calib-canvas { display:block; cursor:crosshair;
+                  max-width:90vw; max-height:72vh; }
+  #status       { margin-top:0.8rem; color:#fa0; min-height:1.2rem; }
+  #instructions { color:#888; font-size:0.85rem; margin-bottom:0.6rem; }
+  .step-label   { color:#7cf; font-weight:bold; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Grid Calibration</h1>
+
+<div class="source-btns">
+  <button id="btn-capture" class="btn btn-blue" onclick="captureFromCamera()">
+    &#128247; Capture from Camera
+  </button>
+  <label class="btn btn-blue" style="display:inline-block">
+    &#128193; Upload Image
+    <input id="upload-input" type="file" accept="image/*" onchange="uploadImage(this)">
+  </label>
+</div>
+
+<p id="instructions">
+  <span class="step-label">Step 1:</span> Choose an image source above.<br>
+  <span class="step-label">Step 2:</span> Click the <b>4 outer corners</b> of the grid
+    in order: Top-Left &#8594; Top-Right &#8594; Bottom-Right &#8594; Bottom-Left.<br>
+  <span class="step-label">Step 3:</span> Drag grid lines to fine-tune if needed.<br>
+  <span class="step-label">Step 4:</span> Click <b>Save Calibration</b>.
+</p>
+
+<div id="canvas-wrap" style="display:none">
+  <canvas id="calib-canvas"></canvas>
+</div>
+
+<div style="margin-top:0.8rem; display:flex; gap:0.8rem; flex-wrap:wrap">
+  <button id="btn-reset" class="btn btn-red" onclick="resetCorners()" disabled>
+    &#8635; Reset Corners
+  </button>
+  <button id="btn-save" class="btn btn-green" onclick="saveCalibration()" disabled>
+    &#10003; Save Calibration
+  </button>
+</div>
+
+<div id="status"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let img        = null;
+let origW      = 0, origH = 0;
+let scaleX     = 1, scaleY = 1;
+let corners    = [];          // canvas-space [[x,y] x4]
+let gridPts    = null;        // canvas-space [15 rows][17 cols][2]
+let dragging   = null;        // {type:'h'|'v', index:n, startX, startY}
+let hover      = null;        // {type:'h'|'v', index:n} | null
+
+const canvas   = document.getElementById('calib-canvas');
+const ctx      = canvas.getContext('2d');
+const wrap     = document.getElementById('canvas-wrap');
+const statusEl = document.getElementById('status');
+const btnSave  = document.getElementById('btn-save');
+const btnReset = document.getElementById('btn-reset');
+
+// ---------------------------------------------------------------------------
+// Source selection
+// ---------------------------------------------------------------------------
+async function captureFromCamera() {
+  setStatus('Capturing from camera...');
+  try {
+    const res  = await fetch('/api/calibrate/capture', {method:'POST'});
+    const data = await res.json();
+    if (data.error) { setStatus('Error: ' + data.error); return; }
+    await loadCalibImage(data.width, data.height);
+  } catch(e) { setStatus('Capture failed: ' + e); }
+}
+
+async function uploadImage(input) {
+  if (!input.files.length) return;
+  setStatus('Uploading...');
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  try {
+    const res  = await fetch('/api/calibrate/upload', {method:'POST', body:fd});
+    const data = await res.json();
+    if (data.error) { setStatus('Error: ' + data.error); return; }
+    await loadCalibImage(data.width, data.height);
+  } catch(e) { setStatus('Upload failed: ' + e); }
+}
+
+async function loadCalibImage(w, h) {
+  origW = w; origH = h;
+  img   = new Image();
+  img.onload = () => {
+    // Size canvas to fit viewport
+    const maxW = Math.min(window.innerWidth * 0.92, 1400);
+    const maxH = Math.min(window.innerHeight * 0.70, 900);
+    scaleX = Math.min(maxW / origW, maxH / origH);
+    scaleY = scaleX;
+    canvas.width  = Math.round(origW * scaleX);
+    canvas.height = Math.round(origH * scaleY);
+    wrap.style.display = 'inline-block';
+    resetCorners();
+    setStatus('Click the 4 outer corners of the grid (TL \u2192 TR \u2192 BR \u2192 BL).');
+  };
+  img.src = '/api/calibrate/image?t=' + Date.now();
+}
+
+// ---------------------------------------------------------------------------
+// Corner clicks
+// ---------------------------------------------------------------------------
+function getEventPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  if (e.touches) {
+    return [e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top];
+  }
+  return [e.clientX - rect.left, e.clientY - rect.top];
+}
+
+canvas.addEventListener('click', async (e) => {
+  if (corners.length >= 4 || gridPts) return;
+  const [cx, cy] = getEventPos(e);
+  corners.push([cx, cy]);
+  draw();
+  if (corners.length === 4) {
+    setStatus('Computing grid overlay...');
+    await computeGrid();
+  } else {
+    const labels = ['Top-Left', 'Top-Right', 'Bottom-Right', 'Bottom-Left'];
+    setStatus('Click corner ' + (corners.length + 1) + ': ' + labels[corners.length]);
+  }
+  btnReset.disabled = false;
+});
+
+// ---------------------------------------------------------------------------
+// Grid computation
+// ---------------------------------------------------------------------------
+async function computeGrid() {
+  const origCorners = corners.map(([cx, cy]) => [cx / scaleX, cy / scaleY]);
+  try {
+    const res  = await fetch('/api/calibrate/compute-grid', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({corners: origCorners}),
+    });
+    const data = await res.json();
+    if (data.error) { setStatus('Error: ' + data.error); return; }
+    // Scale grid_pts to canvas coordinates
+    gridPts = data.grid_pts.map(row =>
+      row.map(([x, y]) => [x * scaleX, y * scaleY])
+    );
+    draw();
+    btnSave.disabled  = false;
+    setStatus('Grid computed. Drag lines to fine-tune, then click Save.');
+  } catch(e) { setStatus('Grid computation failed: ' + e); }
+}
+
+// ---------------------------------------------------------------------------
+// Draw
+// ---------------------------------------------------------------------------
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  // Corner markers
+  const cornerLabels = ['1 TL', '2 TR', '3 BR', '4 BL'];
+  corners.forEach(([cx, cy], i) => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, 9, 0, 2*Math.PI);
+    ctx.fillStyle = 'rgba(255,60,60,0.85)';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText(cornerLabels[i] || (i+1), cx + 11, cy + 4);
+  });
+
+  // Grid lines
+  if (!gridPts) return;
+  // Horizontal lines (15 rows)
+  for (let r = 0; r < gridPts.length; r++) {
+    const isHov = hover && hover.type === 'h' && hover.index === r;
+    ctx.lineWidth   = isHov ? 3 : 1;
+    ctx.strokeStyle = isHov      ? 'rgba(0,220,255,0.95)'
+                    : r === 0    ? 'rgba(255,220,0,0.75)'
+                                 : 'rgba(0,230,80,0.65)';
+    ctx.beginPath();
+    gridPts[r].forEach(([x, y], c) => c === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+    ctx.stroke();
+  }
+  // Vertical lines (17 cols)
+  for (let c = 0; c < gridPts[0].length; c++) {
+    const isHov = hover && hover.type === 'v' && hover.index === c;
+    ctx.lineWidth   = isHov ? 3 : 1;
+    ctx.strokeStyle = isHov      ? 'rgba(0,220,255,0.95)'
+                    : c === 0    ? 'rgba(255,80,80,0.6)'
+                                 : 'rgba(0,230,80,0.65)';
+    ctx.beginPath();
+    gridPts.forEach((row, r) => r === 0 ? ctx.moveTo(row[c][0], row[c][1])
+                                        : ctx.lineTo(row[c][0], row[c][1]));
+    ctx.stroke();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Line drag (Phase 2 fine-tuning)
+// ---------------------------------------------------------------------------
+function lineHitTest(mx, my) {
+  const THRESH = 10;
+  if (!gridPts) return null;
+  // Check horizontal lines
+  for (let r = 0; r < gridPts.length; r++) {
+    for (let c = 0; c < gridPts[r].length - 1; c++) {
+      const [x1, y1] = gridPts[r][c];
+      const [x2, y2] = gridPts[r][c + 1];
+      if (mx < Math.min(x1,x2) - THRESH || mx > Math.max(x1,x2) + THRESH) continue;
+      const dist = Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) /
+                   Math.hypot(y2-y1, x2-x1);
+      if (dist < THRESH) return {type:'h', index:r};
+    }
+  }
+  // Check vertical lines
+  for (let c = 0; c < gridPts[0].length; c++) {
+    for (let r = 0; r < gridPts.length - 1; r++) {
+      const [x1, y1] = gridPts[r][c];
+      const [x2, y2] = gridPts[r+1][c];
+      if (my < Math.min(y1,y2) - THRESH || my > Math.max(y1,y2) + THRESH) continue;
+      const dist = Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) /
+                   Math.hypot(y2-y1, x2-x1);
+      if (dist < THRESH) return {type:'v', index:c};
+    }
+  }
+  return null;
+}
+
+canvas.addEventListener('mousedown', e => {
+  if (!gridPts || corners.length < 4) return;
+  const [mx, my] = getEventPos(e);
+  const hit = lineHitTest(mx, my);
+  if (hit) { dragging = {...hit, startX:mx, startY:my}; e.preventDefault(); }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const [mx, my] = getEventPos(e);
+  if (dragging) {
+    const dx = mx - dragging.startX;
+    const dy = my - dragging.startY;
+    dragging.startX = mx; dragging.startY = my;
+    if (dragging.type === 'h') {
+      gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
+    } else {
+      gridPts.forEach(row => { row[dragging.index][0] += dx; });
+    }
+    draw();
+  } else if (gridPts) {
+    const hit = lineHitTest(mx, my);
+    const changed = JSON.stringify(hover) !== JSON.stringify(hit);
+    hover = hit;
+    canvas.style.cursor = hit ? 'grab' : 'crosshair';
+    if (changed) draw();
+  }
+});
+
+canvas.addEventListener('mouseup',    () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
+canvas.addEventListener('mouseleave', () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
+
+// Touch equivalents
+canvas.addEventListener('touchstart', e => {
+  if (!gridPts) return;
+  const [mx, my] = getEventPos(e);
+  const hit = lineHitTest(mx, my);
+  if (hit) { dragging = {...hit, startX:mx, startY:my}; e.preventDefault(); }
+}, {passive:false});
+
+canvas.addEventListener('touchmove', e => {
+  if (!dragging) return;
+  const [mx, my] = getEventPos(e);
+  const dx = mx - dragging.startX, dy = my - dragging.startY;
+  dragging.startX = mx; dragging.startY = my;
+  if (dragging.type === 'h') {
+    gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
+  } else {
+    gridPts.forEach(row => { row[dragging.index][0] += dx; });
+  }
+  draw(); e.preventDefault();
+}, {passive:false});
+
+canvas.addEventListener('touchend', () => { dragging = null; });
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+function resetCorners() {
+  corners  = [];
+  gridPts  = null;
+  dragging = null;
+  btnSave.disabled  = true;
+  btnReset.disabled = true;
+  draw();
+  setStatus('Click the 4 outer corners of the grid (TL \u2192 TR \u2192 BR \u2192 BL).');
+}
+
+async function saveCalibration() {
+  if (!gridPts) return;
+  btnSave.disabled = true;
+  setStatus('Saving calibration...');
+  const origCorners = corners.map(([cx, cy]) => [cx / scaleX, cy / scaleY]);
+  const origGridPts = gridPts.map(row => row.map(([x, y]) => [x / scaleX, y / scaleY]));
+  try {
+    const res  = await fetch('/api/calibrate/save', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({corners: origCorners, grid_pts: origGridPts}),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setStatus('\u2713 Calibration saved! Redirecting to Results...');
+      setTimeout(() => window.location = '/', 1800);
+    } else {
+      setStatus('Save failed: ' + (data.error || 'Unknown error'));
+      btnSave.disabled = false;
+    }
+  } catch(e) {
+    setStatus('Save request failed: ' + e);
+    btnSave.disabled = false;
+  }
+}
+
+function setStatus(msg) { statusEl.textContent = msg; }
+</script>
+{% endblock %}
