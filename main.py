@@ -18,32 +18,39 @@ no CLI flags or SSH required.
 """
 
 import sys
-import time
 import threading
-from pathlib import Path
+import time
 from datetime import datetime
+from pathlib import Path
 
 import cv2
 
+import bot.telegram_bot as telegram_bot
 import configs.config as config
 import utils.web_server as web_server
-import bot.telegram_bot as telegram_bot
-from utils.grid import GridConfig
+from utils.calibration import capture_frame, capture_white_balance_frame
 from utils.color_analysis import (
-    extract_bottle_color,
     build_reference_baseline,
     classify_sample,
+    extract_bottle_color,
+)
+from utils.grid import GridConfig
+from utils.hardware import (
+    button_init,
+    button_wait_press,
+    hardware_cleanup,
+    lcd_clear,
+    lcd_init,
+    lcd_message,
+    led_green,
+    led_off,
+    led_red,
+    led_yellow,
+    relay_init,
+    tm1637_show_all,
 )
 from utils.image_processing import detect_red_caps
-from utils.hardware import (
-    relay_init, led_yellow, led_green, led_red, led_off,
-    tm1637_show_all,
-    lcd_init, lcd_message, lcd_clear,
-    button_init, button_wait_press,
-    hardware_cleanup,
-)
-from utils.calibration import capture_white_balance_frame, capture_frame
-from utils import setup_logger, save_annotated_image
+from utils.utils import save_annotated_image, setup_logger
 
 logger = setup_logger()
 
@@ -54,6 +61,7 @@ _camera_controls: dict = {}
 # ===========================================================================
 # Analysis pipeline
 # ===========================================================================
+
 
 def analyze_frame(frame, grid_cfg):
     """
@@ -74,8 +82,8 @@ def analyze_frame(frame, grid_cfg):
     logger.info("Hough detected %d circles", len(circles))
 
     slot_assignments: dict = {}
-    seen_slots:       set  = set()
-    duplicate_slots:  set  = set()
+    seen_slots: set = set()
+    duplicate_slots: set = set()
 
     for cx, cy, radius in circles:
         slot_id, overlap = grid_cfg.find_slot_for_circle(cx, cy, radius)
@@ -94,28 +102,29 @@ def analyze_frame(frame, grid_cfg):
         else:
             level, delta_e, confident = None, None, False
 
-        slot_info      = grid_cfg.slot_data.get(slot_id, {})
+        slot_info = grid_cfg.slot_data.get(slot_id, {})
         expected_level = slot_info.get("expected_level")
-        color_error    = (
-            level is not None
-            and expected_level is not None
-            and level != expected_level
+        color_error = (
+            level is not None and expected_level is not None and level != expected_level
         )
         if color_error:
             logger.warning(
                 "Mismatch: %s expected L%s got L%s (ΔE=%.1f)",
-                slot_id, expected_level, level, delta_e or 0
+                slot_id,
+                expected_level,
+                level,
+                delta_e or 0,
             )
 
         slot_assignments[slot_id] = {
-            "cx":             cx,
-            "cy":             cy,
-            "radius":         radius,
-            "level":          level,
+            "cx": cx,
+            "cy": cy,
+            "radius": radius,
+            "level": level,
             "expected_level": expected_level,
-            "delta_e":        delta_e,
-            "confident":      confident,
-            "error":          color_error or (slot_id in duplicate_slots),
+            "delta_e": delta_e,
+            "confident": confident,
+            "error": color_error or (slot_id in duplicate_slots),
         }
 
     counts: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
@@ -137,17 +146,18 @@ def analyze_frame(frame, grid_cfg):
             errors.append(f"{slot_id} Mismatch (L{got})")
 
     return {
-        "counts":           counts,
+        "counts": counts,
         "slot_assignments": slot_assignments,
-        "duplicate_slots":  duplicate_slots,
-        "has_errors":       has_errors,
-        "errors":           errors,
+        "duplicate_slots": duplicate_slots,
+        "has_errors": has_errors,
+        "errors": errors,
     }
 
 
 # ===========================================================================
 # Scan cycle
 # ===========================================================================
+
 
 def run_scan_cycle(grid_cfg, web_ip: str = ""):
     """
@@ -160,10 +170,10 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
     lcd_message("Scanning...", 1)
     logger.info("Scan cycle started")
 
-    result_box   = [None]
-    error_box    = [None]
+    result_box = [None]
+    error_box = [None]
     log_path_box = [None]
-    ts           = datetime.now()
+    ts = datetime.now()
 
     def _do_work():
         try:
@@ -206,8 +216,8 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
         led_red()
         return False
 
-    counts   = result["counts"]
-    errors   = result["errors"]
+    counts = result["counts"]
+    errors = result["errors"]
     log_path = log_path_box[0]
 
     tm1637_show_all(counts)
@@ -238,6 +248,7 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
 # Live loop
 # ===========================================================================
 
+
 def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
     """
     Continuous button-triggered scan loop.
@@ -246,7 +257,7 @@ def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
     connectivity at the top of each iteration. If WiFi is lost, automatically
     falls back to hotspot + captive-portal mode and resumes once reconnected.
     """
-    from utils.network import run_network_setup, is_wifi_connected
+    from utils.network import is_wifi_connected, run_network_setup
 
     def _show_ready():
         lcd_clear()
@@ -303,6 +314,7 @@ def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
 # Entry point
 # ===========================================================================
 
+
 def main():
     # ---- Hardware init ----
     relay_init()
@@ -314,10 +326,14 @@ def main():
 
     def _lcd4(l1, l2, l3, l4):
         lcd_clear()
-        if l1: lcd_message(l1, 1)
-        if l2: lcd_message(l2, 2)
-        if l3: lcd_message(l3, 3)
-        if l4: lcd_message(l4, 4)
+        if l1:
+            lcd_message(l1, 1)
+        if l2:
+            lcd_message(l2, 2)
+        if l3:
+            lcd_message(l3, 3)
+        if l4:
+            lcd_message(l4, 4)
 
     logger.info("Running network setup...")
     ssid, web_ip = run_network_setup(lcd_lines=_lcd4)
@@ -366,7 +382,8 @@ def main():
         lcd_message("/calibrate", 4)
         logger.info(
             "grid_config.json not found. Open http://%s:%d/calibrate to calibrate.",
-            web_ip, config.WEB_SERVER_PORT,
+            web_ip,
+            config.WEB_SERVER_PORT,
         )
         # Wait until calibration is saved via web
         while not web_server.consume_grid_saved():
@@ -380,9 +397,10 @@ def main():
 
     # ---- Wait for first button press then enter main loop ----
     # Show WiFi status on LCD so user can confirm connectivity before scanning
-    from utils.network import get_current_ssid, get_current_ip
+    from utils.network import get_current_ip, get_current_ssid
+
     _cur_ssid = get_current_ssid() or ssid or "Unknown"
-    _cur_ip   = get_current_ip()   or web_ip or "?.?.?.?"
+    _cur_ip = get_current_ip() or web_ip or "?.?.?.?"
     lcd_clear()
     lcd_message("WiFi Status: OK", 1)
     lcd_message(f"SSID:{_cur_ssid[:10]}", 2)
