@@ -125,7 +125,15 @@ def analyze_frame(frame, grid_cfg):
             "delta_e": delta_e,
             "confident": confident,
             "error": color_error or (slot_id in duplicate_slots),
+            "error_type": "duplicate" if slot_id in duplicate_slots
+                          else ("mismatch" if color_error else None),
         }
+
+    # Fix first-occurrence entries that were later marked as duplicates
+    for dup_id in duplicate_slots:
+        if dup_id in slot_assignments:
+            slot_assignments[dup_id]["error"]      = True
+            slot_assignments[dup_id]["error_type"] = "duplicate"
 
     counts: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
     for data in slot_assignments.values():
@@ -221,7 +229,7 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
     log_path = log_path_box[0]
 
     tm1637_show_all(counts)
-    web_server.update_scan_result(counts, errors, log_path)
+    web_server.update_scan_result(counts, errors, log_path, result["slot_assignments"])
     telegram_bot.send_scan_report(counts, errors, log_path, ts)
 
     lcd_clear()

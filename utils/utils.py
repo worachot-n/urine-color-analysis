@@ -125,9 +125,15 @@ def save_annotated_image(frame, slot_assignments, grid_cfg, timestamp=None):
         cv2.circle(vis, (cx, cy), radius, color, 3)
         cv2.circle(vis, (cx, cy), 4,      color, -1)
 
-        label = slot_id
-        if level is not None:
-            label += f" L{level}"
+        error_type = data.get("error_type")   # 'mismatch' | 'duplicate' | None
+        expected   = data.get("expected_level")
+
+        if error_type == "duplicate":
+            label = f"{slot_id} | DUP!"
+        elif error_type == "mismatch" and level is not None:
+            label = f"{slot_id} | L{level} | ERR: MISMATCH (Exp L{expected})"
+        else:
+            label = f"{slot_id} | L{level}" if level is not None else slot_id
 
         # Dark background behind text for readability
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
