@@ -1,0 +1,131 @@
+# =============================================================================
+# Urine Color Analysis — Configuration
+# Edit this file to change any system setting.
+# =============================================================================
+
+# =============================================================================
+# GPIO PIN ASSIGNMENTS (BCM Numbering)
+# =============================================================================
+
+# TM1637 7-Segment Displays (5 units, one per hydration level H0-H4)
+[gpio.tm1637]
+H0 = { CLK = 4,  DIO = 17 }   # Level 0 (Well Hydrated)
+H1 = { CLK = 27, DIO = 22 }   # Level 1
+H2 = { CLK = 5,  DIO = 6  }   # Level 2
+H3 = { CLK = 13, DIO = 19 }   # Level 3
+H4 = { CLK = 26, DIO = 16 }   # Level 4 (Dehydrated)
+
+# LCD 16x4 via I2C
+[gpio.lcd]
+sda         = 2      # I2C Data  (physical pin 3)
+scl         = 3      # I2C Clock (physical pin 5)
+i2c_address = 0x27
+i2c_bus     = 1      # Bus 1 on Raspberry Pi 3/4/5
+cols        = 16
+rows        = 4
+
+# 3-Channel Relay Module (controls LED Tower — ACTIVE LOW)
+[gpio.relay]
+led_red    = 20   # Relay 1 → Red LED
+led_yellow = 21   # Relay 2 → Yellow LED
+led_green  = 12   # Relay 3 → Green LED
+active_low = true # GPIO LOW = relay energized
+
+# Push Button
+[gpio.button]
+pin         = 24   # GPIO24 / Pin 18 — active LOW, internal pull-up
+debounce_ms = 50
+
+# Power supply pins (physical pin numbers — documentation only)
+[gpio.power]
+vcc_3v3 = 1   # Physical pin 1
+vcc_5v  = 2   # Physical pin 2
+gnd     = 6   # Physical pin 6
+
+# =============================================================================
+# CAMERA SETTINGS
+# =============================================================================
+[camera]
+capture_resolution = [4608, 2592]   # Camera Module 3 maximum resolution
+awb_lock           = true           # Lock auto white-balance after warm-up
+ae_lock            = true           # Lock auto exposure after warm-up
+rotate_180         = true           # Camera is mounted upside-down
+
+# =============================================================================
+# IMAGE PROCESSING — Red Cap Detection
+# =============================================================================
+[image_processing]
+
+# HSV ranges for red (wraps around 0/180 in OpenCV)
+hsv_red_lower_1    = [0,   120,  70]
+hsv_red_upper_1    = [10,  255, 255]
+hsv_red_lower_2    = [170, 120,  70]
+hsv_red_upper_2    = [180, 255, 255]
+
+# Morphological cleanup
+morph_kernel_size    = 5
+gaussian_blur_kernel = [5, 5]
+
+# Hough circle parameters
+hough_dp         = 1.2
+hough_min_dist   = 50
+hough_param1     = 100
+hough_param2     = 30
+hough_min_radius = 20
+hough_max_radius = 60
+
+# =============================================================================
+# COLOR ANALYSIS
+# =============================================================================
+[color_analysis]
+inner_crop_px    = 15     # Pixels to shrink from each side of bottle crop
+delta_e_threshold = 15.0  # Max Delta E for a confident classification
+color_levels     = 5      # Number of distinct color levels (L0-L4)
+refs_per_level   = 3      # Reference bottles per level in reference row
+
+# =============================================================================
+# GRID CONFIGURATION
+# =============================================================================
+[grid]
+config_file    = "grid_config.json"
+cols           = 16               # 16 columns of lines (col 0 = ZZ dead zone)
+rows           = 14               # 14 rows of lines (row 0 = reference, 1-12 = samples)
+groups         = ["A1", "A2", "A3", "A4"]
+slots_per_group = 9               # Slots 1-9 per group
+levels         = [0, 1, 2, 3, 4]
+
+# =============================================================================
+# NETWORK / HOTSPOT
+# =============================================================================
+[network]
+hotspot_ssid         = "signal"
+hotspot_password     = "angad@1234"
+hotspot_ip           = "10.42.0.1"   # nmcli hotspot default on Pi OS / NetworkManager
+wifi_connect_timeout = 30            # Seconds to wait for WiFi association
+
+# =============================================================================
+# WEB SERVER
+# =============================================================================
+[web_server]
+port               = 5000
+captive_portal_port = 8080   # Port 80 reserved; use 8080 for WiFi setup portal
+
+# =============================================================================
+# TELEGRAM
+# =============================================================================
+[telegram]
+token   = ""
+chat_id = ""
+
+# =============================================================================
+# SYSTEM SAFETY
+# =============================================================================
+[system]
+watchdog_timeout_sec = 10   # Max seconds per processing cycle before timeout
+
+# =============================================================================
+# LOGGING / DEBUG
+# =============================================================================
+[debug]
+enabled = true
+log_dir = "logs/"   # Every analysis saves an annotated image here

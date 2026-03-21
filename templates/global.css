@@ -1,0 +1,32 @@
+/* =============================================================================
+   Global CSS Variables — Urine Color Analysis
+   Import this file in any template: <link rel="stylesheet" href="/static/global.css">
+   ============================================================================= */
+
+:root {
+  /* ---------------------------------------------------------------------------
+     Brand — Primary Colors
+     --------------------------------------------------------------------------- */
+  --color-dark:   #122017;   /* RGB 18 32 23  — dark green background */
+  --color-accent: #FCBA54;   /* RGB 252 186 84 — golden yellow accent  */
+  --color-white:  #FFFFFF;   /* RGB 255 255 255 — white                */
+
+  /* ---------------------------------------------------------------------------
+     Brand — Secondary Colors
+     --------------------------------------------------------------------------- */
+  --color-green-1: #10402E;  /* RGB 16 64 46   */
+  --color-green-2: #1B593C;  /* RGB 27 89 60   */
+  --color-green-3: #4A8C54;  /* RGB 74 140 84  */
+  --color-green-4: #499D71;  /* RGB 70 157 112 */
+  --color-yellow:  #FCE375;  /* RGB 253 227 117 */
+  --color-red:     #F05152;  /* RGB 255 77 77  */
+
+  /* ---------------------------------------------------------------------------
+     Urine Color Levels (L0 = well hydrated → L4 = dehydrated)
+     --------------------------------------------------------------------------- */
+  --color-level-0: #C1B7A9;  /* Level 0 — pale / well hydrated */
+  --color-level-1: #A39371;  /* Level 1                        */
+  --color-level-2: #978365;  /* Level 2                        */
+  --color-level-3: #755429;  /* Level 3                        */
+  --color-level-4: #50311B;  /* Level 4 — dark / dehydrated    */
+}
