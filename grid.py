@@ -182,6 +182,33 @@ def _circle_polygon_overlap(cx, cy, radius, polygon_coords):
 
 
 # ---------------------------------------------------------------------------
+# Grid layout table
+# ---------------------------------------------------------------------------
+
+def load_grid_layout(txt_path=None):
+    """
+    Load main-grid cell names from a CSV-like text file (e.g. table/a.txt).
+
+    File format:
+      Line 0  — header row (skipped)
+      Lines 1+ — one row per grid row; comma-separated cell names
+                 Cell 0 is always "ZZ" (dead zone, kept for column alignment)
+
+    Returns:
+        list[list[str]] — rows top-to-bottom, each row is a list of cell names
+                          (col 0 = "ZZ").
+    """
+    if txt_path is None:
+        txt_path = Path(__file__).parent / "table" / "a.txt"
+    rows = []
+    for line in Path(txt_path).read_text().splitlines()[1:]:  # skip header
+        line = line.strip()
+        if line:
+            rows.append([c.strip() for c in line.split(',')])
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Slot ID helpers
 # ---------------------------------------------------------------------------
 

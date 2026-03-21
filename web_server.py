@@ -20,6 +20,7 @@ Public API (called from main.py):
     start_web_server(port)
     update_scan_result(counts, errors, image_path)
     notify_grid_saved()     — signal that grid_config.json was rewritten
+    consume_grid_reload()   — True if user pressed Reload Grid on dashboard
     start_captive_portal(ip)
     stop_captive_portal()
 """
@@ -89,6 +90,20 @@ def consume_grid_saved() -> bool:
     """
     if _grid_saved_event.is_set():
         _grid_saved_event.clear()
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Grid-reload event (reload existing grid_config.json without recalibrating)
+# ---------------------------------------------------------------------------
+_grid_reload_event = threading.Event()
+
+
+def consume_grid_reload() -> bool:
+    """Called by main.py. Returns True if user requested a grid reload."""
+    if _grid_reload_event.is_set():
+        _grid_reload_event.clear()
         return True
     return False
 
@@ -164,6 +179,26 @@ _DASHBOARD_HTML = """<!doctype html>
   {% if image_path %}
     <img src="/image/latest" alt="Latest scan">
   {% endif %}
+
+  <div style="margin-top:1.2rem; display:flex; gap:0.8rem; flex-wrap:wrap;">
+    <button onclick="reloadGrid()" style="padding:0.6rem 1.2rem; background:#ff9800; color:#000; border:none; border-radius:5px; cursor:pointer; font-size:1rem;">
+      &#8635; Reload Grid
+    </button>
+    <a href="/calibrate" style="padding:0.6rem 1.2rem; background:#2196F3; color:#fff; border-radius:5px; text-decoration:none; font-size:1rem;">
+      &#127919; Recalibrate
+    </a>
+  </div>
+  <div id="reload-msg" style="margin-top:0.5rem; color:#4f4; display:none;">Grid reload triggered — system will reload on next cycle.</div>
+
+  <script>
+    async function reloadGrid() {
+      const res = await fetch('/api/grid/reload', {method: 'POST'});
+      if (res.ok) {
+        document.getElementById('reload-msg').style.display = 'block';
+        setTimeout(() => document.getElementById('reload-msg').style.display = 'none', 5000);
+      }
+    }
+  </script>
 </body>
 </html>"""
 
@@ -666,6 +701,13 @@ def _create_dashboard_app() -> Flask:
         if path and Path(path).is_file():
             return send_file(path, mimetype="image/jpeg")
         return "No image available", 404
+
+    # ---- Grid reload (no recalibration) ----
+    @app.route("/api/grid/reload", methods=["POST"])
+    def grid_reload():
+        _grid_reload_event.set()
+        logger.info("Grid reload requested via web")
+        return jsonify({"status": "reload triggered"})
 
     # ---- Calibration page ----
     @app.route("/calibrate")

@@ -36,10 +36,11 @@ from color_analysis import (
 )
 from image_processing import detect_red_caps
 from hardware import (
-    relay_init, led_yellow, led_green, led_red, led_off, relay_cleanup,
+    relay_init, led_yellow, led_green, led_red, led_off,
     tm1637_show_all,
     lcd_init, lcd_message, lcd_clear,
-    button_init, button_wait_press, button_cleanup,
+    button_init, button_wait_press,
+    hardware_cleanup,
 )
 from calibration import capture_white_balance_frame, capture_frame
 from utils import setup_logger, save_annotated_image
@@ -275,11 +276,11 @@ def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
                     logger.error("Network setup failed: %s", e)
                 _show_ready()
 
-            # --- Grid reload after web calibration save ---
-            if web_server.consume_grid_saved():
+            # --- Grid reload (web calibration save OR dashboard Reload button) ---
+            if web_server.consume_grid_saved() or web_server.consume_grid_reload():
                 try:
                     grid_cfg = GridConfig()
-                    logger.info("GridConfig reloaded after web calibration save")
+                    logger.info("GridConfig reloaded")
                     lcd_clear()
                     lcd_message("Grid reloaded!", 1)
                     lcd_message("Press button", 2)
@@ -296,8 +297,6 @@ def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
 
     except KeyboardInterrupt:
         logger.info("Live mode stopped")
-    finally:
-        button_cleanup()
 
 
 # ===========================================================================
@@ -394,9 +393,7 @@ def main():
     try:
         run_live_mode(grid_cfg, web_ip=web_ip, lcd_lines=_lcd4)
     finally:
-        relay_cleanup()
-        button_cleanup()
-        lcd_clear()
+        hardware_cleanup()
 
 
 if __name__ == "__main__":

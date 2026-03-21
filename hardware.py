@@ -29,6 +29,10 @@ Public API:
     button_init()               — configure input with pull-up
     button_wait_press()         — block until button is pressed (active LOW)
     button_cleanup()            — release GPIO pin
+
+  Full shutdown:
+    lcd_shutdown()              — clear LCD, backlight off, close I2C bus
+    hardware_cleanup()          — led_off + lcd_shutdown + GPIO.cleanup (all pins)
 """
 
 import time
@@ -378,10 +382,36 @@ def button_wait_press():
 
 
 def button_cleanup():
-    """Release the button GPIO pin."""
-    if not _GPIO_AVAILABLE:
+    """Release the button GPIO pin (no-op — use hardware_cleanup() for full shutdown)."""
+    pass
+
+
+# ===========================================================================
+# Full hardware shutdown
+# ===========================================================================
+
+def lcd_shutdown():
+    """Clear LCD, turn off backlight, and close the I2C bus."""
+    global _lcd_bus
+    if _lcd_bus is None:
         return
     try:
-        GPIO.cleanup([PIN_BUTTON])
+        lcd_clear()
+        _lcd_bus.write_byte(LCD_I2C_ADDRESS, 0x00)  # all bits low → backlight off
+        _lcd_bus.close()
     except Exception as e:
-        print(f"button_cleanup error: {e}")
+        print(f"lcd_shutdown error: {e}")
+    finally:
+        _lcd_bus = None
+
+
+def hardware_cleanup():
+    """Full hardware shutdown: LEDs off, LCD cleared, all GPIO released."""
+    led_off()
+    lcd_shutdown()
+    if _GPIO_AVAILABLE:
+        try:
+            GPIO.cleanup()
+        except Exception as e:
+            print(f"GPIO.cleanup error: {e}")
+    print("[HW] Cleaned up.")

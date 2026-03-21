@@ -210,31 +210,22 @@ def compute_slot_polygons_from_grid(grid_pts):
             "samples": 3,
         }
 
-    # ---- Main grid (cell rows 1-12) — col 0 = ZZ, skip ----
-    group_names = ["A1", "A2", "A3", "A4"]
-    slot_data   = {}
+    # ---- Main grid (cell rows 1-12) — cell names from table/a.txt ----
+    from grid import load_grid_layout, parse_slot_id
+    layout    = load_grid_layout()   # 12 rows × 16 cols (col 0 = ZZ)
+    slot_data = {}
 
-    for group_idx, group in enumerate(group_names):
-        group_num       = group_idx + 1
-        group_row_start = 1 + group_idx * 3
-
-        for within_row in range(3):
-            grid_row        = group_row_start + within_row
-            slot_row_offset = within_row * 3
-
-            for level_idx in range(5):
-                col_start = 1 + level_idx * 3
-
-                for col_offset in range(3):
-                    grid_col = col_start + col_offset
-                    slot_num = slot_row_offset + col_offset + 1
-                    slot_id  = f"A{group_num}{slot_num}_{level_idx}"
-
-                    slot_data[slot_id] = {
-                        "coords":         cell_quad(grid_col, grid_row),
-                        "expected_level": level_idx,
-                        "group":          group,
-                    }
+    for row_idx, row_cells in enumerate(layout):
+        grid_row = row_idx + 1          # table row 0 → grid row 1
+        for col_idx, slot_id in enumerate(row_cells):
+            if not slot_id or slot_id == "ZZ":
+                continue
+            parsed = parse_slot_id(slot_id)
+            slot_data[slot_id] = {
+                "coords":         cell_quad(col_idx, grid_row),
+                "expected_level": parsed["expected_level"],
+                "group":          parsed["group"],
+            }
 
     return reference_slots, slot_data
 
