@@ -22,7 +22,7 @@ import threading
 import time
 import logging
 
-from config import (
+from configs.config import (
     HOTSPOT_SSID,
     HOTSPOT_PASSWORD,
     HOTSPOT_IP,
@@ -330,7 +330,7 @@ def run_network_setup(lcd_lines=None) -> tuple[str | None, str | None]:
           f"  (Connect to hotspot '{HOTSPOT_SSID}' first, password: {HOTSPOT_PASSWORD})\n")
 
     # Import here to avoid circular dependency (web_server imports network)
-    from web_server import start_captive_portal, stop_captive_portal
+    from utils.web_server import start_captive_portal, stop_captive_portal
     start_captive_portal(ap_ip)
 
     logger.info("Waiting for WiFi credentials via captive portal...")

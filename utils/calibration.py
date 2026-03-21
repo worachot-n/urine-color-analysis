@@ -34,7 +34,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-from config import (
+from configs.config import (
     GRID_CONFIG_FILE,
     CAPTURE_RESOLUTION,
     AWB_LOCK,
@@ -74,7 +74,7 @@ def capture_white_balance_frame():
 
         cam = Picamera2()
         cfg = cam.create_still_configuration(
-            main={"size": CAPTURE_RESOLUTION, "format": "BGR888"}
+            main={"size": CAPTURE_RESOLUTION, "format": "RGB888"}
         )
         cam.configure(cfg)
         cam.start()
@@ -96,6 +96,7 @@ def capture_white_balance_frame():
         time.sleep(0.5)
 
         frame = cam.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # picamera2 returns RGB
         if CAMERA_ROTATE_180:
             frame = cv2.rotate(frame, cv2.ROTATE_180)
         cam.stop()
@@ -124,7 +125,7 @@ def capture_frame(locked_controls=None):
 
         cam = Picamera2()
         cfg = cam.create_still_configuration(
-            main={"size": CAPTURE_RESOLUTION, "format": "BGR888"}
+            main={"size": CAPTURE_RESOLUTION, "format": "RGB888"}
         )
         cam.configure(cfg)
         if locked_controls:
@@ -132,6 +133,7 @@ def capture_frame(locked_controls=None):
         cam.start()
         time.sleep(1)
         frame = cam.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # picamera2 returns RGB
         if CAMERA_ROTATE_180:
             frame = cv2.rotate(frame, cv2.ROTATE_180)
         cam.stop()
@@ -211,7 +213,7 @@ def compute_slot_polygons_from_grid(grid_pts):
         }
 
     # ---- Main grid (cell rows 1-12) — cell names from table/a.txt ----
-    from grid import load_grid_layout, parse_slot_id
+    from utils.grid import load_grid_layout, parse_slot_id
     layout    = load_grid_layout()   # 12 rows × 16 cols (col 0 = ZZ)
     slot_data = {}
 

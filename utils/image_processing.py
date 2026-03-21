@@ -14,7 +14,7 @@ the majority-rule polygon overlap test.
 import cv2
 import numpy as np
 
-from config import (
+from configs.config import (
     HSV_RED_LOWER_1, HSV_RED_UPPER_1,
     HSV_RED_LOWER_2, HSV_RED_UPPER_2,
     MORPH_KERNEL_SIZE, GAUSSIAN_BLUR_KERNEL,

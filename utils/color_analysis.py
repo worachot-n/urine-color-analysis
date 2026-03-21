@@ -17,7 +17,7 @@ Public API:
 import cv2
 import numpy as np
 
-from config import INNER_CROP_PX, DELTA_E_THRESHOLD
+from configs.config import INNER_CROP_PX, DELTA_E_THRESHOLD
 
 
 # ---------------------------------------------------------------------------

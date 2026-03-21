@@ -25,24 +25,24 @@ from datetime import datetime
 
 import cv2
 
-import config
-import web_server
-import telegram_bot
-from grid import GridConfig
-from color_analysis import (
+import configs.config as config
+import utils.web_server as web_server
+import bot.telegram_bot as telegram_bot
+from utils.grid import GridConfig
+from utils.color_analysis import (
     extract_bottle_color,
     build_reference_baseline,
     classify_sample,
 )
-from image_processing import detect_red_caps
-from hardware import (
+from utils.image_processing import detect_red_caps
+from utils.hardware import (
     relay_init, led_yellow, led_green, led_red, led_off,
     tm1637_show_all,
     lcd_init, lcd_message, lcd_clear,
     button_init, button_wait_press,
     hardware_cleanup,
 )
-from calibration import capture_white_balance_frame, capture_frame
+from utils.calibration import capture_white_balance_frame, capture_frame
 from utils import setup_logger, save_annotated_image
 
 logger = setup_logger()
@@ -246,7 +246,7 @@ def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
     connectivity at the top of each iteration. If WiFi is lost, automatically
     falls back to hotspot + captive-portal mode and resumes once reconnected.
     """
-    from network import run_network_setup, is_wifi_connected
+    from utils.network import run_network_setup, is_wifi_connected
 
     def _show_ready():
         lcd_clear()
@@ -310,7 +310,7 @@ def main():
     button_init()
 
     # ---- Network setup ----
-    from network import run_network_setup
+    from utils.network import run_network_setup
 
     def _lcd4(l1, l2, l3, l4):
         lcd_clear()
@@ -380,7 +380,7 @@ def main():
 
     # ---- Wait for first button press then enter main loop ----
     # Show WiFi status on LCD so user can confirm connectivity before scanning
-    from network import get_current_ssid, get_current_ip
+    from utils.network import get_current_ssid, get_current_ip
     _cur_ssid = get_current_ssid() or ssid or "Unknown"
     _cur_ip   = get_current_ip()   or web_ip or "?.?.?.?"
     lcd_clear()

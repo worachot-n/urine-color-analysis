@@ -41,7 +41,7 @@ from flask import (
     request, send_file, redirect,
 )
 
-import config
+import configs.config as config
 
 logger = logging.getLogger(__name__)
 
@@ -726,7 +726,7 @@ def _create_dashboard_app() -> Flask:
     def calib_capture():
         """Capture a frame from the Pi camera and save it as the calibration image."""
         try:
-            from calibration import capture_frame
+            from utils.calibration import capture_frame
             _LOGS_DIR.mkdir(parents=True, exist_ok=True)
             frame = capture_frame()
             if frame is None:
@@ -780,7 +780,7 @@ def _create_dashboard_app() -> Flask:
         if len(corners) != 4:
             return jsonify({"error": "Need exactly 4 corners"}), 400
         try:
-            from calibration import _corners_to_grid_pts
+            from utils.calibration import _corners_to_grid_pts
             grid_pts = _corners_to_grid_pts(corners)  # shape (15, 17, 2)
             return jsonify({"grid_pts": grid_pts.tolist()})
         except Exception as e:
@@ -803,7 +803,7 @@ def _create_dashboard_app() -> Flask:
             return jsonify({"error": "grid_pts missing"}), 400
 
         try:
-            from calibration import compute_slot_polygons_from_grid
+            from utils.calibration import compute_slot_polygons_from_grid
             grid_np = np.array(grid_pts, dtype=np.float64)  # (15, 17, 2)
             reference_slots, slot_data = compute_slot_polygons_from_grid(grid_np)
 
@@ -847,7 +847,7 @@ def _create_captive_portal_app() -> Flask:
     @app.route("/api/wifi/scan")
     def wifi_scan():
         try:
-            import network as net
+            import utils.network as net
             networks = net.scan_wifi_networks()
             return jsonify({"networks": networks, "error": None})
         except Exception as e:
@@ -866,7 +866,7 @@ def _create_captive_portal_app() -> Flask:
             return render_template_string(
                 _WIFI_SETUP_HTML, message="SSID is required.", msg_color="red"
             )
-        import network as net
+        import utils.network as net
         net.notify_wifi_credentials(ssid, password)
         connecting_html = """<!doctype html>
 <html lang="en">

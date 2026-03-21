@@ -23,7 +23,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-import config
+import configs.config as config
 
 logger = logging.getLogger(__name__)
 

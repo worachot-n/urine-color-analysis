@@ -37,7 +37,7 @@ Public API:
 
 import time
 
-from config import (
+from configs.config import (
     RELAY_LED_RED, RELAY_LED_YELLOW, RELAY_LED_GREEN,
     TM1637_DISPLAYS,
     LCD_I2C_ADDRESS, LCD_I2C_BUS, LCD_COLS,

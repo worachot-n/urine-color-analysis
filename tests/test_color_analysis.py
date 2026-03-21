@@ -11,7 +11,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from color_analysis import (
+from utils.color_analysis import (
     delta_e_cie76,
     extract_bottle_color,
     build_reference_baseline,

@@ -11,7 +11,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from image_processing import create_red_mask, detect_red_caps
+from utils.image_processing import create_red_mask, detect_red_caps
 
 
 # ---------------------------------------------------------------------------

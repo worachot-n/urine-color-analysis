@@ -11,8 +11,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from grid import parse_slot_id, _circle_polygon_overlap
-from calibration import compute_slot_polygons
+from utils.grid import parse_slot_id, _circle_polygon_overlap
+from utils.calibration import compute_slot_polygons
 
 
 # ---------------------------------------------------------------------------

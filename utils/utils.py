@@ -18,7 +18,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-from config import LOG_DIR, DEBUG_MODE
+from configs.config import LOG_DIR, DEBUG_MODE
 
 
 # ---------------------------------------------------------------------------
