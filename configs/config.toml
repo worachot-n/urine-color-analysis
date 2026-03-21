@@ -26,8 +26,8 @@ rows        = 4
 
 # 3-Channel Relay Module (controls LED Tower — ACTIVE LOW)
 [gpio.relay]
-led_red    = 20   # Relay 1 → Red LED
-led_yellow = 21   # Relay 2 → Yellow LED
+led_red    = 21   # Relay 2 → Red LED
+led_yellow = 20   # Relay 1 → Yellow LED
 led_green  = 12   # Relay 3 → Green LED
 active_low = true # GPIO LOW = relay energized
 
