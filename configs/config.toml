@@ -128,4 +128,6 @@ watchdog_timeout_sec = 10   # Max seconds per processing cycle before timeout
 # =============================================================================
 [debug]
 enabled = true
-log_dir = "logs/"   # Every analysis saves an annotated image here
+log_dir = "logs/"          # Text logs directory
+img_dir = "logs/img/"      # Annotated scan images
+db_path = "logs/scan_results.db"  # SQLite database

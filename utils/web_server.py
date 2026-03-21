@@ -27,6 +27,7 @@ Public API (called from main.py):
 
 import json
 import os
+import sqlite3
 import threading
 import logging
 from datetime import datetime
@@ -42,6 +43,7 @@ from flask import (
 )
 
 import configs.config as config
+from utils import db as _db
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +68,13 @@ _state_lock = threading.Lock()
 
 
 def update_scan_result(counts: dict, errors: list[str], image_path: str | None) -> None:
-    """Called by main.py after every scan to refresh dashboard data."""
+    """Called by main.py after every scan to refresh dashboard data and persist to DB."""
     with _state_lock:
         _scan_state["counts"]         = dict(counts)
         _scan_state["errors"]         = list(errors)
         _scan_state["last_scan_time"] = datetime.now().isoformat(timespec="seconds")
         _scan_state["image_path"]     = str(image_path) if image_path else None
+    _db.save_scan_result(counts, errors, image_path)
 
 
 # ---------------------------------------------------------------------------
@@ -137,15 +140,21 @@ def _create_dashboard_app() -> Flask:
     # ---- Results page ----
     @app.route("/")
     def index():
-        with _state_lock:
-            state = dict(_scan_state)
+        result = _db.get_latest_result() or {
+            "counts":     {i: 0 for i in range(5)},
+            "errors":     [],
+            "timestamp":  None,
+            "image_path": None,
+            "id":         None,
+        }
         return render_template(
             "dashboard.html",
             active         = "results",
-            counts         = state["counts"],
-            errors         = state["errors"],
-            last_scan_time = state["last_scan_time"],
-            image_path     = state["image_path"],
+            counts         = result["counts"],
+            errors         = result["errors"],
+            last_scan_time = result.get("timestamp"),
+            scan_id        = result.get("id"),
+            image_path     = result.get("image_path"),
         )
 
     @app.route("/api/status")
@@ -160,6 +169,23 @@ def _create_dashboard_app() -> Flask:
         if path and Path(path).is_file():
             return send_file(path, mimetype="image/jpeg")
         return "No image available", 404
+
+    @app.route("/image/<int:scan_id>")
+    def image_by_id(scan_id):
+        """Serve the annotated image for a specific scan by DB row id."""
+        with sqlite3.connect(Path(config.DB_PATH)) as con:
+            row = con.execute(
+                "SELECT image_path FROM scan_results WHERE id=?", (scan_id,)
+            ).fetchone()
+        if row and row[0] and Path(row[0]).is_file():
+            return send_file(row[0], mimetype="image/jpeg")
+        return "Image not found", 404
+
+    @app.route("/api/history")
+    def api_history():
+        """Return recent scan results as JSON. ?limit=N (default 20)."""
+        limit = min(int(request.args.get("limit", 20)), 200)
+        return jsonify(_db.get_recent_results(limit))
 
     # ---- Grid reload (no recalibration) ----
     @app.route("/api/grid/reload", methods=["POST"])
@@ -349,6 +375,7 @@ def start_web_server(port: int = config.WEB_SERVER_PORT) -> None:
     """Start the dashboard + calibration Flask app in a background daemon thread."""
     global _dashboard_server, _dashboard_thread
 
+    _db.init_db()
     app = _create_dashboard_app()
     _dashboard_server = make_server("0.0.0.0", port, app)
     _dashboard_thread = threading.Thread(

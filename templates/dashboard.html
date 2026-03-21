@@ -1,59 +1,233 @@
 {% extends 'base.html' %}
 
 {% block head %}
-<title>Urine Color Analyzer</title>
-<meta http-equiv="refresh" content="10">
+<title>ผลการตรวจ — Urine Color Analyzer</title>
+<meta http-equiv="refresh" content="60">
 <style>
-  body         { font-family: monospace; background:#111; color:#eee; padding:1rem; }
-  h1           { color:#7cf; margin-bottom:0.4rem; }
-  .ts          { color:#888; font-size:0.85rem; margin-bottom:1rem; }
-  table        { border-collapse:collapse; margin-bottom:1rem; }
-  th, td       { border:1px solid #444; padding:0.4rem 0.8rem; text-align:center; }
-  th           { background:#222; }
-  .ok          { color:#4f4; }
-  .errors-list { color:#fa0; }
-  img          { max-width:100%; border:1px solid #444; margin-top:0.5rem; }
-  .action-btns { display:flex; gap:0.8rem; flex-wrap:wrap; margin-top:1.2rem; }
-  .btn-orange  { padding:0.6rem 1.2rem; background:#ff9800; color:#000; border:none;
-                 border-radius:5px; cursor:pointer; font-size:1rem; }
-  .btn-blue    { padding:0.6rem 1.2rem; background:#2196F3; color:#fff;
-                 border-radius:5px; text-decoration:none; font-size:1rem; }
-  #reload-msg  { margin-top:0.5rem; color:#4f4; display:none; }
+  /* ── Latest result ── */
+  .result-wrap {
+    display: flex;
+    gap: 2rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    margin-bottom: 2rem;
+  }
+
+  .result-image {
+    flex: 0 0 auto;
+    max-width: 55%;
+  }
+  .result-image img {
+    width: 100%;
+    border: 2px solid var(--color-green-2);
+    border-radius: 6px;
+    display: block;
+  }
+
+  .result-info {
+    flex: 1 1 260px;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .result-ts {
+    color: var(--color-green-4);
+    font-size: 0.88rem;
+  }
+
+  /* Count rows */
+  .count-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+  .count-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+  }
+  .count-num {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--color-white);
+    min-width: 2.5rem;
+    text-align: right;
+  }
+  .count-unit {
+    color: var(--color-green-4);
+    font-size: 0.9rem;
+  }
+
+  /* Status badges */
+  .status-ok  { color: var(--color-green-3); font-weight: bold; }
+  .status-err { color: var(--color-red);     font-weight: bold; }
+  .errors-list { font-size: 0.88rem; color: var(--color-yellow); margin-top: 0.3rem; }
+
+  /* Action buttons */
+  .action-btns {
+    display: flex;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+  }
+  .btn {
+    padding: 0.55rem 1.1rem;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-decoration: none;
+    display: inline-block;
+  }
+  .btn-accent { background: var(--color-accent); color: #000; }
+  .btn-green  { background: var(--color-green-3); color: #fff; }
+  .reload-msg { margin-top: 0.4rem; color: var(--color-green-3);
+                font-size: 0.85rem; display: none; }
+
+  /* ── Visual log ── */
+  .section-title {
+    font-size: 1.1rem;
+    font-weight: bold;
+    color: var(--color-accent);
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--color-green-2);
+    padding-bottom: 0.4rem;
+  }
+
+  #log-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+  }
+
+  .log-card {
+    background: var(--color-green-1);
+    border: 1px solid var(--color-green-2);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .log-card.has-error {
+    border-color: var(--color-red);
+  }
+  .log-card img {
+    width: 100%;
+    display: block;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+  }
+  .log-meta {
+    padding: 0.5rem 0.7rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .log-time {
+    font-size: 0.78rem;
+    color: var(--color-green-4);
+  }
+  .log-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .log-ok  { font-size: 0.8rem; color: var(--color-green-3); }
+  .log-errors { font-size: 0.78rem; color: var(--color-red); }
 </style>
 {% endblock %}
 
 {% block content %}
-<h1>Urine Color Analyzer</h1>
-<div class="ts">Last scan: {{ last_scan_time or "No scan yet" }}</div>
 
-<table>
-  <tr>{% for lvl in range(5) %}<th>L{{ lvl }}</th>{% endfor %}</tr>
-  <tr>{% for lvl in range(5) %}<td>{{ counts[lvl] }}</td>{% endfor %}</tr>
-</table>
+{# ── Latest scan result ── #}
+<div class="result-wrap">
 
-{% if errors %}
-  <p class="errors-list">Errors: {{ errors | join(", ") }}</p>
-{% else %}
-  <p class="ok">&#10003; No errors</p>
-{% endif %}
+  {% if image_path %}
+  <div class="result-image">
+    <img src="/image/{{ scan_id }}" alt="Latest scan">
+  </div>
+  {% endif %}
 
-{% if image_path %}
-  <img src="/image/latest" alt="Latest scan">
-{% endif %}
+  <div class="result-info">
+    <div class="result-ts">อัพเดตล่าสุด: {{ last_scan_time or "ยังไม่มีข้อมูล" }}</div>
 
-<div class="action-btns">
-  <button class="btn-orange" onclick="reloadGrid()">&#8635; Reload Grid</button>
-  <a href="/calibrate" class="btn-blue">&#127919; Recalibrate</a>
+    <div class="count-list">
+      {% for lvl in range(5) %}
+      <div class="count-row">
+        <span class="level-badge lvl-{{ lvl }}">สี {{ lvl }}</span>
+        <span class="count-num">{{ counts[lvl] }}</span>
+        <span class="count-unit">นาย</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if errors %}
+      <p class="status-err">&#9888; พบข้อผิดพลาด</p>
+      <ul class="errors-list">
+        {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+      </ul>
+    {% else %}
+      <p class="status-ok">&#10003; ปกติ</p>
+    {% endif %}
+
+    <div class="action-btns">
+      <button class="btn btn-accent" onclick="reloadGrid()">&#8635; โหลดกริดใหม่</button>
+      <a href="/calibrate" class="btn btn-green">&#127919; ปรับเทียบ</a>
+    </div>
+    <div class="reload-msg" id="reload-msg">กำลังโหลดกริดใหม่...</div>
+  </div>
+
 </div>
-<div id="reload-msg">Grid reload triggered — system will reload on next cycle.</div>
+
+{# ── Visual log ── #}
+<div class="section-title">ประวัติการสแกน</div>
+<div id="log-grid"><p style="color:var(--color-green-4)">กำลังโหลด...</p></div>
 
 <script>
-  async function reloadGrid() {
-    const res = await fetch('/api/grid/reload', {method: 'POST'});
-    if (res.ok) {
-      document.getElementById('reload-msg').style.display = 'block';
-      setTimeout(() => document.getElementById('reload-msg').style.display = 'none', 5000);
-    }
+async function reloadGrid() {
+  const res = await fetch('/api/grid/reload', {method: 'POST'});
+  if (res.ok) {
+    const msg = document.getElementById('reload-msg');
+    msg.style.display = 'block';
+    setTimeout(() => msg.style.display = 'none', 5000);
   }
+}
+
+async function loadHistory() {
+  try {
+    const res  = await fetch('/api/history?limit=20');
+    const rows = await res.json();
+    const grid = document.getElementById('log-grid');
+
+    if (!rows.length) {
+      grid.innerHTML = '<p style="color:var(--color-green-4)">ยังไม่มีประวัติการสแกน</p>';
+      return;
+    }
+
+    grid.innerHTML = rows.map(r => {
+      const counts = Object.entries(r.counts)
+        .map(([l, c]) => `<span class="level-badge lvl-${l}">สี${l}: ${c}</span>`)
+        .join('');
+      const status = r.errors.length
+        ? `<span class="log-errors">&#9888; ${r.errors.join(', ')}</span>`
+        : `<span class="log-ok">&#10003; ปกติ</span>`;
+      return `
+        <div class="log-card ${r.errors.length ? 'has-error' : ''}">
+          <img src="/image/${r.id}" alt="scan ${r.id}"
+               onerror="this.style.display='none'">
+          <div class="log-meta">
+            <span class="log-time">${r.timestamp || '-'}</span>
+            <div class="log-counts">${counts}</div>
+            ${status}
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('log-grid').innerHTML =
+      '<p style="color:var(--color-red)">โหลดประวัติล้มเหลว</p>';
+  }
+}
+
+window.addEventListener('load', loadHistory);
 </script>
 {% endblock %}
