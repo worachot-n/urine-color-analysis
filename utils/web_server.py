@@ -197,7 +197,15 @@ def _create_dashboard_app() -> Flask:
     # ---- Calibration page ----
     @app.route("/calibrate")
     def calibrate_page():
-        return render_template("calibrate.html", active="calibrate")
+        last_calib = None
+        try:
+            cfg_path = Path(config.GRID_CONFIG_FILE)
+            if cfg_path.is_file():
+                last_calib = json.loads(cfg_path.read_text()) \
+                    .get("system_metadata", {}).get("calibration_date")
+        except Exception:
+            pass
+        return render_template("calibrate.html", active="calibrate", last_calib=last_calib)
 
     @app.route("/api/calibrate/image")
     def calib_image():
@@ -270,6 +278,25 @@ def _create_dashboard_app() -> Flask:
             return jsonify({"grid_pts": grid_pts.tolist()})
         except Exception as e:
             logger.error("calib_compute_grid: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/calibrate/layout")
+    def calib_layout():
+        """Return the 2D slot-name grid (14 rows × 16 cols) for canvas overlay."""
+        try:
+            from utils.grid import load_grid_layout
+            ref_row = (
+                ["ZZ"]
+                + ["REF_L0"] * 3
+                + ["REF_L1"] * 3
+                + ["REF_L2"] * 3
+                + ["REF_L3"] * 3
+                + ["REF_L4"] * 3
+            )
+            layout = [ref_row] + load_grid_layout()   # 13 rows × 16 cols
+            return jsonify({"layout": layout})
+        except Exception as e:
+            logger.error("calib_layout: %s", e)
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/calibrate/save", methods=["POST"])
