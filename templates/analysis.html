@@ -1,0 +1,293 @@
+{% extends 'base.html' %}
+
+{% block head %}
+<title>การวิเคราะห์ — Urine Color Analyzer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  .page-title {
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-white);
+    margin-bottom: 1.5rem;
+  }
+
+  .analysis-wrap {
+    display: flex;
+    gap: 2rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  /* ── Chart panel ── */
+  .chart-box {
+    flex: 1 1 480px;
+    background: #fff;
+    border-radius: 8px;
+    padding: 1rem;
+    min-height: 420px;
+    position: relative;
+  }
+
+  #scatter-chart {
+    width: 100% !important;
+  }
+
+  .chart-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 360px;
+    color: #999;
+    font-size: 0.95rem;
+  }
+
+  /* ── Controls panel ── */
+  .controls-box {
+    flex: 0 0 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 1.8rem;
+  }
+
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .field-label {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--color-white);
+  }
+
+  .date-input {
+    width: 100%;
+    padding: 0.65rem 1rem;
+    border-radius: 6px;
+    border: none;
+    background: var(--color-white);
+    color: #333;
+    font-size: 1rem;
+    font-family: 'Kanit', sans-serif;
+    text-align: center;
+    cursor: pointer;
+  }
+
+  .date-input:focus {
+    outline: 2px solid var(--color-accent);
+  }
+
+  .btn-show {
+    width: 100%;
+    padding: 0.8rem;
+    border: none;
+    border-radius: 6px;
+    background: var(--color-green-3);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: 'Kanit', sans-serif;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .btn-show:hover { opacity: 0.88; }
+
+  .btn-reset {
+    width: 100%;
+    padding: 0.8rem;
+    border: none;
+    border-radius: 6px;
+    background: var(--color-red);
+    color: #fff;
+    font-size: 1rem;
+    font-weight: 600;
+    font-family: 'Kanit', sans-serif;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .btn-reset:hover { opacity: 0.88; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 class="page-title">การวิเคราะห์แนวโน้ม</h1>
+
+<div class="analysis-wrap">
+
+  <div class="chart-box">
+    <canvas id="scatter-chart"></canvas>
+    <div id="chart-empty" class="chart-empty" style="display:none">ไม่พบข้อมูลในช่วงเวลานี้</div>
+  </div>
+
+  <div class="controls-box">
+    <div class="field-group">
+      <span class="field-label">ตั้งแต่วันที่</span>
+      <input id="date-start" type="date" class="date-input">
+    </div>
+    <div class="field-group">
+      <span class="field-label">ถึงวันที่</span>
+      <input id="date-end" type="date" class="date-input">
+    </div>
+    <button class="btn-show"  onclick="loadChart()">แสดงผล</button>
+    <button class="btn-reset" onclick="resetForm()">รีเซ็ตค่า</button>
+  </div>
+
+</div>
+
+<script>
+// ── Color mapping (matches global.css level variables) ──────────────────────
+const LEVEL_COLORS  = ['#C1B7A9', '#A39371', '#978365', '#755429', '#50311B'];
+const LEVEL_BORDERS = ['#9e9488', '#7c6e52', '#6e5d47', '#5a3d18', '#3a1f0e'];
+const LEVEL_NAMES   = ['ระดับ 0', 'ระดับ 1', 'ระดับ 2', 'ระดับ 3', 'ระดับ 4'];
+
+let chart = null;
+
+// ── Canonical slot sort key ──────────────────────────────────────────────────
+// REF slots first, then sample slots ordered by group → slot → level
+function slotSortKey(id) {
+  if (id.startsWith('REF_L')) return '0_' + id;
+  const m = id.match(/^A(\d)(\d+)_(\d)$/);
+  if (m) return `1_${m[1]}_${m[2].padStart(2,'0')}_${m[3]}`;
+  return '9_' + id;
+}
+
+// ── Fetch data and render ────────────────────────────────────────────────────
+async function loadChart() {
+  const start = document.getElementById('date-start').value;
+  const end   = document.getElementById('date-end').value;
+
+  let url = '/api/analysis';
+  const p = new URLSearchParams();
+  if (start) p.append('start', start);
+  if (end)   p.append('end',   end);
+  if (p.toString()) url += '?' + p.toString();
+
+  let data;
+  try {
+    const res = await fetch(url);
+    data = await res.json();
+  } catch {
+    showEmpty();
+    return;
+  }
+
+  if (!Array.isArray(data) || !data.length) { showEmpty(); return; }
+
+  document.getElementById('chart-empty').style.display = 'none';
+
+  // Build sorted unique slot list from the returned data
+  const slotSet = [...new Set(data.map(d => d.slot_id))];
+  slotSet.sort((a, b) => slotSortKey(a).localeCompare(slotSortKey(b)));
+  const slotIndex = Object.fromEntries(slotSet.map((s, i) => [s, i]));
+
+  // One dataset per color level for the legend
+  const datasets = LEVEL_COLORS.map((color, lvl) => ({
+    label:           LEVEL_NAMES[lvl],
+    data:            data
+                       .filter(d => d.level === lvl)
+                       .map(d => ({
+                         x: new Date(d.timestamp).getTime(),
+                         y: slotIndex[d.slot_id],
+                       })),
+    backgroundColor: color,
+    borderColor:     LEVEL_BORDERS[lvl],
+    borderWidth:     1,
+    pointRadius:     6,
+    pointHoverRadius: 8,
+  }));
+
+  renderChart(datasets, slotSet);
+}
+
+function renderChart(datasets, slotLabels) {
+  const canvas = document.getElementById('scatter-chart');
+  if (chart) { chart.destroy(); chart = null; }
+
+  chart = new Chart(canvas, {
+    type: 'scatter',
+    data: { datasets },
+    options: {
+      responsive: true,
+      animation:  false,
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: {
+            color:     '#333',
+            font:      { family: 'Kanit', size: 12 },
+            boxWidth:  14,
+            padding:   16,
+          },
+        },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const slot = slotLabels[Math.round(ctx.parsed.y)] ?? '';
+              const ts   = new Date(ctx.parsed.x).toLocaleString('th-TH');
+              return `${slot}  —  ${ts}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type:  'linear',
+          title: { display: true, text: 'เวลา', color: '#333', font: { family: 'Kanit', size: 12 } },
+          ticks: {
+            color:    '#555',
+            font:     { family: 'Kanit', size: 10 },
+            maxTicksLimit: 10,
+            callback: v => new Date(v).toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' }),
+          },
+          grid: { color: '#ddd' },
+        },
+        y: {
+          type:  'linear',
+          min:   -0.5,
+          max:   slotLabels.length - 0.5,
+          title: { display: true, text: 'Slot ID', color: '#333', font: { family: 'Kanit', size: 12 } },
+          ticks: {
+            color:    '#555',
+            font:     { family: 'Kanit', size: 9 },
+            stepSize: 1,
+            callback: v => slotLabels[Math.round(v)] ?? '',
+          },
+          grid: { color: '#eee' },
+        },
+      },
+    },
+  });
+}
+
+function showEmpty() {
+  if (chart) { chart.destroy(); chart = null; }
+  const canvas = document.getElementById('scatter-chart');
+  canvas.style.display = 'none';
+  document.getElementById('chart-empty').style.display = 'flex';
+}
+
+function resetForm() {
+  document.getElementById('date-start').value = '';
+  document.getElementById('date-end').value   = '';
+  if (chart) { chart.destroy(); chart = null; }
+  const canvas = document.getElementById('scatter-chart');
+  canvas.style.display = 'block';
+  document.getElementById('chart-empty').style.display = 'none';
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+// ── Default range: last 30 days ──────────────────────────────────────────────
+window.addEventListener('load', () => {
+  const today    = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  document.getElementById('date-start').value = monthAgo;
+  document.getElementById('date-end').value   = today;
+  loadChart();
+});
+</script>
+{% endblock %}

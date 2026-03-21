@@ -67,14 +67,21 @@ _scan_state: dict = {
 _state_lock = threading.Lock()
 
 
-def update_scan_result(counts: dict, errors: list[str], image_path: str | None) -> None:
+def update_scan_result(
+    counts: dict,
+    errors: list[str],
+    image_path: str | None,
+    slot_assignments: dict | None = None,
+) -> None:
     """Called by main.py after every scan to refresh dashboard data and persist to DB."""
     with _state_lock:
         _scan_state["counts"]         = dict(counts)
         _scan_state["errors"]         = list(errors)
         _scan_state["last_scan_time"] = datetime.now().isoformat(timespec="seconds")
         _scan_state["image_path"]     = str(image_path) if image_path else None
-    _db.save_scan_result(counts, errors, image_path)
+    scan_id = _db.save_scan_result(counts, errors, image_path)
+    if slot_assignments:
+        _db.save_slot_results(scan_id, slot_assignments)
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +144,14 @@ def _create_dashboard_app() -> Flask:
     app.logger.setLevel(logging.WARNING)
     app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB upload limit
 
+    # ---- Favicon ----
+    @app.route("/favicon.ico")
+    def favicon():
+        return send_file(
+            str(Path(__file__).parent.parent / "assets" / "logo.ico"),
+            mimetype="image/x-icon",
+        )
+
     # ---- Results page ----
     @app.route("/")
     def index():
@@ -186,6 +201,17 @@ def _create_dashboard_app() -> Flask:
         """Return recent scan results as JSON. ?limit=N (default 20)."""
         limit = min(int(request.args.get("limit", 20)), 200)
         return jsonify(_db.get_recent_results(limit))
+
+    @app.route("/analysis")
+    def analysis_page():
+        return render_template("analysis.html", active="analysis")
+
+    @app.route("/api/analysis")
+    def api_analysis():
+        """Return slot-level results filtered by ?start=YYYY-MM-DD&end=YYYY-MM-DD."""
+        start = request.args.get("start", "")
+        end   = request.args.get("end", "")
+        return jsonify(_db.get_slot_results(start, end))
 
     # ---- Grid reload (no recalibration) ----
     @app.route("/api/grid/reload", methods=["POST"])
@@ -278,6 +304,29 @@ def _create_dashboard_app() -> Flask:
             return jsonify({"grid_pts": grid_pts.tolist()})
         except Exception as e:
             logger.error("calib_compute_grid: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/calibrate/restore")
+    def calib_restore():
+        """Return saved corners + grid_pts from grid_config.json for canvas overlay."""
+        try:
+            cfg_path = Path(config.GRID_CONFIG_FILE)
+            if not cfg_path.is_file():
+                return jsonify({"error": "grid_config.json not found — calibrate first"}), 404
+            cfg = json.loads(cfg_path.read_text())
+            corners = cfg.get("system_metadata", {}).get("corners")
+            if not corners or len(corners) != 4:
+                return jsonify({"error": "No corners saved in grid_config.json"}), 400
+            from utils.calibration import _corners_to_grid_pts
+            grid_pts   = _corners_to_grid_pts(corners)
+            calib_date = cfg.get("system_metadata", {}).get("calibration_date", "")
+            return jsonify({
+                "corners":          corners,
+                "grid_pts":         grid_pts.tolist(),
+                "calibration_date": calib_date,
+            })
+        except Exception as e:
+            logger.error("calib_restore: %s", e)
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/calibrate/layout")

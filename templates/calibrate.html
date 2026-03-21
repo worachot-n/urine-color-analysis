@@ -3,7 +3,6 @@
 {% block head %}
 <title>การตั้งค่า — Urine Color Analyzer</title>
 <style>
-  /* ── Page layout ── */
   .calib-title {
     text-align: center;
     font-size: 1.5rem;
@@ -12,6 +11,7 @@
     margin-bottom: 1.2rem;
   }
 
+  /* ── Two-column layout ── */
   .calib-layout {
     display: flex;
     gap: 1.5rem;
@@ -19,10 +19,9 @@
     flex-wrap: wrap;
   }
 
-  /* ── Canvas side ── */
-  .canvas-col {
-    flex: 1 1 420px;
-  }
+  /* ── Canvas column ── */
+  .canvas-col { flex: 1 1 420px; }
+
   #canvas-placeholder {
     width: 100%;
     min-height: 320px;
@@ -40,54 +39,38 @@
     border-radius: 6px;
     overflow: hidden;
   }
-  #calib-canvas {
-    display: block;
-    cursor: crosshair;
-    max-width: 100%;
-  }
+  #calib-canvas { display: block; cursor: crosshair; max-width: 100%; }
 
-  /* ── Controls side ── */
+  /* ── Controls column ── */
   .controls-col {
-    flex: 0 0 280px;
+    flex: 0 0 290px;
     display: flex;
     flex-direction: column;
-    gap: 0.9rem;
+    gap: 0.85rem;
   }
 
-  /* Reload row */
-  .reload-row {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    flex-wrap: wrap;
-  }
-  .calib-date {
-    font-size: 0.82rem;
-    color: var(--color-green-4);
-    white-space: nowrap;
-  }
+  /* Source buttons row */
+  .source-row { display: flex; gap: 0.6rem; }
+  .source-row .btn { flex: 1; }
 
-  /* Instruction box */
+  /* Restore row */
+  .restore-row { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
+  .calib-date  { font-size: 0.82rem; color: var(--color-green-4); }
+
+  /* Instructions */
   .instructions {
     background: #0a1a0f;
     border: 1px solid var(--color-green-2);
     border-radius: 5px;
-    padding: 0.7rem 0.9rem;
+    padding: 0.65rem 0.85rem;
     font-family: monospace;
-    font-size: 0.78rem;
-    color: #aaa;
-    line-height: 1.6;
+    font-size: 0.76rem;
+    color: #9aaa9a;
+    line-height: 1.65;
   }
   .instructions .step { color: var(--color-green-3); font-weight: bold; }
 
-  /* Source buttons row */
-  .source-row {
-    display: flex;
-    gap: 0.6rem;
-  }
-  .source-row .btn { flex: 1; }
-
-  /* Generic buttons */
+  /* Buttons */
   .btn {
     padding: 0.65rem 1rem;
     border: none;
@@ -98,22 +81,18 @@
     width: 100%;
     text-align: center;
   }
-  .btn:disabled { opacity: 0.4; cursor: default; }
-  .btn-blue  { background: var(--color-green-3); color: #fff; }
-  .btn-navy  { background: var(--color-green-1); color: var(--color-accent);
-               border: 1px solid var(--color-green-2); }
-  .btn-green { background: var(--color-green-3); color: #fff; }
-  .btn-accent{ background: var(--color-accent);  color: #000; }
-  .btn-red   { background: var(--color-red);     color: #fff; }
+  .btn:disabled   { opacity: 0.4; cursor: default; }
+  .btn-blue       { background: #2a6cb5;            color: #fff; }
+  .btn-navy       { background: var(--color-green-1); color: var(--color-accent);
+                    border: 1px solid var(--color-green-2); }
+  .btn-accent     { background: var(--color-accent); color: #000; }
+  .btn-red        { background: var(--color-red);    color: #fff; }
+  .btn-green      { background: var(--color-green-3); color: #fff; }
 
-  #upload-input { display: none; }
+  #upload-input   { display: none; }
 
   /* Status */
-  #status {
-    font-size: 0.85rem;
-    color: var(--color-accent);
-    min-height: 1.1rem;
-  }
+  #status { font-size: 0.85rem; color: var(--color-accent); min-height: 1.1rem; }
   #status.ok  { color: var(--color-green-3); }
   #status.err { color: var(--color-red); }
 </style>
@@ -135,25 +114,7 @@
   <!-- ── Controls ── -->
   <div class="controls-col">
 
-    <!-- Reload grid -->
-    <div class="reload-row">
-      <button class="btn btn-accent" style="width:auto;padding:0.55rem 1rem"
-              onclick="reloadGrid()">คืนค่าตาราง</button>
-      <span class="calib-date">
-        {% if last_calib %}ล่าสุด: {{ last_calib }}{% else %}ยังไม่มีข้อมูล{% endif %}
-      </span>
-    </div>
-
-    <!-- Instructions -->
-    <div class="instructions">
-      <span class="step">ขั้นที่ 1:</span> เลือกแหล่งภาพด้านล่าง<br>
-      <span class="step">ขั้นที่ 2:</span> คลิก <b>4 มุม</b> ของตารางตามลำดับ:
-        บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย<br>
-      <span class="step">ขั้นที่ 3:</span> ลากเส้นตารางเพื่อปรับละเอียด<br>
-      <span class="step">ขั้นที่ 4:</span> กด <b>บันทึกค่าตาราง</b>
-    </div>
-
-    <!-- Source buttons -->
+    <!-- 1. Capture / Upload -->
     <div class="source-row">
       <button class="btn btn-blue" onclick="captureFromCamera()">ถ่ายภาพจากกล้อง</button>
       <label class="btn btn-navy" style="cursor:pointer">
@@ -162,14 +123,34 @@
       </label>
     </div>
 
-    <!-- Save -->
-    <button id="btn-save" class="btn btn-green" onclick="saveCalibration()" disabled>
-      บันทึกค่าตาราง
-    </button>
+    <!-- 2. Restore existing grid -->
+    <div class="restore-row">
+      <button class="btn btn-accent" style="width:auto;padding:0.55rem 1.1rem"
+              id="btn-restore" onclick="restoreGrid()" disabled>
+        คืนค่าตาราง
+      </button>
+      <span class="calib-date" id="calib-date">
+        {% if last_calib %}ล่าสุด: {{ last_calib }}{% else %}ยังไม่มีค่าที่บันทึก{% endif %}
+      </span>
+    </div>
 
-    <!-- Reset -->
+    <!-- 3. Instructions -->
+    <div class="instructions">
+      <span class="step">ขั้นที่ 1:</span> ถ่ายหรืออัพโหลดภาพตาราง<br>
+      <span class="step">ขั้นที่ 2:</span> กด <b>คืนค่าตาราง</b> เพื่อโหลดค่าเดิม
+        หรือกด <b>รีเซ็ต</b> แล้วคลิก 4 มุม (บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย)<br>
+      <span class="step">ขั้นที่ 3:</span> ลากเส้นตารางเพื่อปรับละเอียด<br>
+      <span class="step">ขั้นที่ 4:</span> กด <b>บันทึกค่าตาราง</b>
+    </div>
+
+    <!-- 4. Reset -->
     <button id="btn-reset" class="btn btn-red" onclick="resetCorners()" disabled>
       รีเซ็ตค่าตาราง
+    </button>
+
+    <!-- 5. Save -->
+    <button id="btn-save" class="btn btn-green" onclick="saveCalibration()" disabled>
+      บันทึกค่าตาราง
     </button>
 
     <!-- Status -->
@@ -185,11 +166,11 @@
 let img        = null;
 let origW      = 0, origH = 0;
 let scaleX     = 1, scaleY = 1;
-let corners    = [];       // canvas-space [[x,y] x4]
-let gridPts    = null;     // canvas-space [15 rows][17 cols][2]
+let corners    = [];
+let gridPts    = null;
 let dragging   = null;
 let hover      = null;
-let slotLayout = null;     // 2D array [row][col] → slot name string
+let slotLayout = null;
 let showLabels = false;
 
 const canvas      = document.getElementById('calib-canvas');
@@ -199,9 +180,10 @@ const placeholder = document.getElementById('canvas-placeholder');
 const statusEl    = document.getElementById('status');
 const btnSave     = document.getElementById('btn-save');
 const btnReset    = document.getElementById('btn-reset');
+const btnRestore  = document.getElementById('btn-restore');
 
 // ---------------------------------------------------------------------------
-// Source selection
+// Image loading
 // ---------------------------------------------------------------------------
 async function captureFromCamera() {
   setStatus('กำลังถ่ายภาพจากกล้อง...');
@@ -237,15 +219,43 @@ async function loadCalibImage(w, h) {
     canvas.width  = Math.round(origW * scaleX);
     canvas.height = Math.round(origH * scaleY);
     placeholder.style.display = 'none';
-    wrap.style.display = 'block';
-    resetCorners();
-    setStatus('คลิก 4 มุมของตาราง (บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย)');
+    wrap.style.display        = 'block';
+    // Reset canvas state but keep image
+    corners    = [];
+    gridPts    = null;
+    showLabels = false;
+    btnSave.disabled    = true;
+    btnReset.disabled   = false;
+    btnRestore.disabled = false;
+    draw();
+    setStatus('โหลดภาพสำเร็จ — กด "คืนค่าตาราง" หรือ "รีเซ็ต" เพื่อเริ่มต้น', 'ok');
   };
   img.src = '/api/calibrate/image?t=' + Date.now();
 }
 
 // ---------------------------------------------------------------------------
-// Corner clicks
+// Restore grid from grid_config.json
+// ---------------------------------------------------------------------------
+async function restoreGrid() {
+  if (!img) { setStatus('กรุณาโหลดภาพก่อน', 'err'); return; }
+  setStatus('กำลังโหลดค่าตารางที่บันทึกไว้...');
+  try {
+    const res  = await fetch('/api/calibrate/restore');
+    const data = await res.json();
+    if (data.error) { setStatus('ข้อผิดพลาด: ' + data.error, 'err'); return; }
+    // Scale from original image space → canvas space
+    corners = data.corners.map(([x, y]) => [x * scaleX, y * scaleY]);
+    gridPts = data.grid_pts.map(row => row.map(([x, y]) => [x * scaleX, y * scaleY]));
+    showLabels = false;
+    draw();
+    btnSave.disabled  = false;
+    btnReset.disabled = false;
+    setStatus('โหลดค่าตารางสำเร็จ — ลากเส้นปรับได้ แล้วกดบันทึก', 'ok');
+  } catch(e) { setStatus('โหลดล้มเหลว: ' + e, 'err'); }
+}
+
+// ---------------------------------------------------------------------------
+// Corner clicks (active only after reset)
 // ---------------------------------------------------------------------------
 function getEventPos(e) {
   const rect = canvas.getBoundingClientRect();
@@ -254,6 +264,7 @@ function getEventPos(e) {
 }
 
 canvas.addEventListener('click', async (e) => {
+  // Only collect corners when grid is cleared and we have fewer than 4 corners
   if (corners.length >= 4 || gridPts) return;
   const [cx, cy] = getEventPos(e);
   corners.push([cx, cy]);
@@ -265,7 +276,6 @@ canvas.addEventListener('click', async (e) => {
     const labels = ['บนซ้าย', 'บนขวา', 'ล่างขวา', 'ล่างซ้าย'];
     setStatus('คลิกมุมที่ ' + (corners.length + 1) + ': ' + labels[corners.length]);
   }
-  btnReset.disabled = false;
 });
 
 // ---------------------------------------------------------------------------
@@ -276,7 +286,7 @@ async function computeGrid() {
   try {
     const res  = await fetch('/api/calibrate/compute-grid', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({corners: origCorners}),
     });
     const data = await res.json();
@@ -284,7 +294,7 @@ async function computeGrid() {
     gridPts = data.grid_pts.map(row => row.map(([x, y]) => [x * scaleX, y * scaleY]));
     draw();
     btnSave.disabled = false;
-    setStatus('คำนวณตารางสำเร็จ ลากเส้นเพื่อปรับ แล้วกดบันทึก');
+    setStatus('คำนวณตารางสำเร็จ — ลากเส้นเพื่อปรับ แล้วกดบันทึก', 'ok');
   } catch(e) { setStatus('คำนวณล้มเหลว: ' + e, 'err'); }
 }
 
@@ -296,7 +306,7 @@ function draw() {
   if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
   // Corner markers
-  const cornerLabels = ['1 TL', '2 TR', '3 BR', '4 BL'];
+  const cornerLabels = ['1 บนซ้าย', '2 บนขวา', '3 ล่างขวา', '4 ล่างซ้าย'];
   corners.forEach(([cx, cy], i) => {
     ctx.beginPath();
     ctx.arc(cx, cy, 9, 0, 2 * Math.PI);
@@ -306,13 +316,13 @@ function draw() {
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 11px monospace';
+    ctx.font = 'bold 10px monospace';
     ctx.fillText(cornerLabels[i] || (i + 1), cx + 11, cy + 4);
   });
 
   if (!gridPts) return;
 
-  // Horizontal lines (15 rows)
+  // Horizontal lines
   for (let r = 0; r < gridPts.length; r++) {
     const isHov = hover && hover.type === 'h' && hover.index === r;
     ctx.lineWidth   = isHov ? 3 : 1;
@@ -323,7 +333,7 @@ function draw() {
     gridPts[r].forEach(([x, y], c) => c === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
     ctx.stroke();
   }
-  // Vertical lines (17 cols)
+  // Vertical lines
   for (let c = 0; c < gridPts[0].length; c++) {
     const isHov = hover && hover.type === 'v' && hover.index === c;
     ctx.lineWidth   = isHov   ? 3 : 1;
@@ -337,50 +347,36 @@ function draw() {
     ctx.stroke();
   }
 
-  // Slot ID labels (shown after save)
   if (showLabels && slotLayout) drawSlotLabels();
 }
 
 // ---------------------------------------------------------------------------
-// Slot ID overlay (drawn after successful save)
+// Slot ID overlay (after successful save)
 // ---------------------------------------------------------------------------
 function drawSlotLabels() {
   if (!gridPts || !slotLayout) return;
-  const nRows = gridPts.length - 1;     // 14 cell rows
-  const nCols = gridPts[0].length - 1;  // 16 cell cols
-
+  const nRows = gridPts.length - 1;
+  const nCols = gridPts[0].length - 1;
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
-
   for (let r = 0; r < Math.min(nRows, slotLayout.length); r++) {
     for (let c = 0; c < Math.min(nCols, slotLayout[r].length); c++) {
       const name = slotLayout[r][c];
       if (!name || name === 'ZZ') continue;
-
-      // Cell centre = average of 4 corner intersection points
-      const [x1, y1] = gridPts[r][c];
-      const [x2, y2] = gridPts[r][c + 1];
-      const [x3, y3] = gridPts[r + 1][c];
-      const [x4, y4] = gridPts[r + 1][c + 1];
+      const [x1, y1] = gridPts[r][c],     [x2, y2] = gridPts[r][c + 1];
+      const [x3, y3] = gridPts[r + 1][c], [x4, y4] = gridPts[r + 1][c + 1];
       const cx = (x1 + x2 + x3 + x4) / 4;
       const cy = (y1 + y2 + y3 + y4) / 4;
-
       const isRef = name.startsWith('REF');
       ctx.font = isRef ? 'bold 7px monospace' : '6px monospace';
-
       const tw = ctx.measureText(name).width;
-      // Semi-transparent dark background
       ctx.fillStyle = isRef ? 'rgba(20,80,20,0.82)' : 'rgba(0,0,0,0.70)';
       ctx.fillRect(cx - tw / 2 - 2, cy - 5, tw + 4, 10);
-
-      // Label text
       ctx.fillStyle = isRef ? '#FFD700' : '#e0e0e0';
       ctx.fillText(name, cx, cy);
     }
   }
-
-  ctx.textAlign    = 'left';
-  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
 }
 
 // ---------------------------------------------------------------------------
@@ -393,16 +389,16 @@ function lineHitTest(mx, my) {
     for (let c = 0; c < gridPts[r].length - 1; c++) {
       const [x1, y1] = gridPts[r][c], [x2, y2] = gridPts[r][c + 1];
       if (mx < Math.min(x1, x2) - THRESH || mx > Math.max(x1, x2) + THRESH) continue;
-      const dist = Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) / Math.hypot(y2-y1, x2-x1);
-      if (dist < THRESH) return {type:'h', index:r};
+      if (Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) / Math.hypot(y2-y1, x2-x1) < THRESH)
+        return {type:'h', index:r};
     }
   }
   for (let c = 0; c < gridPts[0].length; c++) {
     for (let r = 0; r < gridPts.length - 1; r++) {
       const [x1, y1] = gridPts[r][c], [x2, y2] = gridPts[r + 1][c];
       if (my < Math.min(y1, y2) - THRESH || my > Math.max(y1, y2) + THRESH) continue;
-      const dist = Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) / Math.hypot(y2-y1, x2-x1);
-      if (dist < THRESH) return {type:'v', index:c};
+      if (Math.abs((y2-y1)*mx - (x2-x1)*my + x2*y1 - y2*x1) / Math.hypot(y2-y1, x2-x1) < THRESH)
+        return {type:'v', index:c};
     }
   }
   return null;
@@ -414,17 +410,15 @@ canvas.addEventListener('mousedown', e => {
   const hit = lineHitTest(mx, my);
   if (hit) { dragging = {...hit, startX:mx, startY:my}; e.preventDefault(); }
 });
-
 canvas.addEventListener('mousemove', e => {
   const [mx, my] = getEventPos(e);
   if (dragging) {
     const dx = mx - dragging.startX, dy = my - dragging.startY;
     dragging.startX = mx; dragging.startY = my;
-    if (dragging.type === 'h') {
+    if (dragging.type === 'h')
       gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
-    } else {
+    else
       gridPts.forEach(row => { row[dragging.index][0] += dx; });
-    }
     draw();
   } else if (gridPts) {
     const hit = lineHitTest(mx, my);
@@ -434,30 +428,24 @@ canvas.addEventListener('mousemove', e => {
     if (changed) draw();
   }
 });
-
 canvas.addEventListener('mouseup',    () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
 canvas.addEventListener('mouseleave', () => { dragging = null; hover = null; canvas.style.cursor = 'crosshair'; });
-
 canvas.addEventListener('touchstart', e => {
   if (!gridPts) return;
-  const [mx, my] = getEventPos(e);
-  const hit = lineHitTest(mx, my);
-  if (hit) { dragging = {...hit, startX:mx, startY:my}; e.preventDefault(); }
+  const hit = lineHitTest(...getEventPos(e));
+  if (hit) { dragging = {...hit, startX:getEventPos(e)[0], startY:getEventPos(e)[1]}; e.preventDefault(); }
 }, {passive:false});
-
 canvas.addEventListener('touchmove', e => {
   if (!dragging) return;
   const [mx, my] = getEventPos(e);
   const dx = mx - dragging.startX, dy = my - dragging.startY;
   dragging.startX = mx; dragging.startY = my;
-  if (dragging.type === 'h') {
+  if (dragging.type === 'h')
     gridPts[dragging.index] = gridPts[dragging.index].map(([x, y]) => [x, y + dy]);
-  } else {
+  else
     gridPts.forEach(row => { row[dragging.index][0] += dx; });
-  }
   draw(); e.preventDefault();
 }, {passive:false});
-
 canvas.addEventListener('touchend', () => { dragging = null; });
 
 // ---------------------------------------------------------------------------
@@ -468,15 +456,9 @@ function resetCorners() {
   gridPts    = null;
   dragging   = null;
   showLabels = false;
-  btnSave.disabled  = true;
-  btnReset.disabled = true;
+  btnSave.disabled = true;
   draw();
-  setStatus('คลิก 4 มุมของตาราง (บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย)');
-}
-
-async function reloadGrid() {
-  const res = await fetch('/api/grid/reload', {method:'POST'});
-  if (res.ok) setStatus('โหลดกริดใหม่แล้ว', 'ok');
+  setStatus('คลิก 4 มุมของตาราง: บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย');
 }
 
 async function saveCalibration() {
@@ -488,7 +470,7 @@ async function saveCalibration() {
   try {
     const res  = await fetch('/api/calibrate/save', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({corners: origCorners, grid_pts: origGridPts}),
     });
     const data = await res.json();
@@ -509,14 +491,14 @@ async function showSlotOverlay() {
   try {
     const res  = await fetch('/api/calibrate/layout');
     const data = await res.json();
-    if (data.error) return;
-    slotLayout = data.layout;
-    showLabels = true;
-    draw();
+    if (!data.error) {
+      slotLayout = data.layout;
+      showLabels = true;
+      draw();
+    }
     setStatus('✓ บันทึกสำเร็จ — แสดง Slot ID บนตาราง', 'ok');
-  } catch(e) {
-    // overlay failed silently — still navigate
-    setTimeout(() => window.location = '/', 2000);
+  } catch(_) {
+    setStatus('✓ บันทึกสำเร็จ', 'ok');
   }
 }
 
