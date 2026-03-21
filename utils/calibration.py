@@ -43,10 +43,11 @@ from configs.config import (
 )
 
 # Grid dimensions (lines, not cells).
-# The grid has 16 cell columns (0-15) and 14 cell rows (0-13),
-# so it needs 17 vertical lines and 15 horizontal lines.
-_N_VLINES = 17   # 17 vertical lines → 16 cell columns (col 0 = ZZ, cols 1-15 = data)
-_N_HLINES = 15   # 15 horizontal lines → 14 cell rows (row 0 = ref, rows 1-12 = samples, row 13 = unused)
+# Physical grid: "16 columns × 14 rows of lines (forming 15×13 cells)" per CLAUDE.md.
+# 14 horizontal lines → 13 cell rows (row 0 = ref, rows 1-12 = samples)
+# 17 vertical lines  → 16 cell columns (col 0 = ZZ, cols 1-15 = data)
+_N_VLINES = 17   # 17 vertical lines → 16 cell columns
+_N_HLINES = 14   # 14 horizontal lines → 13 cell rows (was 15; removed unused row 13)
 
 
 # ===========================================================================
@@ -159,7 +160,7 @@ def _corners_to_grid_pts(corners):
         corners: [(x,y)×4] in order: top-left, top-right, bottom-right, bottom-left
 
     Returns:
-        numpy array of shape (14, 16, 2), dtype float64
+        numpy array of shape (14, 17, 2), dtype float64
         grid_pts[row, col] = (x, y) of the intersection of horizontal line `row`
                              and vertical line `col` in image coordinates.
     """
@@ -184,13 +185,13 @@ def compute_slot_polygons_from_grid(grid_pts):
     compute_slot_polygons(corners) is kept for tests and calls this internally.
 
     Args:
-        grid_pts: numpy array shape (14, 16, 2)
+        grid_pts: numpy array shape (14, 17, 2)
 
     Returns:
         (reference_slots, slot_data)  — same schema as compute_slot_polygons()
     """
     def cell_quad(col, row):
-        """4-corner polygon [TL, TR, BR, BL] for cell (col=0-14, row=0-12)."""
+        """4-corner polygon [TL, TR, BR, BL] for cell (col=0-15, row=0-11)."""
         return [
             grid_pts[row,     col    ].tolist(),
             grid_pts[row,     col + 1].tolist(),

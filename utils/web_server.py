@@ -372,7 +372,7 @@ def _create_dashboard_app() -> Flask:
 
         try:
             from utils.calibration import compute_slot_polygons_from_grid
-            grid_np = np.array(grid_pts, dtype=np.float64)  # (15, 17, 2)
+            grid_np = np.array(grid_pts, dtype=np.float64)  # (14, 17, 2)
             reference_slots, slot_data = compute_slot_polygons_from_grid(grid_np)
 
             output = {
