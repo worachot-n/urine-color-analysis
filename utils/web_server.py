@@ -313,16 +313,23 @@ def _create_dashboard_app() -> Flask:
             cfg_path = Path(config.GRID_CONFIG_FILE)
             if not cfg_path.is_file():
                 return jsonify({"error": "grid_config.json not found — calibrate first"}), 404
-            cfg = json.loads(cfg_path.read_text())
-            corners = cfg.get("system_metadata", {}).get("corners")
+            cfg  = json.loads(cfg_path.read_text())
+            meta = cfg.get("system_metadata", {})
+            corners    = meta.get("corners")
+            saved_gpts = meta.get("grid_pts")
+            calib_date = meta.get("calibration_date", "")
             if not corners or len(corners) != 4:
                 return jsonify({"error": "No corners saved in grid_config.json"}), 400
-            from utils.calibration import _corners_to_grid_pts
-            grid_pts   = _corners_to_grid_pts(corners)
-            calib_date = cfg.get("system_metadata", {}).get("calibration_date", "")
+            if saved_gpts:
+                # Use the exact grid_pts that were saved (preserves any fine-tuning)
+                grid_pts_list = saved_gpts
+            else:
+                # Fallback for old files that only have corners
+                from utils.calibration import _corners_to_grid_pts
+                grid_pts_list = _corners_to_grid_pts(corners).tolist()
             return jsonify({
                 "corners":          corners,
-                "grid_pts":         grid_pts.tolist(),
+                "grid_pts":         grid_pts_list,
                 "calibration_date": calib_date,
             })
         except Exception as e:
@@ -374,6 +381,7 @@ def _create_dashboard_app() -> Flask:
                     "grid_dimensions":   "16x14 lines",
                     "calibration_date":  datetime.now().strftime("%Y-%m-%d"),
                     "corners":           corners,
+                    "grid_pts":          grid_pts,
                 },
                 "reference_row": {
                     "description": "Top row for dynamic color calibration (3 bottles per level)",
