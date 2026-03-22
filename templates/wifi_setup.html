@@ -1,70 +1,215 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WiFi Setup</title>
+  <title>การเชื่อมต่อ WiFi</title>
+  <link rel="icon" href="/static/logo.ico" type="image/x-icon">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
-    body   { font-family: sans-serif; background:#f5f5f5; display:flex;
-             justify-content:center; padding-top:2rem; margin:0; }
-    .card  { background:#fff; padding:1.8rem; border-radius:8px;
-             box-shadow:0 2px 8px rgba(0,0,0,.2); width:100%;
-             max-width:360px; box-sizing:border-box; }
-    h2     { margin-top:0; }
-    label  { display:block; font-size:0.9rem; color:#555;
-             margin-bottom:0.25rem; }
-    .row   { display:flex; gap:0.5rem; align-items:stretch;
-             margin-bottom:1rem; }
-    select, input {
-             flex:1; padding:0.5rem; border:1px solid #ccc;
-             border-radius:4px; font-size:1rem; box-sizing:border-box; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Kanit', sans-serif;
+      background: #122017;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+
+    /* ── Logo ── */
+    .logo-wrap {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      border: 3px solid #FCBA54;
+      overflow: hidden;
+      margin-bottom: 1.4rem;
+      background: #1a3028;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .logo-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* ── Title ── */
+    h1 {
+      color: #fff;
+      font-size: 1.9rem;
+      font-weight: 700;
+      margin-bottom: 2rem;
+      text-align: center;
+      letter-spacing: 0.02em;
+    }
+    h1 span {
+      color: #FCBA54;
+      text-decoration: underline;
+      text-underline-offset: 4px;
+    }
+
+    /* ── Form container ── */
+    .form-wrap {
+      width: 100%;
+      max-width: 520px;
+    }
+
+    /* ── Field rows ── */
+    .field {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.4rem;
+    }
+    .field-label {
+      color: #fff;
+      font-size: 1.05rem;
+      font-weight: 500;
+      white-space: nowrap;
+      min-width: 160px;
+      text-align: right;
+    }
+    .field-input {
+      flex: 1;
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    select, input[type="password"] {
+      flex: 1;
+      padding: 0.65rem 1rem;
+      border: none;
+      border-radius: 8px;
+      font-family: 'Kanit', sans-serif;
+      font-size: 1rem;
+      background: #fff;
+      color: #222;
+      outline: none;
+    }
+    select:focus, input[type="password"]:focus {
+      box-shadow: 0 0 0 3px rgba(252, 186, 84, 0.4);
+    }
+
+    /* ── Rescan button ── */
     .btn-rescan {
-             padding:0.5rem 0.7rem; background:#555; color:#fff;
-             border:none; border-radius:4px; cursor:pointer;
-             font-size:1rem; white-space:nowrap; }
-    .btn-rescan:disabled { opacity:0.5; cursor:default; }
-    .scan-status { font-size:0.8rem; color:#888; margin:-0.6rem 0 0.8rem; }
-    button[type=submit] {
-             width:100%; padding:0.65rem; background:#2196F3; color:#fff;
-             border:none; border-radius:4px; cursor:pointer; font-size:1rem; }
-    button[type=submit]:disabled { opacity:0.4; cursor:default; }
-    .msg   { margin-top:1rem; color:{{ msg_color }}; }
+      width: 44px;
+      height: 44px;
+      border-radius: 8px;
+      background: #1565C0;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-size: 1.2rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s;
+    }
+    .btn-rescan:hover:not(:disabled) { background: #1976D2; }
+    .btn-rescan:disabled { opacity: 0.45; cursor: default; }
+
+    /* ── Scan status ── */
+    .scan-status {
+      font-size: 0.82rem;
+      color: #8aaf98;
+      margin-left: calc(160px + 1rem);
+      margin-top: -0.9rem;
+      margin-bottom: 1rem;
+    }
+
+    /* ── Connect button ── */
+    .btn-connect {
+      width: 100%;
+      padding: 0.8rem;
+      border: none;
+      border-radius: 10px;
+      background: #2E7D32;
+      color: #fff;
+      font-family: 'Kanit', sans-serif;
+      font-size: 1.15rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      transition: background 0.15s;
+      margin-top: 0.5rem;
+    }
+    .btn-connect:hover:not(:disabled) { background: #388E3C; }
+    .btn-connect:disabled { opacity: 0.45; cursor: default; }
+
+    /* ── Status message ── */
+    .msg {
+      margin-top: 1.2rem;
+      text-align: center;
+      font-size: 0.95rem;
+      color: {{ msg_color|default('#FCBA54') }};
+    }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h2>WiFi Setup</h2>
+
+  <!-- Logo -->
+  <div class="logo-wrap">
+    <img src="/static/logo.ico" alt="Logo">
+  </div>
+
+  <!-- Title -->
+  <h1>การเชื่อมต่อ <span>Wifi</span></h1>
+
+  <!-- Form -->
+  <div class="form-wrap">
     <form method="post" action="/wifi-setup">
-      <label>Network name (SSID)</label>
-      <div class="row">
-        <select id="ssid-select" name="ssid" required>
-          <option value="">-- scanning --</option>
-        </select>
-        <button type="button" class="btn-rescan" id="btn-rescan"
-                onclick="scanNetworks()" disabled>&#8635;</button>
+
+      <!-- SSID row -->
+      <div class="field">
+        <span class="field-label">SSID Wifi</span>
+        <div class="field-input">
+          <select id="ssid-select" name="ssid" required>
+            <option value="">List Wifi</option>
+          </select>
+          <button type="button" class="btn-rescan" id="btn-rescan"
+                  onclick="scanNetworks()" disabled title="สแกนใหม่">C</button>
+        </div>
       </div>
-      <div class="scan-status" id="scan-status">Scanning...</div>
+      <div class="scan-status" id="scan-status">กำลังสแกน...</div>
 
-      <label>Password</label>
-      <input name="password" type="password" placeholder="Password"
-             style="margin-bottom:1rem">
+      <!-- Password row -->
+      <div class="field">
+        <span class="field-label">รหัสผ่าน Wifi</span>
+        <div class="field-input">
+          <input name="password" type="password" placeholder="รหัสผ่าน">
+        </div>
+      </div>
 
-      <button type="submit" id="btn-submit" disabled>Connect</button>
+      <!-- Connect button -->
+      <button type="submit" id="btn-submit" class="btn-connect" disabled>เชื่อมต่อ</button>
+
     </form>
+
     {% if message %}<p class="msg">{{ message }}</p>{% endif %}
   </div>
 
   <script>
-  const select    = document.getElementById('ssid-select');
-  const btnRescan = document.getElementById('btn-rescan');
-  const btnSubmit = document.getElementById('btn-submit');
-  const scanStatus= document.getElementById('scan-status');
+  const select     = document.getElementById('ssid-select');
+  const btnRescan  = document.getElementById('btn-rescan');
+  const btnSubmit  = document.getElementById('btn-submit');
+  const scanStatus = document.getElementById('scan-status');
 
   async function scanNetworks() {
-    scanStatus.textContent = 'Scanning...';
+    scanStatus.textContent = 'กำลังสแกน...';
     btnRescan.disabled = true;
     btnSubmit.disabled = true;
-    select.innerHTML = '<option value="">-- scanning --</option>';
+    select.innerHTML = '<option value="">กำลังสแกน...</option>';
 
     try {
       const res  = await fetch('/api/wifi/scan');
@@ -73,21 +218,21 @@
 
       if (data.networks && data.networks.length > 0) {
         data.networks.forEach(n => {
-          const opt  = document.createElement('option');
-          opt.value  = (n.ssid === '<Hidden>') ? '' : n.ssid;
-          const sec  = n.security ? ` [${n.security}]` : ' [Open]';
+          const opt = document.createElement('option');
+          opt.value = (n.ssid === '<Hidden>') ? '' : n.ssid;
+          const sec = n.security ? ` [${n.security}]` : ' [Open]';
           opt.textContent = `${n.ssid}  ${n.signal}%${sec}`;
           select.appendChild(opt);
         });
-        scanStatus.textContent = `${data.networks.length} network(s) found`;
+        scanStatus.textContent = `พบ ${data.networks.length} เครือข่าย`;
         btnSubmit.disabled = false;
       } else {
-        select.innerHTML = '<option value="">No networks found</option>';
-        scanStatus.textContent = 'No networks found — try rescan.';
+        select.innerHTML = '<option value="">ไม่พบเครือข่าย</option>';
+        scanStatus.textContent = 'ไม่พบเครือข่าย — กดสแกนใหม่';
       }
     } catch(e) {
-      select.innerHTML = '<option value="">Scan failed</option>';
-      scanStatus.textContent = 'Scan error: ' + e;
+      select.innerHTML = '<option value="">สแกนล้มเหลว</option>';
+      scanStatus.textContent = 'เกิดข้อผิดพลาด: ' + e;
     }
 
     btnRescan.disabled = false;
