@@ -203,16 +203,28 @@ def analyze_frame_yolo(frames: list, grid_cfg):
         Same dict shape as analyze_frame() for downstream compatibility.
         Returns None if reference baseline could not be built.
     """
-    ref_positions = grid_cfg.get_reference_positions()
-    baseline = build_reference_baseline(frames[0], ref_positions)
+    detector = _get_yolo()
+    ref_positions_yolo, yolo_hits, duplicate_slots = detector.detect_multi(frames, grid_cfg)
+
+    # Merge: YOLO ref detections override calibrated positions where available;
+    # calibrated grid_config positions are the fallback for any missed levels.
+    calibrated_positions = grid_cfg.get_reference_positions()
+    merged_ref_positions = dict(calibrated_positions)
+    merged_ref_positions.update(ref_positions_yolo)
+
+    fallback_levels = set(calibrated_positions.keys()) - set(ref_positions_yolo.keys())
+    if fallback_levels:
+        logger.warning("YOLO missed ref levels %s — using calibrated positions as fallback",
+                       sorted(fallback_levels))
+
+    logger.info("YOLO: %d ref bottle detections, %d sample bottles, %d duplicate slots",
+                sum(len(v) for v in ref_positions_yolo.values()),
+                len(yolo_hits), len(duplicate_slots))
+
+    baseline = build_reference_baseline(frames[0], merged_ref_positions)
     if not baseline:
         logger.warning("Reference baseline empty — cannot classify samples")
         return None
-
-    detector = _get_yolo()
-    yolo_hits, duplicate_slots = detector.detect_multi(frames, grid_cfg)
-    logger.info("YOLO consensus confirmed %d bottles (%d duplicate slots)",
-                len(yolo_hits), len(duplicate_slots))
 
     slot_assignments: dict = {}
     unassigned_circles: list = []

@@ -1,60 +1,123 @@
 """
-Export YOLOv11s to OpenVINO format for Raspberry Pi 4B deployment.
+Two-class YOLOv11s training guide + OpenVINO export for Raspberry Pi 4B.
 
-Usage (run on PC with GPU, then copy model directory to Pi):
+=============================================================================
+CLASSES
+=============================================================================
+    Class 0: ref_bottle    — 15 reference bottles in the top row (known color standards)
+    Class 1: sample_bottle — all test bottles placed in the 16x14 main grid
+
+=============================================================================
+DATASET STRUCTURE
+=============================================================================
+    dataset/
+    ├── images/
+    │   ├── train/          (150-300 images recommended)
+    │   └── val/            (30-50 images recommended)
+    ├── labels/
+    │   ├── train/          (YOLO format .txt — one file per image)
+    │   └── val/
+    └── data.yaml
+
+=============================================================================
+data.yaml  (save as dataset/data.yaml)
+=============================================================================
+    path: /absolute/path/to/dataset
+    train: images/train
+    val:   images/val
+    nc: 2
+    names:
+      0: ref_bottle
+      1: sample_bottle
+
+=============================================================================
+ANNOTATION FORMAT  (YOLO .txt — one line per object)
+=============================================================================
+    <class_id> <x_center> <y_center> <width> <height>   (all 0-1 normalized)
+
+    Examples:
+      0 0.12 0.04 0.03 0.06   # ref_bottle in top row
+      1 0.45 0.35 0.03 0.06   # sample_bottle in main grid
+
+    Background images (empty grid): create an empty .txt file (zero bytes).
+    YOLO treats images with no annotations as pure negative samples.
+
+=============================================================================
+DATASET DIVERSITY  (150-300 images minimum)
+=============================================================================
+    Distribution recommendation:
+      70%  — bottles placed correctly (all levels L0-L4, various fill heights)
+      20%  — empty grid (background suppression — unlabeled images)
+      10%  — challenging cases:
+               • Specular glare on bottle caps under direct LED light
+               • Partially shadowed bottles near grid edges
+               • Bottles at slight angles
+
+    Always capture:
+      • With LEDs on (same as production scanning environment)
+      • From the exact camera mount position and angle
+      • At various times of day (lighting changes)
+      • Varying liquid levels L0 (clear) → L4 (dark amber)
+
+=============================================================================
+TRAINING COMMAND  (run on PC with CUDA GPU)
+=============================================================================
+    pip install ultralytics
+
+    yolo train \\
+        model=yolo11s.pt \\
+        data=dataset/data.yaml \\
+        epochs=100 \\
+        imgsz=640 \\
+        batch=16 \\
+        mosaic=1.0 \\
+        blur_p=0.3 \\
+        hsv_v=0.4 \\
+        hsv_s=0.5 \\
+        hsv_h=0.015 \\
+        flipud=0.0 \\
+        fliplr=0.5 \\
+        project=runs/urine_detector \\
+        name=v1
+
+    Best weights saved to: runs/urine_detector/v1/weights/best.pt
+
+=============================================================================
+EXPORT  (run this script after training)
+=============================================================================
     python scripts/export_model.py
 
-Output:
-    yolo11s_openvino_model/   (created in the current directory)
+    Copy output directory to: models/bottle_yolo11s_openvino/ on Raspberry Pi
 
-Deployment:
-    Copy the output directory to: models/bottle_yolo11s_openvino/ on the Pi
-    The directory must contain: yolo11s.xml, yolo11s.bin, metadata.yaml
-
-Install on Pi before running main.py:
+=============================================================================
+INSTALLATION ON PI
+=============================================================================
     pip install ultralytics openvino
 
--------------------------------------------------------------------------------
-Training advice — Background Samples (Anti-Ghosting)
--------------------------------------------------------------------------------
+=============================================================================
+VERIFICATION
+=============================================================================
+    Run inference on one test image and confirm:
+      - ref_bottle (cls=0) detected only in the top row
+      - sample_bottle (cls=1) detected only in the main grid
+      - Empty grid image → zero detections
 
-To suppress reflections, grid intersections, and printed-line false positives:
-
-1. Collect 50-100 images of the EMPTY grid under normal operating conditions
-   (LEDs on, same mount, same camera angle as production scans).
-
-2. Save these images with EMPTY annotation files (zero-byte .txt files or
-   YOLO label files with no lines). YOLOv11 treats images with no annotations
-   as pure negative/background samples automatically.
-
-3. Recommended dataset composition:
-     70%  — bottles in correct slots (varied fills, angles, lighting)
-     20%  — empty grid images (background suppression)
-     10%  — challenging cases (partial glare, edge slots, reflections)
-
-4. Augmentations to enable in data.yaml:
-     hsv_h: 0.015    # slight hue shift
-     hsv_s: 0.5      # saturation variation (LED intensity changes)
-     hsv_v: 0.4      # brightness variation (simulate different lighting)
-     flipud: 0.0     # DON'T flip vertically — camera is fixed
-     fliplr: 0.5     # horizontal flip is safe (symmetric grid)
-     mosaic: 0.5
-
-5. After training, verify on an empty grid photo:
-   inference should produce zero detections.
+    If ghosts remain on empty grid: add more background images to training set.
+    If bottles missed: lower conf_threshold in config.toml (0.75 → 0.65).
 """
 
 from ultralytics import YOLO
 
-model = YOLO("yolo11s.pt")
+model = YOLO("runs/urine_detector/v1/weights/best.pt")
 
 model.export(
     format="openvino",
     imgsz=640,
-    half=False,       # Pi 4B CPU: use FP32 — FP16 requires hardware support
+    half=False,       # Pi 4B CPU: FP32 — FP16 requires hardware FP16 support
     dynamic=False,
     simplify=True,
 )
 
-print("\nModel exported to: yolo11s_openvino_model/")
-print("Copy the folder to: models/bottle_yolo11s_openvino/ on the Raspberry Pi")
+print("\nModel exported.")
+print("Copy the output *_openvino_model/ directory to:")
+print("  models/bottle_yolo11s_openvino/  on the Raspberry Pi")

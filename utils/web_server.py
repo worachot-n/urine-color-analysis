@@ -152,6 +152,13 @@ def _create_dashboard_app() -> Flask:
             mimetype="image/x-icon",
         )
 
+    # ---- Static assets (logo, icons, etc.) ----
+    @app.route("/assets/<path:filename>")
+    def assets(filename):
+        assets_dir = str(Path(__file__).parent.parent / "assets")
+        from flask import send_from_directory
+        return send_from_directory(assets_dir, filename)
+
     # ---- Results page ----
     @app.route("/")
     def index():

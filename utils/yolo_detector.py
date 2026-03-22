@@ -1,16 +1,22 @@
 """
 YOLOv11 + OpenVINO bottle detector with multi-snapshot consensus.
 
+Two-class model:
+    Class 0: ref_bottle   — 15 reference bottles in the top row
+    Class 1: sample_bottle — all test bottles in the 16x14 main grid
+
 Public API:
     YoloBottleDetector(model_path)
-        .detect_once(frame)              → list of [cx, cy, w, h, conf]
-        .consensus_filter(detections)    → list of confirmed [cx, cy, w, h, conf]
-        .geometric_validate(boxes, grid) → {slot_id: {'cx','cy','w','h','conf'}}
-        .detect_multi(frames, grid)      → {slot_id: {'cx','cy','w','h','conf'}}
+        .detect_once(frame)                       → list of [cx, cy, w, h, conf, cls]
+        .consensus_filter(detections_list)        → list of confirmed [cx, cy, w, h, conf, cls]
+        .geometric_validate_ref(boxes, grid)      → {level: [(cx, cy, r), ...]}
+        .geometric_validate(boxes, grid)          → ({slot_id: {...}}, duplicate_slots)
+        .detect_multi(frames, grid)               → (ref_positions, sample_hits, duplicate_slots)
         .write_result_json(assignments, counts, ts) → Path
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 from datetime import datetime
 
@@ -24,11 +30,15 @@ from configs.config import (
     IMG_DIR,
 )
 
+# YOLO class indices
+CLS_REF_BOTTLE    = 0
+CLS_SAMPLE_BOTTLE = 1
+
 
 class YoloBottleDetector:
     """
     Wraps a YOLOv11 OpenVINO model with CLAHE preprocessing,
-    multi-snapshot consensus, and geometric slot validation.
+    multi-snapshot consensus, and two-class geometric slot validation.
     """
 
     def __init__(self, model_path: str):
@@ -58,7 +68,8 @@ class YoloBottleDetector:
         Run YOLOv11 on one frame.
 
         Returns:
-            list of [cx, cy, w, h, conf] in original pixel coords
+            list of [cx, cy, w, h, conf, cls] in original pixel coords
+            cls: 0 = ref_bottle, 1 = sample_bottle
         """
         enhanced = self._enhance(frame)
 
@@ -75,12 +86,13 @@ class YoloBottleDetector:
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
-                w  = x2 - x1
-                h  = y2 - y1
+                cx   = (x1 + x2) / 2
+                cy   = (y1 + y2) / 2
+                w    = x2 - x1
+                h    = y2 - y1
                 conf = float(box.conf[0])
-                boxes.append([cx, cy, w, h, conf])
+                cls  = int(box.cls[0])
+                boxes.append([cx, cy, w, h, conf, cls])
         return boxes
 
     # ------------------------------------------------------------------
@@ -89,7 +101,7 @@ class YoloBottleDetector:
 
     @staticmethod
     def _iou(b1, b2) -> float:
-        """IoU between two [cx, cy, w, h] boxes."""
+        """IoU between two [cx, cy, w, h, ...] boxes."""
         ax1 = b1[0] - b1[2] / 2;  ax2 = b1[0] + b1[2] / 2
         ay1 = b1[1] - b1[3] / 2;  ay2 = b1[1] + b1[3] / 2
         bx1 = b2[0] - b2[2] / 2;  bx2 = b2[0] + b2[2] / 2
@@ -107,10 +119,10 @@ class YoloBottleDetector:
 
         Args:
             detections_list: list of per-frame box lists
-                             [ [[cx,cy,w,h,conf], ...], [...], [...] ]
+                             [ [[cx,cy,w,h,conf,cls], ...], [...], [...] ]
 
         Returns:
-            list of confirmed [cx, cy, w, h, conf] boxes (averaged coords)
+            list of confirmed [cx, cy, w, h, conf, cls] (averaged coords, modal cls)
         """
         if not detections_list:
             return []
@@ -136,23 +148,76 @@ class YoloBottleDetector:
                 w    = float(np.mean([b[2] for b in group]))
                 h    = float(np.mean([b[3] for b in group]))
                 conf = float(np.mean([b[4] for b in group]))
-                confirmed.append([cx, cy, w, h, conf])
+                cls  = Counter(int(b[5]) for b in group).most_common(1)[0][0]
+                confirmed.append([cx, cy, w, h, conf, cls])
 
         return confirmed
 
     # ------------------------------------------------------------------
-    # Geometric validation
+    # Reference bottle geometric validation
+    # ------------------------------------------------------------------
+
+    def geometric_validate_ref(self, confirmed_boxes: list, grid_cfg) -> dict:
+        """
+        Map ref_bottle (cls=0) boxes to reference slots and group by level.
+
+        Each REF_Lx slot covers 3 physical bottles. The function assigns each
+        detected ref bottle to the nearest reference slot, then groups by level.
+
+        Args:
+            confirmed_boxes: output of consensus_filter() — includes all classes
+            grid_cfg:        GridConfig instance
+
+        Returns:
+            dict {level (int): [(cx, cy, radius), ...]}
+            Compatible with build_reference_baseline() input format.
+        """
+        ref_boxes = [b for b in confirmed_boxes if int(b[5]) == CLS_REF_BOTTLE]
+        if not ref_boxes:
+            return {}
+
+        # Build reference slot centers {slot_id: (scx, scy, r, level)}
+        ref_centers = {}
+        for slot_id, info in grid_cfg.reference_slots.items():
+            coords = info['coords']
+            scx = float(np.mean(coords[:, 0]))
+            scy = float(np.mean(coords[:, 1]))
+            r = min(
+                (float(np.max(coords[:, 0])) - float(np.min(coords[:, 0]))) / 2,
+                (float(np.max(coords[:, 1])) - float(np.min(coords[:, 1]))) / 2,
+            )
+            ref_centers[slot_id] = (scx, scy, r, info['level'])
+
+        level_positions: dict = {}
+        for box in ref_boxes:
+            bcx, bcy = box[0], box[1]
+            br = max(1, min(int(box[2]), int(box[3])) // 2)
+            best_slot = None
+            best_dist = float('inf')
+            for slot_id, (scx, scy, r, _level) in ref_centers.items():
+                dist = float(np.hypot(bcx - scx, bcy - scy))
+                if dist < YOLO_SLOT_MAX_DIST * r * 2 and dist < best_dist:
+                    best_dist = dist
+                    best_slot = slot_id
+            if best_slot is not None:
+                level = ref_centers[best_slot][3]
+                level_positions.setdefault(level, []).append((int(bcx), int(bcy), br))
+
+        return level_positions
+
+    # ------------------------------------------------------------------
+    # Sample bottle geometric validation
     # ------------------------------------------------------------------
 
     def geometric_validate(self, confirmed_boxes: list, grid_cfg) -> tuple:
         """
-        Map confirmed boxes to grid slots using slot→candidates grouping.
+        Map sample_bottle (cls=1) boxes to grid slots using slot→candidates grouping.
 
         When multiple boxes compete for one slot, keep the highest-confidence
         box and record the slot in duplicate_slots.
 
         Args:
-            confirmed_boxes: output of consensus_filter()
+            confirmed_boxes: output of consensus_filter() — includes all classes
             grid_cfg:        GridConfig instance
 
         Returns:
@@ -160,6 +225,9 @@ class YoloBottleDetector:
               assigned:        dict {slot_id: {'cx','cy','w','h','conf'}}
               duplicate_slots: set of slot_ids that had more than one box competing
         """
+        # Only process sample_bottle detections
+        sample_boxes = [b for b in confirmed_boxes if int(b[5]) == CLS_SAMPLE_BOTTLE]
+
         slot_centers = {}
         for slot_id, info in grid_cfg.slot_data.items():
             coords = info['coords']
@@ -173,7 +241,7 @@ class YoloBottleDetector:
 
         # Build slot → list of (dist, box) candidates
         slot_candidates: dict = {}
-        for box in confirmed_boxes:
+        for box in sample_boxes:
             bcx, bcy = box[0], box[1]
             best_slot = None
             best_dist = float('inf')
@@ -204,21 +272,24 @@ class YoloBottleDetector:
         return assigned, duplicate_slots
 
     # ------------------------------------------------------------------
-    # Full pipeline: frames → slot assignments
+    # Full pipeline: frames → (ref_positions, sample_hits, duplicate_slots)
     # ------------------------------------------------------------------
 
     def detect_multi(self, frames: list, grid_cfg) -> tuple:
         """
-        Run the full multi-snapshot → consensus → geometric pipeline.
+        Run the full multi-snapshot → consensus → two-class geometric pipeline.
 
         Returns:
-            (assigned, duplicate_slots)
-              assigned:        dict {slot_id: {'cx','cy','w','h','conf'}}
-              duplicate_slots: set of slot_ids that had competing detections
+            (ref_positions, sample_hits, duplicate_slots)
+              ref_positions:   dict {level: [(cx, cy, r), ...]} — from ref_bottle detections
+              sample_hits:     dict {slot_id: {cx, cy, w, h, conf}} — from sample_bottle
+              duplicate_slots: set of slot_ids with competing sample_bottle detections
         """
         detections_list = [self.detect_once(f) for f in frames]
         confirmed = self.consensus_filter(detections_list)
-        return self.geometric_validate(confirmed, grid_cfg)
+        ref_positions = self.geometric_validate_ref(confirmed, grid_cfg)
+        sample_hits, duplicate_slots = self.geometric_validate(confirmed, grid_cfg)
+        return ref_positions, sample_hits, duplicate_slots
 
     # ------------------------------------------------------------------
     # JSON result writer
