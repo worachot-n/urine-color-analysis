@@ -66,7 +66,8 @@ def setup_logger(name="urine_analyzer"):
 # Annotated image saving
 # ---------------------------------------------------------------------------
 
-def save_annotated_image(frame, slot_assignments, grid_cfg, timestamp=None):
+def save_annotated_image(frame, slot_assignments, grid_cfg,
+                         unassigned_circles=None, timestamp=None):
     """
     Save an annotated copy of the frame to logs/.
 
@@ -105,6 +106,21 @@ def save_annotated_image(frame, slot_assignments, grid_cfg, timestamp=None):
     for slot_id, info in grid_cfg.reference_slots.items():
         pts = info['coords'].astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(vis, [pts], isClosed=True, color=(0, 200, 200), thickness=1)
+
+    # -- Draw reference bottle sampling positions (gold circles + label) --
+    ref_positions = grid_cfg.get_reference_positions()
+    for level, positions in ref_positions.items():
+        for cx, cy, r in positions:
+            gold = (0, 200, 255)
+            cv2.circle(vis, (cx, cy), r, gold, 2)
+            cv2.circle(vis, (cx, cy), 4, gold, -1)
+            label = f"REF_L{level}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            tx = cx - tw // 2
+            ty = cy - r - 5
+            cv2.rectangle(vis, (tx - 2, ty - th - 2), (tx + tw + 2, ty + 2), (0, 0, 0), -1)
+            cv2.putText(vis, label, (tx, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, gold, 1, cv2.LINE_AA)
 
     # -- Draw detected bottles --
     for slot_id, data in slot_assignments.items():
@@ -145,6 +161,14 @@ def save_annotated_image(frame, slot_assignments, grid_cfg, timestamp=None):
                       (0, 0, 0), -1)
         cv2.putText(vis, label, (tx, ty),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+
+    # -- Draw unassigned HoughCircle detections (gray — detected outside any slot) --
+    for cx, cy, r in (unassigned_circles or []):
+        gray = (160, 160, 160)
+        cv2.circle(vis, (cx, cy), r, gray, 1)
+        cv2.circle(vis, (cx, cy), 3, gray, -1)
+        cv2.putText(vis, "?", (cx - 5, cy + 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, gray, 1, cv2.LINE_AA)
 
     filename = timestamp.strftime("%Y-%m-%d_%H-%M-%S") + ".jpg"
     out_path = log_dir / filename

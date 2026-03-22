@@ -82,6 +82,7 @@ def analyze_frame(frame, grid_cfg):
     logger.info("Hough detected %d circles", len(circles))
 
     slot_assignments: dict = {}
+    unassigned_circles: list = []
     seen_slots: set = set()
     duplicate_slots: set = set()
 
@@ -89,6 +90,7 @@ def analyze_frame(frame, grid_cfg):
         slot_id, overlap = grid_cfg.find_slot_for_circle(cx, cy, radius)
 
         if slot_id is None:
+            unassigned_circles.append((cx, cy, radius))
             continue
 
         if slot_id in seen_slots:
@@ -159,6 +161,7 @@ def analyze_frame(frame, grid_cfg):
         "duplicate_slots": duplicate_slots,
         "has_errors": has_errors,
         "errors": errors,
+        "unassigned_circles": unassigned_circles,
     }
 
 
@@ -193,7 +196,9 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
             result_box[0] = result
             if result is not None:
                 log_path = save_annotated_image(
-                    frame, result["slot_assignments"], grid_cfg, timestamp=ts
+                    frame, result["slot_assignments"], grid_cfg,
+                    unassigned_circles=result["unassigned_circles"],
+                    timestamp=ts,
                 )
                 log_path_box[0] = log_path
                 logger.info("Log image saved: %s", log_path)
