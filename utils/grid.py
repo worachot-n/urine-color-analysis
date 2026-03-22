@@ -116,28 +116,36 @@ class GridConfig:
 
     def get_reference_positions(self):
         """
-        Return centroid positions of reference slot polygons grouped by level.
+        Return individual bottle positions within each reference slot polygon.
+
+        Each REF_Lx polygon in grid_config.json is one wide rectangle covering
+        3 physical reference bottles side by side.  Dividing it into 3 equal
+        vertical thirds gives one sampling centre per bottle — much more accurate
+        than a single centroid that averages over all three bottles and the gaps
+        between them.
 
         Returns:
             dict {level (int): [(cx, cy, radius), ...]}
-            Each list has REFS_PER_LEVEL (3) entries in practice after calibration
-            generates one wide polygon per REF_Lx. We treat the polygon centroid
-            as the single sampling center for that level group.
+            Each list contains exactly 3 entries (one per reference bottle).
         """
         positions = {}
         for slot_id, info in self.reference_slots.items():
             level  = info['level']
             coords = info['coords']
 
-            cx = int(np.mean(coords[:, 0]))
-            cy = int(np.mean(coords[:, 1]))
+            x_min = float(np.min(coords[:, 0]))
+            x_max = float(np.max(coords[:, 0]))
+            y_min = float(np.min(coords[:, 1]))
+            y_max = float(np.max(coords[:, 1]))
 
-            # Approximate radius from polygon half-width
-            w = int((np.max(coords[:, 0]) - np.min(coords[:, 0])) / 2)
-            h = int((np.max(coords[:, 1]) - np.min(coords[:, 1])) / 2)
-            radius = max(1, min(w, h))
+            cy    = int((y_min + y_max) / 2)
+            r     = max(1, int((y_max - y_min) / 2))   # radius = half cell height
 
-            positions.setdefault(level, []).append((cx, cy, radius))
+            # Divide wide polygon into 3 equal vertical thirds
+            width = x_max - x_min
+            for i in range(3):
+                cx = int(x_min + (i + 0.5) * width / 3)
+                positions.setdefault(level, []).append((cx, cy, r))
 
         return positions
 
