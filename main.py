@@ -33,7 +33,10 @@ from utils.color_analysis import (
     build_reference_baseline,
     classify_sample,
     extract_bottle_color,
+    delta_e_cie76,
+    WHITE_LAB,
 )
+from utils.image_processing import build_slot_red_mask, slot_has_red_ring
 from utils.grid import GridConfig
 from utils.hardware import (
     button_init,
@@ -78,12 +81,17 @@ def analyze_frame(frame, grid_cfg):
         logger.warning("Reference baseline empty — cannot classify samples")
         return None
 
-    # Color-presence detection: extract Lab from every slot centroid.
-    # Background paper (high L*, ~zero a*/b*) scores >>15 ΔE from all reference levels.
-    # A real bottle scores <15 ΔE to its nearest reference → confirms presence.
+    # Two-step presence verification:
+    #   Test 1 — Red Ring: slot bbox must have ≥ RED_RING_MIN_PIXELS in the healed red mask
+    #   Test 2 — Contrast:  slot center must differ from white paper by ≥ CONTRAST_THRESHOLD
+    # Slots failing Test 1 → empty (no red ring found).
+    # Slots failing Test 2 → ghost/glare (ring found but center is blown-out white).
+    closed_red_mask = build_slot_red_mask(frame)
+
     slot_assignments: dict = {}
-    unassigned_circles: list = []   # kept for save_annotated_image() API compatibility
-    duplicate_slots: set = set()    # always empty with per-slot extraction (kept for API)
+    rejected_slots:   list = []   # (cx, cy, r, slot_id) — ghost detections for visual log
+    unassigned_circles: list = []
+    duplicate_slots: set = set()
 
     for slot_id, info in grid_cfg.slot_data.items():
         coords = info['coords']
@@ -96,15 +104,24 @@ def analyze_frame(frame, grid_cfg):
         y_max = int(np.max(coords[:, 1]))
         r = max(1, min((x_max - x_min) // 2, (y_max - y_min) // 2))
 
+        # ── Test 1: Red Ring ────────────────────────────────────────────────
+        if not slot_has_red_ring(closed_red_mask, coords):
+            continue   # slot is empty — no red ring evidence
+
+        # ── Test 2: Object Contrast (anti-ghost) ────────────────────────────
         sample_lab = extract_bottle_color(frame, cx, cy, r)
         if sample_lab is None:
+            rejected_slots.append((cx, cy, r, slot_id))
             continue
 
+        delta_to_white = delta_e_cie76(sample_lab, WHITE_LAB)
+        if delta_to_white < config.CONTRAST_THRESHOLD:
+            rejected_slots.append((cx, cy, r, slot_id))
+            logger.debug("Ghost rejected: %s (ΔE-white=%.1f)", slot_id, delta_to_white)
+            continue
+
+        # ── Both tests passed → classify ────────────────────────────────────
         level, delta_e, confident = classify_sample(sample_lab, baseline)
-
-        # Presence gate: skip empty slots (paper color is far from all reference levels)
-        if delta_e is None or delta_e >= config.PRESENCE_THRESHOLD:
-            continue
 
         expected_level = info.get("expected_level")
         color_error = (
@@ -124,7 +141,10 @@ def analyze_frame(frame, grid_cfg):
             "error_type": "mismatch" if color_error else None,
         }
 
-    logger.info("Color-presence detection: %d bottles found", len(slot_assignments))
+    logger.info(
+        "Detection: %d bottles confirmed, %d ghosts rejected",
+        len(slot_assignments), len(rejected_slots),
+    )
 
     counts: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
     for data in slot_assignments.values():
@@ -151,6 +171,7 @@ def analyze_frame(frame, grid_cfg):
         "has_errors": has_errors,
         "errors": errors,
         "unassigned_circles": unassigned_circles,
+        "rejected_slots": rejected_slots,
     }
 
 
@@ -187,6 +208,7 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
                 log_path = save_annotated_image(
                     frame, result["slot_assignments"], grid_cfg,
                     unassigned_circles=result["unassigned_circles"],
+                    rejected_slots=result["rejected_slots"],
                     timestamp=ts,
                 )
                 log_path_box[0] = log_path

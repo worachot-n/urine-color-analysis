@@ -18,7 +18,10 @@ import cv2
 import numpy as np
 
 from configs.config import INNER_CROP_PX, CONFIDENCE_MARGIN, \
-                           GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX
+                           GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX, REF_INNER_CROP_PX
+
+# OpenCV 8-bit Lab representation of pure white (L=255, a=128, b=128)
+WHITE_LAB = (255.0, 128.0, 128.0)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +124,8 @@ def build_reference_baseline(frame, reference_positions):
     for level, positions in reference_positions.items():
         labs = []
         for cx, cy, radius in positions:
-            lab = extract_bottle_color(frame, cx, cy, radius)
+            lab = extract_bottle_color(frame, cx, cy, radius,
+                                       inner_crop_px=REF_INNER_CROP_PX)
             if lab is not None:
                 labs.append(lab)
 

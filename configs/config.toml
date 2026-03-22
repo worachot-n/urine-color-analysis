@@ -72,6 +72,9 @@ min_contour_area      = 80     # pixels² — accept smaller arc fragments after
 max_contour_area      = 20000  # pixels² — maximum valid ring contour
 circularity_threshold = 0.45   # 4π·Area/Perimeter² — relaxed to accept broken/arc-shaped rings
 
+# Two-step bottle presence verification
+red_ring_min_pixels = 30   # min non-zero pixels in slot bbox on closed red mask
+
 # Glare / specular reflection handling
 clahe_clip_limit   = 2.0   # CLAHE clip limit for V-channel normalization
 clahe_tile_size    = 8     # CLAHE tile grid size (NxN)
@@ -87,6 +90,8 @@ delta_e_threshold = 15.0  # Legacy — kept for reference; confidence now uses m
 confidence_margin  = 3.0   # second_best_ΔE − best_ΔE must exceed this for 'Confident'
 presence_threshold = 15.0  # Max ΔE to nearest reference level to confirm bottle present
                             # Background paper scores >>15; real bottles score <15
+contrast_threshold = 12.0  # Min ΔE to white paper — below this = ghost (glare/empty)
+ref_inner_crop_px  = 25    # Larger inner crop for reference bottles (ignores red ring edge)
 color_levels      = 5     # Number of distinct color levels (L0-L4)
 refs_per_level    = 3     # Reference bottles per level in reference row
 

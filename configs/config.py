@@ -65,6 +65,8 @@ MIN_CONTOUR_AREA:      int   = _cfg["image_processing"]["min_contour_area"]
 MAX_CONTOUR_AREA:      int   = _cfg["image_processing"]["max_contour_area"]
 CIRCULARITY_THRESHOLD: float = _cfg["image_processing"]["circularity_threshold"]
 
+RED_RING_MIN_PIXELS: int  = _cfg["image_processing"]["red_ring_min_pixels"]
+
 CLAHE_CLIP_LIMIT:   float = _cfg["image_processing"]["clahe_clip_limit"]
 CLAHE_TILE_SIZE:    int   = _cfg["image_processing"]["clahe_tile_size"]
 GLARE_L_THRESHOLD:  int   = _cfg["image_processing"]["glare_l_threshold"]
@@ -77,6 +79,8 @@ INNER_CROP_PX:     int   = _cfg["color_analysis"]["inner_crop_px"]
 DELTA_E_THRESHOLD: float = _cfg["color_analysis"]["delta_e_threshold"]
 CONFIDENCE_MARGIN:  float = _cfg["color_analysis"]["confidence_margin"]
 PRESENCE_THRESHOLD: float = _cfg["color_analysis"]["presence_threshold"]
+CONTRAST_THRESHOLD: float = _cfg["color_analysis"]["contrast_threshold"]
+REF_INNER_CROP_PX:  int   = _cfg["color_analysis"]["ref_inner_crop_px"]
 COLOR_LEVELS:      int   = _cfg["color_analysis"]["color_levels"]
 REFS_PER_LEVEL:    int   = _cfg["color_analysis"]["refs_per_level"]
 

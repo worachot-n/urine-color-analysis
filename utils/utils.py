@@ -67,7 +67,7 @@ def setup_logger(name="urine_analyzer"):
 # ---------------------------------------------------------------------------
 
 def save_annotated_image(frame, slot_assignments, grid_cfg,
-                         unassigned_circles=None, timestamp=None):
+                         unassigned_circles=None, rejected_slots=None, timestamp=None):
     """
     Save an annotated copy of the frame to logs/.
 
@@ -171,6 +171,16 @@ def save_annotated_image(frame, slot_assignments, grid_cfg,
         cv2.circle(vis, (cx, cy), 3, gray, -1)
         cv2.putText(vis, "?", (cx - 5, cy + 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, gray, 1, cv2.LINE_AA)
+
+    # -- Draw ghost-rejected slots (dark-red ✕ — red ring found but center is white/glare) --
+    for cx, cy, r, slot_id in (rejected_slots or []):
+        ghost = (0, 0, 180)   # dark red
+        arm = max(8, r // 2)
+        cv2.line(vis, (cx - arm, cy - arm), (cx + arm, cy + arm), ghost, 2)
+        cv2.line(vis, (cx + arm, cy - arm), (cx - arm, cy + arm), ghost, 2)
+        (tw, _th), _ = cv2.getTextSize(slot_id, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+        cv2.putText(vis, slot_id, (cx - tw // 2, cy - arm - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, ghost, 1, cv2.LINE_AA)
 
     filename = timestamp.strftime("%Y-%m-%d_%H-%M-%S") + ".jpg"
     out_path = log_dir / filename

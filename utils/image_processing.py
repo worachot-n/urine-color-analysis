@@ -19,6 +19,7 @@ from configs.config import (
     MORPH_KERNEL_SIZE, MORPH_CLOSE_LARGE, GAUSSIAN_BLUR_KERNEL,
     MIN_CONTOUR_AREA, MAX_CONTOUR_AREA, CIRCULARITY_THRESHOLD,
     CLAHE_CLIP_LIMIT, CLAHE_TILE_SIZE,
+    RED_RING_MIN_PIXELS,
 )
 
 
@@ -114,3 +115,42 @@ def detect_red_caps(frame):
         circles.append((int(cx), int(cy), int(r)))
 
     return circles
+
+
+def build_slot_red_mask(frame):
+    """
+    Build a morphologically-healed red mask for per-slot ring detection.
+
+    Applies the large closing pass (MORPH_CLOSE_LARGE) on top of create_red_mask()
+    to bridge ring gaps caused by specular glare. Call once per frame and reuse
+    the result across all slot checks.
+
+    Returns:
+        uint8 binary mask, same H×W as frame
+    """
+    red_mask = create_red_mask(frame)
+    big_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (MORPH_CLOSE_LARGE, MORPH_CLOSE_LARGE)
+    )
+    return cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, big_kernel)
+
+
+def slot_has_red_ring(closed_mask, coords):
+    """
+    Return True if the slot bounding box contains enough red mask pixels
+    to confirm that a red ring (bottle cap sticker) is present.
+
+    Args:
+        closed_mask: output of build_slot_red_mask() — full-frame binary mask
+        coords:      slot polygon coords (numpy array, shape (N,2))
+
+    Returns:
+        bool — True if non-zero pixel count >= RED_RING_MIN_PIXELS
+    """
+    h, w = closed_mask.shape[:2]
+    x1 = max(0, int(np.min(coords[:, 0])))
+    y1 = max(0, int(np.min(coords[:, 1])))
+    x2 = min(w, int(np.max(coords[:, 0])))
+    y2 = min(h, int(np.max(coords[:, 1])))
+    local = closed_mask[y1:y2, x1:x2]
+    return int(np.count_nonzero(local)) >= RED_RING_MIN_PIXELS
