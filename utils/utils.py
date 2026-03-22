@@ -143,13 +143,15 @@ def save_annotated_image(frame, slot_assignments, grid_cfg,
 
         error_type = data.get("error_type")   # 'mismatch' | 'duplicate' | None
         expected   = data.get("expected_level")
+        delta_e    = data.get("delta_e")
+        de_str     = f" ΔE:{delta_e:.1f}" if delta_e is not None else ""
 
         if error_type == "duplicate":
             label = f"{slot_id} | DUP!"
         elif error_type == "mismatch" and level is not None:
-            label = f"{slot_id} | L{level} | ERR: MISMATCH (Exp L{expected})"
+            label = f"{slot_id} | L{level}{de_str} | ERR:MISMATCH(ExpL{expected})"
         else:
-            label = f"{slot_id} | L{level}" if level is not None else slot_id
+            label = f"{slot_id} | L{level}{de_str}" if level is not None else slot_id
 
         # Dark background behind text for readability
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)

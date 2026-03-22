@@ -17,10 +17,8 @@ import numpy as np
 from configs.config import (
     HSV_RED_LOWER_1, HSV_RED_UPPER_1,
     HSV_RED_LOWER_2, HSV_RED_UPPER_2,
-    MORPH_KERNEL_SIZE, GAUSSIAN_BLUR_KERNEL,
-    HOUGH_DP, HOUGH_MIN_DIST,
-    HOUGH_PARAM1, HOUGH_PARAM2,
-    HOUGH_MIN_RADIUS, HOUGH_MAX_RADIUS,
+    MORPH_KERNEL_SIZE, MORPH_CLOSE_LARGE, GAUSSIAN_BLUR_KERNEL,
+    MIN_CONTOUR_AREA, MAX_CONTOUR_AREA, CIRCULARITY_THRESHOLD,
 )
 
 
@@ -65,29 +63,47 @@ def create_red_mask(frame):
 
 def detect_red_caps(frame):
     """
-    Detect red circular bottle caps in the full frame using Hough circles.
+    Detect red circular rings using contour-based detection + circularity filter.
 
-    Args:
-        frame: BGR image (numpy array, full resolution)
+    Replaces HoughCircles to eliminate false negatives on partially-obscured rings.
+    HoughCircles requires a nearly-complete circle to vote; contours catch broken
+    or shadowed arcs that HoughCircles misses.
+
+    Pipeline:
+      1. Dual-range HSV red mask (widened saturation catches printed ring variants)
+      2. GaussianBlur + morphological Open/Close (via create_red_mask)
+      3. Extra large MORPH_CLOSE to bridge broken arc segments
+      4. findContours → filter by area and circularity (4π·A/P² ≥ threshold)
+      5. minEnclosingCircle to recover (cx, cy, r)
 
     Returns:
-        list of (cx, cy, radius) tuples — all detected circles, integers.
-        Empty list if none found.
+        list of (cx, cy, radius) tuples — integers. Empty list if none found.
     """
     red_mask = create_red_mask(frame)
 
-    circles = cv2.HoughCircles(
-        red_mask,
-        cv2.HOUGH_GRADIENT,
-        dp=HOUGH_DP,
-        minDist=HOUGH_MIN_DIST,
-        param1=HOUGH_PARAM1,
-        param2=HOUGH_PARAM2,
-        minRadius=HOUGH_MIN_RADIUS,
-        maxRadius=HOUGH_MAX_RADIUS,
+    # Bridge broken ring arcs with a large closing pass
+    big_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (MORPH_CLOSE_LARGE, MORPH_CLOSE_LARGE)
     )
+    closed = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, big_kernel)
 
-    if circles is None:
-        return []
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    return [(int(c[0]), int(c[1]), int(c[2])) for c in circles[0]]
+    circles = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < MIN_CONTOUR_AREA or area > MAX_CONTOUR_AREA:
+            continue
+
+        perimeter = cv2.arcLength(cnt, True)
+        if perimeter == 0:
+            continue
+
+        circularity = 4 * np.pi * area / (perimeter ** 2)
+        if circularity < CIRCULARITY_THRESHOLD:
+            continue
+
+        (cx, cy), r = cv2.minEnclosingCircle(cnt)
+        circles.append((int(cx), int(cy), int(r)))
+
+    return circles

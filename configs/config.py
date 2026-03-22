@@ -59,19 +59,18 @@ HSV_RED_UPPER_2: tuple = tuple(_cfg["image_processing"]["hsv_red_upper_2"])
 
 MORPH_KERNEL_SIZE:    int   = _cfg["image_processing"]["morph_kernel_size"]
 GAUSSIAN_BLUR_KERNEL: tuple = tuple(_cfg["image_processing"]["gaussian_blur_kernel"])
+MORPH_CLOSE_LARGE:    int   = _cfg["image_processing"]["morph_close_large"]
 
-HOUGH_DP:         float = _cfg["image_processing"]["hough_dp"]
-HOUGH_MIN_DIST:   int   = _cfg["image_processing"]["hough_min_dist"]
-HOUGH_PARAM1:     int   = _cfg["image_processing"]["hough_param1"]
-HOUGH_PARAM2:     int   = _cfg["image_processing"]["hough_param2"]
-HOUGH_MIN_RADIUS: int   = _cfg["image_processing"]["hough_min_radius"]
-HOUGH_MAX_RADIUS: int   = _cfg["image_processing"]["hough_max_radius"]
+MIN_CONTOUR_AREA:      int   = _cfg["image_processing"]["min_contour_area"]
+MAX_CONTOUR_AREA:      int   = _cfg["image_processing"]["max_contour_area"]
+CIRCULARITY_THRESHOLD: float = _cfg["image_processing"]["circularity_threshold"]
 
 # =============================================================================
 # Color analysis
 # =============================================================================
 INNER_CROP_PX:     int   = _cfg["color_analysis"]["inner_crop_px"]
 DELTA_E_THRESHOLD: float = _cfg["color_analysis"]["delta_e_threshold"]
+CONFIDENCE_MARGIN: float = _cfg["color_analysis"]["confidence_margin"]
 COLOR_LEVELS:      int   = _cfg["color_analysis"]["color_levels"]
 REFS_PER_LEVEL:    int   = _cfg["color_analysis"]["refs_per_level"]
 

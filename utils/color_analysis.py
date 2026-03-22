@@ -17,7 +17,7 @@ Public API:
 import cv2
 import numpy as np
 
-from configs.config import INNER_CROP_PX, DELTA_E_THRESHOLD
+from configs.config import INNER_CROP_PX, CONFIDENCE_MARGIN
 
 
 # ---------------------------------------------------------------------------
@@ -120,9 +120,9 @@ def build_reference_baseline(frame, reference_positions):
         if not labs:
             continue
 
-        L = float(np.median([v[0] for v in labs]))
-        a = float(np.median([v[1] for v in labs]))
-        b = float(np.median([v[2] for v in labs]))
+        L = float(np.mean([v[0] for v in labs]))
+        a = float(np.mean([v[1] for v in labs]))
+        b = float(np.mean([v[2] for v in labs]))
         baseline[level] = (L, a, b)
 
     return baseline
@@ -132,32 +132,42 @@ def build_reference_baseline(frame, reference_positions):
 # Classification
 # ---------------------------------------------------------------------------
 
-def classify_sample(sample_lab, baseline, threshold=DELTA_E_THRESHOLD):
+def classify_sample(sample_lab, baseline, margin=CONFIDENCE_MARGIN):
     """
-    Classify a sample bottle by finding the lowest Delta E against live standards.
+    Classify a sample bottle by nearest-reference matching (minimum Delta E).
+
+    Confidence uses a margin-of-victory check rather than a fixed threshold:
+    confident when (second_best_ΔE − best_ΔE) > margin. This is relative to
+    the current frame's lighting — the system always assigns the nearest level,
+    and margin only controls how unambiguous the match is.
 
     Args:
-        sample_lab:  (L, a, b) of the sample bottle
-        baseline:    dict {level: (L, a, b)} from build_reference_baseline
-        threshold:   Max Delta E for a confident result (config.DELTA_E_THRESHOLD)
+        sample_lab: (L, a, b) of the sample bottle
+        baseline:   dict {level: (L, a, b)} from build_reference_baseline
+        margin:     Min gap between best and second-best ΔE for confidence
 
     Returns:
         (level, delta_e, confident)
-        - level:     int 0-4 — best matching color level
+        - level:     int 0-4 — level with the absolute minimum Delta E
         - delta_e:   float — distance to the closest standard
-        - confident: bool — True if delta_e <= threshold
+        - confident: bool — True if margin of victory exceeds threshold
     """
     if not baseline or sample_lab is None:
         return None, float('inf'), False
 
-    best_level = None
-    best_delta = float('inf')
+    deltas = {
+        level: delta_e_cie76(sample_lab, ref_lab)
+        for level, ref_lab in baseline.items()
+    }
 
-    for level, ref_lab in baseline.items():
-        de = delta_e_cie76(sample_lab, ref_lab)
-        if de < best_delta:
-            best_delta = de
-            best_level = level
+    sorted_levels = sorted(deltas, key=lambda lvl: deltas[lvl])
+    best_level = sorted_levels[0]
+    best_delta = deltas[best_level]
 
-    confident = best_delta <= threshold
+    if len(sorted_levels) >= 2:
+        second_best_delta = deltas[sorted_levels[1]]
+        confident = (second_best_delta - best_delta) > margin
+    else:
+        confident = True   # only one reference level available
+
     return best_level, best_delta, confident
