@@ -90,7 +90,8 @@ delta_e_threshold = 15.0  # Legacy — kept for reference; confidence now uses m
 confidence_margin  = 3.0   # second_best_ΔE − best_ΔE must exceed this for 'Confident'
 presence_threshold = 15.0  # Max ΔE to nearest reference level to confirm bottle present
                             # Background paper scores >>15; real bottles score <15
-contrast_threshold = 12.0  # Min ΔE to white paper — below this = ghost (glare/empty)
+contrast_threshold = 12.0  # Min ΔE to white paper — below this = ghost (old pipeline)
+ghost_de_threshold  = 8.0   # Stricter ΔE to white paper for YOLO path anti-ghosting
 ref_inner_crop_px  = 25    # Larger inner crop for reference bottles (ignores red ring edge)
 color_levels      = 5     # Number of distinct color levels (L0-L4)
 refs_per_level    = 3     # Reference bottles per level in reference row
@@ -130,10 +131,28 @@ token   = ""
 chat_id = ""
 
 # =============================================================================
+# YOLO DETECTION
+# =============================================================================
+[yolo]
+model_path          = "models/bottle_yolo11s_openvino"
+imgsz               = 640
+conf_threshold      = 0.75
+iou_threshold       = 0.45       # NMS IoU threshold
+augment             = true       # Test-time augmentation (TTA)
+snapshots           = 3          # Number of consecutive snapshots per trigger
+snapshot_delay_ms   = 200        # Milliseconds between snapshots
+exposure_variation  = 0.15       # ±15% ExposureTime variation across snapshots
+consensus_min_votes = 2          # Min snapshots a box must appear in
+consensus_iou       = 0.50       # IoU threshold for matching boxes across snapshots
+slot_max_dist_ratio = 0.60       # Max distance from slot center as fraction of slot radius
+clahe_clip_limit    = 2.0        # CLAHE clip for pre-inference enhancement
+clahe_tile_size     = 8          # CLAHE tile grid size (NxN)
+
+# =============================================================================
 # SYSTEM SAFETY
 # =============================================================================
 [system]
-watchdog_timeout_sec = 10   # Max seconds per processing cycle before timeout
+watchdog_timeout_sec = 60   # Max seconds per processing cycle (increased for YOLO multi-snapshot)
 
 # =============================================================================
 # LOGGING / DEBUG

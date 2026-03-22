@@ -130,33 +130,49 @@ def save_annotated_image(frame, slot_assignments, grid_cfg,
         level  = data.get('level')
         confident = data.get('confident', True)
         has_error = data.get('error', False)
+        error_type = data.get("error_type")   # 'mismatch' | 'duplicate' | None
+        expected   = data.get("expected_level")
+        delta_e    = data.get("delta_e")
 
-        if has_error:
+        if has_error or error_type == "duplicate":
             color = (0, 0, 255)       # red
         elif not confident:
             color = (0, 140, 255)     # orange
         else:
             color = (0, 220, 0)       # green
 
-        cv2.circle(vis, (cx, cy), radius, color, 3)
-        cv2.circle(vis, (cx, cy), 4,      color, -1)
+        # Draw YOLO bounding box if dimensions available, else circle fallback
+        box_w = data.get('w')
+        box_h = data.get('h')
+        if box_w and box_h:
+            bx1 = cx - box_w // 2
+            by1 = cy - box_h // 2
+            bx2 = cx + box_w // 2
+            by2 = cy + box_h // 2
+            thickness = 4 if error_type == "duplicate" else 2
+            cv2.rectangle(vis, (bx1, by1), (bx2, by2), color, thickness)
+            label_top = by1
+        else:
+            cv2.circle(vis, (cx, cy), radius, color, 3)
+            label_top = cy - radius
+        cv2.circle(vis, (cx, cy), 4, color, -1)   # center dot always drawn
 
-        error_type = data.get("error_type")   # 'mismatch' | 'duplicate' | None
-        expected   = data.get("expected_level")
-        delta_e    = data.get("delta_e")
-        de_str     = f" ΔE:{delta_e:.1f}" if delta_e is not None else ""
-
+        # Label: [Slot ID] | [L#] | [de: value]
         if error_type == "duplicate":
             label = f"{slot_id} | DUP!"
         elif error_type == "mismatch" and level is not None:
-            label = f"{slot_id} | L{level}{de_str} | ERR:MISMATCH(ExpL{expected})"
+            de_val = f"{delta_e:.1f}" if delta_e is not None else "?"
+            label = f"{slot_id} | L{level} | de:{de_val} | ERR:MISMATCH(ExpL{expected})"
+        elif level is not None:
+            de_val = f"{delta_e:.1f}" if delta_e is not None else "?"
+            label = f"{slot_id} | L{level} | de:{de_val}"
         else:
-            label = f"{slot_id} | L{level}{de_str}" if level is not None else slot_id
+            label = slot_id
 
         # Dark background behind text for readability
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
         tx = cx - tw // 2
-        ty = cy - radius - 8
+        ty = label_top - 8
         cv2.rectangle(vis,
                       (tx - 3,      ty - th - 3),
                       (tx + tw + 3, ty + 3),

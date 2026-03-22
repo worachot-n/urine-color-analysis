@@ -147,6 +147,65 @@ def capture_frame(locked_controls=None):
         return None
 
 
+def capture_multi_snapshot(locked_controls=None, n=3, delay_ms=200,
+                           exposure_variation=0.15):
+    """
+    Capture n consecutive frames for multi-snapshot consensus detection.
+
+    The base ExposureTime is varied by ±exposure_variation across snapshots
+    (snapshot 0 = normal, 1 = darker, 2 = brighter) to make real bottles
+    robust across lighting conditions while reflections vary and disappear.
+
+    Args:
+        locked_controls:    dict from capture_white_balance_frame()
+        n:                  number of snapshots (default 3)
+        delay_ms:           milliseconds between shots
+        exposure_variation: fractional ±variation of ExposureTime
+
+    Returns:
+        list of BGR numpy arrays (length n). May be shorter on error.
+    """
+    import time
+    try:
+        from picamera2 import Picamera2
+
+        cam = Picamera2()
+        cfg = cam.create_still_configuration(main={"size": CAPTURE_RESOLUTION})
+        cam.configure(cfg)
+        if locked_controls:
+            cam.set_controls(locked_controls)
+        cam.start()
+        time.sleep(1.0)   # stabilise
+
+        base_exposure = (locked_controls or {}).get("ExposureTime", None)
+        frames = []
+        variations = [0.0, -exposure_variation, +exposure_variation][:n]
+
+        for i, var in enumerate(variations):
+            if base_exposure and var != 0.0:
+                cam.set_controls({"ExposureTime": int(base_exposure * (1 + var))})
+                time.sleep(0.05)   # let the sensor settle briefly
+
+            tmp = f"/tmp/snapshot_{i}.jpg"
+            cam.capture_file(tmp)
+            frame = cv2.imread(tmp)
+            if frame is not None and CAMERA_ROTATE_180:
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
+            if frame is not None:
+                frames.append(frame)
+
+            if i < n - 1:
+                time.sleep(delay_ms / 1000.0)
+
+        cam.stop()
+        cam.close()
+        return frames
+
+    except Exception as e:
+        print(f"capture_multi_snapshot error: {e}")
+        return []
+
+
 # ===========================================================================
 # Grid intersection point helpers
 # ===========================================================================

@@ -80,6 +80,7 @@ DELTA_E_THRESHOLD: float = _cfg["color_analysis"]["delta_e_threshold"]
 CONFIDENCE_MARGIN:  float = _cfg["color_analysis"]["confidence_margin"]
 PRESENCE_THRESHOLD: float = _cfg["color_analysis"]["presence_threshold"]
 CONTRAST_THRESHOLD: float = _cfg["color_analysis"]["contrast_threshold"]
+GHOST_DE_THRESHOLD: float = _cfg["color_analysis"]["ghost_de_threshold"]
 REF_INNER_CROP_PX:  int   = _cfg["color_analysis"]["ref_inner_crop_px"]
 COLOR_LEVELS:      int   = _cfg["color_analysis"]["color_levels"]
 REFS_PER_LEVEL:    int   = _cfg["color_analysis"]["refs_per_level"]
@@ -113,6 +114,23 @@ CAPTIVE_PORTAL_PORT: int = _cfg["web_server"]["captive_portal_port"]
 # =============================================================================
 TELEGRAM_TOKEN:   str = _cfg["telegram"]["token"]
 TELEGRAM_CHAT_ID: str = _cfg["telegram"]["chat_id"]
+
+# =============================================================================
+# YOLO
+# =============================================================================
+YOLO_MODEL_PATH:         str   = _cfg["yolo"]["model_path"]
+YOLO_IMGSZ:              int   = _cfg["yolo"]["imgsz"]
+YOLO_CONF_THRESHOLD:     float = _cfg["yolo"]["conf_threshold"]
+YOLO_IOU_THRESHOLD:      float = _cfg["yolo"]["iou_threshold"]
+YOLO_AUGMENT:            bool  = _cfg["yolo"]["augment"]
+YOLO_SNAPSHOTS:          int   = _cfg["yolo"]["snapshots"]
+YOLO_SNAPSHOT_DELAY_MS:  int   = _cfg["yolo"]["snapshot_delay_ms"]
+YOLO_EXPOSURE_VARIATION: float = _cfg["yolo"]["exposure_variation"]
+YOLO_CONSENSUS_MIN:      int   = _cfg["yolo"]["consensus_min_votes"]
+YOLO_CONSENSUS_IOU:      float = _cfg["yolo"]["consensus_iou"]
+YOLO_SLOT_MAX_DIST:      float = _cfg["yolo"]["slot_max_dist_ratio"]
+YOLO_CLAHE_CLIP:         float = _cfg["yolo"]["clahe_clip_limit"]
+YOLO_CLAHE_TILE:         int   = _cfg["yolo"]["clahe_tile_size"]
 
 # =============================================================================
 # System / debug

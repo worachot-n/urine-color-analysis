@@ -28,7 +28,7 @@ import cv2
 import bot.telegram_bot as telegram_bot
 import configs.config as config
 import utils.web_server as web_server
-from utils.calibration import capture_frame, capture_white_balance_frame
+from utils.calibration import capture_frame, capture_white_balance_frame, capture_multi_snapshot
 from utils.color_analysis import (
     build_reference_baseline,
     classify_sample,
@@ -54,11 +54,22 @@ from utils.hardware import (
 )
 import numpy as np
 from utils.utils import save_annotated_image, setup_logger
+from utils.yolo_detector import YoloBottleDetector
 
 logger = setup_logger()
 
 # Locked camera controls populated once during AWB lock step
 _camera_controls: dict = {}
+
+# Lazy-loaded YOLO detector (loads model on first scan)
+_yolo_detector: "YoloBottleDetector | None" = None
+
+
+def _get_yolo() -> YoloBottleDetector:
+    global _yolo_detector
+    if _yolo_detector is None:
+        _yolo_detector = YoloBottleDetector(config.YOLO_MODEL_PATH)
+    return _yolo_detector
 
 
 # ===========================================================================
@@ -176,6 +187,100 @@ def analyze_frame(frame, grid_cfg):
 
 
 # ===========================================================================
+# YOLOv11 analysis pipeline
+# ===========================================================================
+
+
+def analyze_frame_yolo(frames: list, grid_cfg):
+    """
+    YOLOv11 + consensus + color-classification pipeline.
+
+    Args:
+        frames:   list of BGR frames from capture_multi_snapshot()
+        grid_cfg: GridConfig instance
+
+    Returns:
+        Same dict shape as analyze_frame() for downstream compatibility.
+        Returns None if reference baseline could not be built.
+    """
+    ref_positions = grid_cfg.get_reference_positions()
+    baseline = build_reference_baseline(frames[0], ref_positions)
+    if not baseline:
+        logger.warning("Reference baseline empty — cannot classify samples")
+        return None
+
+    detector = _get_yolo()
+    yolo_hits, duplicate_slots = detector.detect_multi(frames, grid_cfg)
+    logger.info("YOLO consensus confirmed %d bottles (%d duplicate slots)",
+                len(yolo_hits), len(duplicate_slots))
+
+    slot_assignments: dict = {}
+    unassigned_circles: list = []
+    rejected_slots:     list = []
+
+    for slot_id, hit in yolo_hits.items():
+        cx, cy = hit['cx'], hit['cy']
+        r = max(1, min(hit['w'], hit['h']) // 2)
+
+        sample_lab = extract_bottle_color(frames[0], cx, cy, r)
+        if sample_lab is None:
+            rejected_slots.append((cx, cy, r, slot_id))
+            continue
+
+        # Physical presence check — reject glare / white paper reflections
+        delta_to_white = delta_e_cie76(sample_lab, WHITE_LAB)
+        if delta_to_white < config.GHOST_DE_THRESHOLD:
+            rejected_slots.append((cx, cy, r, slot_id))
+            logger.debug("YOLO ghost rejected: %s (ΔE-white=%.1f)", slot_id, delta_to_white)
+            continue
+
+        level, delta_e, confident = classify_sample(sample_lab, baseline)
+
+        slot_info = grid_cfg.slot_data.get(slot_id, {})
+        expected  = slot_info.get("expected_level")
+        color_error = (
+            level is not None and expected is not None and level != expected
+        )
+        if color_error:
+            logger.warning(
+                "Mismatch: %s expected L%s got L%s (ΔE=%.1f)",
+                slot_id, expected, level, delta_e or 0,
+            )
+
+        slot_assignments[slot_id] = {
+            "cx": cx, "cy": cy, "radius": r,
+            "w": hit['w'], "h": hit['h'],
+            "level": level, "expected_level": expected,
+            "delta_e": delta_e, "confident": confident,
+            "error": color_error,
+            "error_type": "mismatch" if color_error else None,
+        }
+
+    counts: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+    for data in slot_assignments.values():
+        lvl = data.get("level")
+        if lvl is not None and 0 <= lvl <= 4:
+            counts[lvl] += 1
+
+    has_errors = bool(duplicate_slots) or any(d["error"] for d in slot_assignments.values())
+    errors: list[str] = [f"{sid} Dup" for sid in duplicate_slots]
+    errors += [
+        f"{sid} Mismatch (L{d.get('level', '?')})"
+        for sid, d in slot_assignments.items() if d["error"]
+    ]
+
+    return {
+        "counts": counts,
+        "slot_assignments": slot_assignments,
+        "duplicate_slots": duplicate_slots,
+        "has_errors": has_errors,
+        "errors": errors,
+        "unassigned_circles": unassigned_circles,
+        "rejected_slots": rejected_slots,
+    }
+
+
+# ===========================================================================
 # Scan cycle
 # ===========================================================================
 
@@ -198,24 +303,32 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
 
     def _do_work():
         try:
-            frame = capture_frame(_camera_controls)
-            if frame is None:
+            frames = capture_multi_snapshot(
+                _camera_controls,
+                n=config.YOLO_SNAPSHOTS,
+                delay_ms=config.YOLO_SNAPSHOT_DELAY_MS,
+                exposure_variation=config.YOLO_EXPOSURE_VARIATION,
+            )
+            if not frames:
                 error_box[0] = "Camera capture failed"
                 return
-            result = analyze_frame(frame, grid_cfg)
+            result = analyze_frame_yolo(frames, grid_cfg)
             result_box[0] = result
             if result is not None:
                 log_path = save_annotated_image(
-                    frame, result["slot_assignments"], grid_cfg,
+                    frames[0], result["slot_assignments"], grid_cfg,
                     unassigned_circles=result["unassigned_circles"],
                     rejected_slots=result["rejected_slots"],
                     timestamp=ts,
                 )
                 log_path_box[0] = log_path
-                logger.info("Log image saved: %s", log_path)
+                YoloBottleDetector.write_result_json(
+                    result["slot_assignments"], result["counts"], ts
+                )
+                logger.info("Log image + JSON saved: %s", log_path)
         except Exception as exc:
             error_box[0] = str(exc)
-            logger.exception("Error in analysis worker")
+            logger.exception("Error in YOLO analysis worker")
 
     worker = threading.Thread(target=_do_work, daemon=True)
     worker.start()
