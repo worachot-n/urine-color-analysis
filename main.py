@@ -49,7 +49,7 @@ from utils.hardware import (
     relay_init,
     tm1637_show_all,
 )
-from utils.image_processing import detect_red_caps
+from utils.image_processing import detect_bottles_by_slot
 from utils.utils import save_annotated_image, setup_logger
 
 logger = setup_logger()
@@ -78,21 +78,15 @@ def analyze_frame(frame, grid_cfg):
         logger.warning("Reference baseline empty — cannot classify samples")
         return None
 
-    circles = detect_red_caps(frame)
-    logger.info("Hough detected %d circles", len(circles))
+    slot_detections = detect_bottles_by_slot(frame, grid_cfg)
+    logger.info("Grid-anchored detection found %d bottles", len(slot_detections))
 
     slot_assignments: dict = {}
-    unassigned_circles: list = []
+    unassigned_circles: list = []   # kept for annotated-image API compatibility
     seen_slots: set = set()
     duplicate_slots: set = set()
 
-    for cx, cy, radius in circles:
-        slot_id, overlap = grid_cfg.find_slot_for_circle(cx, cy, radius)
-
-        if slot_id is None:
-            unassigned_circles.append((cx, cy, radius))
-            continue
-
+    for slot_id, (cx, cy, radius) in slot_detections.items():
         if slot_id in seen_slots:
             duplicate_slots.add(slot_id)
             logger.warning("Duplicate: %s", slot_id)

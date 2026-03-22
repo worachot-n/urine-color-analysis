@@ -72,6 +72,11 @@ min_contour_area      = 80     # pixels² — accept smaller arc fragments after
 max_contour_area      = 20000  # pixels² — maximum valid ring contour
 circularity_threshold = 0.45   # 4π·Area/Perimeter² — relaxed to accept broken/arc-shaped rings
 
+# Grid-anchored local slot search (lower thresholds — no global false-positive risk)
+slot_min_contour_area      = 50    # pixels² — a tiny arc within a slot cell suffices
+slot_circularity_threshold = 0.25  # much lower — broken/arc-shaped rings still count
+slot_search_margin         = 12    # pixels to expand slot bounding box on each side
+
 # Glare / specular reflection handling
 clahe_clip_limit   = 2.0   # CLAHE clip limit for V-channel normalization
 clahe_tile_size    = 8     # CLAHE tile grid size (NxN)
