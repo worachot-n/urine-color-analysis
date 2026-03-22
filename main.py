@@ -49,7 +49,7 @@ from utils.hardware import (
     relay_init,
     tm1637_show_all,
 )
-from utils.image_processing import detect_bottles_by_slot
+import numpy as np
 from utils.utils import save_annotated_image, setup_logger
 
 logger = setup_logger()
@@ -78,58 +78,53 @@ def analyze_frame(frame, grid_cfg):
         logger.warning("Reference baseline empty — cannot classify samples")
         return None
 
-    slot_detections = detect_bottles_by_slot(frame, grid_cfg)
-    logger.info("Grid-anchored detection found %d bottles", len(slot_detections))
-
+    # Color-presence detection: extract Lab from every slot centroid.
+    # Background paper (high L*, ~zero a*/b*) scores >>15 ΔE from all reference levels.
+    # A real bottle scores <15 ΔE to its nearest reference → confirms presence.
     slot_assignments: dict = {}
-    unassigned_circles: list = []   # kept for annotated-image API compatibility
-    seen_slots: set = set()
-    duplicate_slots: set = set()
+    unassigned_circles: list = []   # kept for save_annotated_image() API compatibility
+    duplicate_slots: set = set()    # always empty with per-slot extraction (kept for API)
 
-    for slot_id, (cx, cy, radius) in slot_detections.items():
-        if slot_id in seen_slots:
-            duplicate_slots.add(slot_id)
-            logger.warning("Duplicate: %s", slot_id)
-        seen_slots.add(slot_id)
+    for slot_id, info in grid_cfg.slot_data.items():
+        coords = info['coords']
 
-        sample_lab = extract_bottle_color(frame, cx, cy, radius)
-        if sample_lab is not None:
-            level, delta_e, confident = classify_sample(sample_lab, baseline)
-        else:
-            level, delta_e, confident = None, None, False
+        cx = int(np.mean(coords[:, 0]))
+        cy = int(np.mean(coords[:, 1]))
+        x_min = int(np.min(coords[:, 0]))
+        x_max = int(np.max(coords[:, 0]))
+        y_min = int(np.min(coords[:, 1]))
+        y_max = int(np.max(coords[:, 1]))
+        r = max(1, min((x_max - x_min) // 2, (y_max - y_min) // 2))
 
-        slot_info = grid_cfg.slot_data.get(slot_id, {})
-        expected_level = slot_info.get("expected_level")
+        sample_lab = extract_bottle_color(frame, cx, cy, r)
+        if sample_lab is None:
+            continue
+
+        level, delta_e, confident = classify_sample(sample_lab, baseline)
+
+        # Presence gate: skip empty slots (paper color is far from all reference levels)
+        if delta_e is None or delta_e >= config.PRESENCE_THRESHOLD:
+            continue
+
+        expected_level = info.get("expected_level")
         color_error = (
             level is not None and expected_level is not None and level != expected_level
         )
         if color_error:
             logger.warning(
                 "Mismatch: %s expected L%s got L%s (ΔE=%.1f)",
-                slot_id,
-                expected_level,
-                level,
-                delta_e or 0,
+                slot_id, expected_level, level, delta_e or 0,
             )
 
         slot_assignments[slot_id] = {
-            "cx": cx,
-            "cy": cy,
-            "radius": radius,
-            "level": level,
-            "expected_level": expected_level,
-            "delta_e": delta_e,
-            "confident": confident,
-            "error": color_error or (slot_id in duplicate_slots),
-            "error_type": "duplicate" if slot_id in duplicate_slots
-                          else ("mismatch" if color_error else None),
+            "cx": cx, "cy": cy, "radius": r,
+            "level": level, "expected_level": expected_level,
+            "delta_e": delta_e, "confident": confident,
+            "error": color_error,
+            "error_type": "mismatch" if color_error else None,
         }
 
-    # Fix first-occurrence entries that were later marked as duplicates
-    for dup_id in duplicate_slots:
-        if dup_id in slot_assignments:
-            slot_assignments[dup_id]["error"]      = True
-            slot_assignments[dup_id]["error_type"] = "duplicate"
+    logger.info("Color-presence detection: %d bottles found", len(slot_assignments))
 
     counts: dict = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
     for data in slot_assignments.values():

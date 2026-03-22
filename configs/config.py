@@ -65,10 +65,6 @@ MIN_CONTOUR_AREA:      int   = _cfg["image_processing"]["min_contour_area"]
 MAX_CONTOUR_AREA:      int   = _cfg["image_processing"]["max_contour_area"]
 CIRCULARITY_THRESHOLD: float = _cfg["image_processing"]["circularity_threshold"]
 
-SLOT_MIN_CONTOUR_AREA:      int   = _cfg["image_processing"]["slot_min_contour_area"]
-SLOT_CIRCULARITY_THRESHOLD: float = _cfg["image_processing"]["slot_circularity_threshold"]
-SLOT_SEARCH_MARGIN:         int   = _cfg["image_processing"]["slot_search_margin"]
-
 CLAHE_CLIP_LIMIT:   float = _cfg["image_processing"]["clahe_clip_limit"]
 CLAHE_TILE_SIZE:    int   = _cfg["image_processing"]["clahe_tile_size"]
 GLARE_L_THRESHOLD:  int   = _cfg["image_processing"]["glare_l_threshold"]
@@ -79,7 +75,8 @@ GLARE_MIN_VALID_PX: int   = _cfg["image_processing"]["glare_min_valid_px"]
 # =============================================================================
 INNER_CROP_PX:     int   = _cfg["color_analysis"]["inner_crop_px"]
 DELTA_E_THRESHOLD: float = _cfg["color_analysis"]["delta_e_threshold"]
-CONFIDENCE_MARGIN: float = _cfg["color_analysis"]["confidence_margin"]
+CONFIDENCE_MARGIN:  float = _cfg["color_analysis"]["confidence_margin"]
+PRESENCE_THRESHOLD: float = _cfg["color_analysis"]["presence_threshold"]
 COLOR_LEVELS:      int   = _cfg["color_analysis"]["color_levels"]
 REFS_PER_LEVEL:    int   = _cfg["color_analysis"]["refs_per_level"]
 
