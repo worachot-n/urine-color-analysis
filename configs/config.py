@@ -65,6 +65,11 @@ MIN_CONTOUR_AREA:      int   = _cfg["image_processing"]["min_contour_area"]
 MAX_CONTOUR_AREA:      int   = _cfg["image_processing"]["max_contour_area"]
 CIRCULARITY_THRESHOLD: float = _cfg["image_processing"]["circularity_threshold"]
 
+CLAHE_CLIP_LIMIT:   float = _cfg["image_processing"]["clahe_clip_limit"]
+CLAHE_TILE_SIZE:    int   = _cfg["image_processing"]["clahe_tile_size"]
+GLARE_L_THRESHOLD:  int   = _cfg["image_processing"]["glare_l_threshold"]
+GLARE_MIN_VALID_PX: int   = _cfg["image_processing"]["glare_min_valid_px"]
+
 # =============================================================================
 # Color analysis
 # =============================================================================

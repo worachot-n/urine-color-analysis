@@ -19,6 +19,7 @@ from configs.config import (
     HSV_RED_LOWER_2, HSV_RED_UPPER_2,
     MORPH_KERNEL_SIZE, MORPH_CLOSE_LARGE, GAUSSIAN_BLUR_KERNEL,
     MIN_CONTOUR_AREA, MAX_CONTOUR_AREA, CIRCULARITY_THRESHOLD,
+    CLAHE_CLIP_LIMIT, CLAHE_TILE_SIZE,
 )
 
 
@@ -36,7 +37,14 @@ def create_red_mask(frame):
     Returns:
         uint8 binary mask, same H×W as frame
     """
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    # Normalise brightness locally to recover red rings buried under glare hotspots
+    hsv_pre = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    clahe   = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT,
+                               tileGridSize=(CLAHE_TILE_SIZE, CLAHE_TILE_SIZE))
+    hsv_pre[:, :, 2] = clahe.apply(hsv_pre[:, :, 2])
+    frame_eq = cv2.cvtColor(hsv_pre, cv2.COLOR_HSV2BGR)
+
+    hsv = cv2.cvtColor(frame_eq, cv2.COLOR_BGR2HSV)
 
     mask1 = cv2.inRange(hsv,
                         np.array(HSV_RED_LOWER_1, dtype=np.uint8),

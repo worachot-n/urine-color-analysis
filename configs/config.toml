@@ -65,12 +65,18 @@ hsv_red_upper_2    = [180, 255, 255]
 # Morphological cleanup
 morph_kernel_size    = 5
 gaussian_blur_kernel = [5, 5]
-morph_close_large    = 11    # larger close to bridge broken ring arcs
+morph_close_large    = 21    # wider close to bridge large glare-caused ring gaps
 
 # Contour-based circle detection (replaces HoughCircles)
-min_contour_area      = 200    # pixels² — minimum valid ring contour
+min_contour_area      = 80     # pixels² — accept smaller arc fragments after large closing pass
 max_contour_area      = 20000  # pixels² — maximum valid ring contour
-circularity_threshold = 0.65   # 4π·Area/Perimeter² must exceed this
+circularity_threshold = 0.45   # 4π·Area/Perimeter² — relaxed to accept broken/arc-shaped rings
+
+# Glare / specular reflection handling
+clahe_clip_limit   = 2.0   # CLAHE clip limit for V-channel normalization
+clahe_tile_size    = 8     # CLAHE tile grid size (NxN)
+glare_l_threshold  = 220   # OpenCV 8-bit Lab L* cutoff (255=white); pixels above = glare
+glare_min_valid_px = 10    # Min non-glare pixels required to use masked median
 
 # =============================================================================
 # COLOR ANALYSIS

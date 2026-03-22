@@ -17,7 +17,8 @@ Public API:
 import cv2
 import numpy as np
 
-from configs.config import INNER_CROP_PX, CONFIDENCE_MARGIN
+from configs.config import INNER_CROP_PX, CONFIDENCE_MARGIN, \
+                           GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX
 
 
 # ---------------------------------------------------------------------------
@@ -81,9 +82,16 @@ def extract_bottle_color(frame, cx, cy, radius, inner_crop_px=INNER_CROP_PX):
     # Convert BGR → CIE Lab
     lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
 
-    L = float(np.median(lab[:, :, 0]))
-    a = float(np.median(lab[:, :, 1]))
-    b = float(np.median(lab[:, :, 2]))
+    # Exclude glare pixels (over-exposed hotspot at cap center)
+    non_glare = lab[:, :, 0] < GLARE_L_THRESHOLD
+    if non_glare.sum() >= GLARE_MIN_VALID_PX:
+        L = float(np.median(lab[:, :, 0][non_glare]))
+        a = float(np.median(lab[:, :, 1][non_glare]))
+        b = float(np.median(lab[:, :, 2][non_glare]))
+    else:
+        L = float(np.median(lab[:, :, 0]))
+        a = float(np.median(lab[:, :, 1]))
+        b = float(np.median(lab[:, :, 2]))
 
     return (L, a, b)
 
