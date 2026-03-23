@@ -176,9 +176,10 @@ def api_save_grid():
         return jsonify({"error": "grid_pts missing"}), 400
 
     try:
-        from utils.calibration import compute_slot_polygons_from_grid
+        from utils.calibration import compute_slot_polygons_from_grid, compute_sample_roi
         grid_np = np.array(grid_pts, dtype=np.float64)
         ref_slots, slot_data = compute_slot_polygons_from_grid(grid_np)
+        sample_roi = compute_sample_roi(grid_np)
 
         def _ser(info: dict) -> dict:
             out = {}
@@ -191,8 +192,9 @@ def api_save_grid():
                 "project_name":    "Urine Color Analysis",
                 "grid_dimensions": "16x14 lines",
                 "calibration_date": datetime.now().strftime("%Y-%m-%d"),
-                "corners":  corners,
-                "grid_pts": grid_pts,
+                "corners":    corners,
+                "grid_pts":   grid_pts,
+                "sample_roi": sample_roi,
             },
             "reference_row": {
                 "slots": {sid: _ser(info) for sid, info in ref_slots.items()}
@@ -228,6 +230,69 @@ def api_layout():
         return jsonify({"error": str(exc)}), 500
 
 
+# ── API — color status ────────────────────────────────────────────────────────
+
+_COLOR_CFG = _ROOT / "color.json"
+
+@app.route("/api/color-status")
+def api_color_status():
+    if _COLOR_CFG.exists():
+        try:
+            data = json.loads(_COLOR_CFG.read_text())
+            date = data.get("calibration_date", "")
+        except Exception:
+            date = ""
+        return jsonify({"exists": True, "date": date})
+    return jsonify({"exists": False, "date": None})
+
+
+# ── API — save reference colors ───────────────────────────────────────────────
+
+@app.route("/api/save-colors", methods=["POST"])
+def api_save_colors():
+    """
+    Receive 15 reference bottle Lab+hex values, compute 5 averaged baselines,
+    save to color.json.
+
+    Body: {
+      "bottles": {
+        "0": [{"lab": [L,a,b], "hex": "#rrggbb"}, ...×3],
+        "1": [...], "2": [...], "3": [...], "4": [...]
+      }
+    }
+    """
+    body = request.get_json(force=True)
+    bottles = body.get("bottles", {})
+    if len(bottles) != 5:
+        return jsonify({"error": "Need exactly 5 levels (0-4)"}), 400
+
+    baseline = {}
+    for lvl_str, bottle_list in bottles.items():
+        if not bottle_list:
+            continue
+        labs = [b["lab"] for b in bottle_list if "lab" in b]
+        if not labs:
+            continue
+        avg_lab = [sum(v[i] for v in labs) / len(labs) for i in range(3)]
+        # Hex from avg Lab (convert back to RGB for display)
+        r = int(sum(int(b["hex"][1:3], 16) for b in bottle_list) / len(bottle_list))
+        g = int(sum(int(b["hex"][3:5], 16) for b in bottle_list) / len(bottle_list))
+        bv = int(sum(int(b["hex"][5:7], 16) for b in bottle_list) / len(bottle_list))
+        avg_hex = f"#{r:02x}{g:02x}{bv:02x}"
+        baseline[lvl_str] = {"lab": avg_lab, "hex": avg_hex}
+
+    payload = {
+        "calibration_date": datetime.now().strftime("%Y-%m-%d"),
+        "bottles":  bottles,
+        "baseline": baseline,
+    }
+    try:
+        _COLOR_CFG.write_text(json.dumps(payload, indent=2))
+        return jsonify({"ok": True, "levels": len(baseline)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 # ── API — detect ──────────────────────────────────────────────────────────────
 
 @app.route("/api/detect", methods=["POST"])
@@ -249,7 +314,9 @@ def api_detect():
         from utils.yolo_detector import YoloBottleDetector as _YD
         from utils.grid import GridConfig as _GC
         _gcfg = _GC()
-        if _gcfg.corners:
+        if _gcfg.sample_roi:
+            roi = tuple(_gcfg.sample_roi)
+        elif _gcfg.corners:
             roi = _YD._roi_from_corners(_gcfg.corners, frame.shape)
     except Exception:
         pass
@@ -351,6 +418,7 @@ def api_classify():
         from utils.color_analysis import (
             build_reference_baseline, classify_sample,
             extract_bottle_color, delta_e_cie76, WHITE_LAB,
+            load_static_baseline,
         )
         from utils.utils import save_annotated_image
 
@@ -390,13 +458,18 @@ def api_classify():
                     yolo_hits[slot_id] = {"cx": cx, "cy": cy, "w": r * 2, "h": r * 2, "conf": 1.0}
 
         # ---- Reference baseline ----
-        calibrated_positions = grid_cfg.get_reference_positions()
-        merged_ref = dict(calibrated_positions)
-        merged_ref.update(ref_positions_yolo)   # YOLO overrides where available
+        # Prefer pre-saved static baseline (color.json); fall back to dynamic sampling.
+        static_baseline = load_static_baseline(str(_COLOR_CFG))
+        if static_baseline:
+            baseline = static_baseline
+        else:
+            calibrated_positions = grid_cfg.get_reference_positions()
+            merged_ref = dict(calibrated_positions)
+            merged_ref.update(ref_positions_yolo)
+            baseline = build_reference_baseline(frame, merged_ref)
 
-        baseline = build_reference_baseline(frame, merged_ref)
         if not baseline:
-            return jsonify({"error": "Reference baseline empty — check reference row"}), 500
+            return jsonify({"error": "Reference baseline empty — check reference row or save color.json"}), 500
 
         # ---- Classify each detected bottle ----
         slot_assignments: dict = {}

@@ -275,6 +275,64 @@
       </div>
     </div>
 
+    <!-- ── Reference color picker (shown after grid saved) ── -->
+    <div class="card" id="colorSection" style="display:none;">
+      <h2>Reference Colors <span id="colorSavedDate" style="font-size:.78rem;color:var(--text-dim);"></span></h2>
+      <div style="font-size:.82rem;color:var(--text-dim);margin-bottom:8px;" id="colorPickMsg">
+        Click "Pick Colors" then click each reference bottle cell in the grid above.
+      </div>
+      <table style="border-collapse:collapse;width:100%;font-size:.78rem;margin-bottom:10px;" id="colorTbl">
+        <thead>
+          <tr>
+            <th style="padding:3px 6px;color:var(--gold);border-bottom:1px solid var(--bg3);text-align:center;">Bottle</th>
+            <th style="padding:3px 6px;color:var(--gold);border-bottom:1px solid var(--bg3);text-align:center;">L0</th>
+            <th style="padding:3px 6px;color:var(--gold);border-bottom:1px solid var(--bg3);text-align:center;">L1</th>
+            <th style="padding:3px 6px;color:var(--gold);border-bottom:1px solid var(--bg3);text-align:center;">L2</th>
+            <th style="padding:3px 6px;color:var(--gold);border-bottom:1px solid var(--bg3);text-align:center;">L3</th>
+            <th style="padding:3px 6px;color:var(--gold);border-bottom:1px solid var(--bg3);text-align:center;">L4</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="text-align:center;padding:3px 6px;">#1</td>
+            <td id="cp-0-0" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-1-0" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-2-0" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-3-0" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-4-0" style="text-align:center;padding:3px 6px;">—</td>
+          </tr>
+          <tr><td style="text-align:center;padding:3px 6px;">#2</td>
+            <td id="cp-0-1" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-1-1" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-2-1" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-3-1" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-4-1" style="text-align:center;padding:3px 6px;">—</td>
+          </tr>
+          <tr><td style="text-align:center;padding:3px 6px;">#3</td>
+            <td id="cp-0-2" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-1-2" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-2-2" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-3-2" style="text-align:center;padding:3px 6px;">—</td>
+            <td id="cp-4-2" style="text-align:center;padding:3px 6px;">—</td>
+          </tr>
+          <tr>
+            <td style="text-align:center;padding:3px 6px;color:var(--gold);font-weight:600;">avg</td>
+            <td id="cp-avg-0" style="text-align:center;padding:3px 6px;color:var(--gold);">—</td>
+            <td id="cp-avg-1" style="text-align:center;padding:3px 6px;color:var(--gold);">—</td>
+            <td id="cp-avg-2" style="text-align:center;padding:3px 6px;color:var(--gold);">—</td>
+            <td id="cp-avg-3" style="text-align:center;padding:3px 6px;color:var(--gold);">—</td>
+            <td id="cp-avg-4" style="text-align:center;padding:3px 6px;color:var(--gold);">—</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn" id="btnPickColors" onclick="togglePickMode()">&#127752; Pick Colors</button>
+        <button class="btn btn-ghost" onclick="resetColors()">Reset Colors</button>
+        <button class="btn" id="btnSaveColors" onclick="saveColors()" disabled
+                style="background:var(--green);">Save Colors</button>
+        <div class="spinner" id="spinColors"></div>
+      </div>
+    </div>
+
   </section>
 
   <!-- ════════════════════════════════════════════════════════════════
@@ -756,6 +814,156 @@ function setCalibMsg(msg, color = 'var(--text-dim)') {
   const el = document.getElementById('calibMsg');
   el.textContent = msg;
   el.style.color = color;
+}
+
+// ── Color picker ───────────────────────────────────────────────────
+let colorPicks = {};
+let pickModeOn = false;
+const CP_SAMPLE_R = 6;
+
+function rgbToLab(r, g, b) {
+  let R = r/255, G = g/255, B = b/255;
+  R = R > 0.04045 ? Math.pow((R+0.055)/1.055, 2.4) : R/12.92;
+  G = G > 0.04045 ? Math.pow((G+0.055)/1.055, 2.4) : G/12.92;
+  B = B > 0.04045 ? Math.pow((B+0.055)/1.055, 2.4) : B/12.92;
+  let X = R*0.4124564+G*0.3575761+B*0.1804375;
+  let Y = R*0.2126729+G*0.7151522+B*0.0721750;
+  let Z = R*0.0193339+G*0.1191920+B*0.9503041;
+  X /= 0.95047; Z /= 1.08883;
+  function f(t){return t>0.008856?Math.cbrt(t):7.787*t+16/116;}
+  const L=116*f(Y)-16, A=500*(f(X)-f(Y)), Bv=200*(f(Y)-f(Z));
+  return [L*255/100, A+128, Bv+128];
+}
+
+function sampleCalibColor(cx, cy) {
+  const cv = document.getElementById('cvCalib');
+  const ct = cv.getContext('2d');
+  const r  = CP_SAMPLE_R;
+  const px = Math.round(cx), py = Math.round(cy);
+  const d  = ct.getImageData(Math.max(0,px-r), Math.max(0,py-r), r*2, r*2).data;
+  let rs=0,gs=0,bs=0,n=0;
+  for(let i=0;i<d.length;i+=4){rs+=d[i];gs+=d[i+1];bs+=d[i+2];n++;}
+  if(!n) return null;
+  rs=Math.round(rs/n); gs=Math.round(gs/n); bs=Math.round(bs/n);
+  return {r:rs,g:gs,b:bs,lab:rgbToLab(rs,gs,bs),
+          hex:'#'+[rs,gs,bs].map(v=>v.toString(16).padStart(2,'0')).join('')};
+}
+
+function hitRefCellCalib(mx, my) {
+  if (!gridPts) return null;
+  for (let lvl=0; lvl<5; lvl++) {
+    for (let bot=0; bot<3; bot++) {
+      const col = 1 + lvl*3 + bot;
+      const pts = [gridPts[0][col], gridPts[0][col+1], gridPts[1][col+1], gridPts[1][col]];
+      let inside = true;
+      for (let i=0; i<4; i++) {
+        const [x1,y1]=pts[i],[x2,y2]=pts[(i+1)%4];
+        if ((x2-x1)*(my-y1)-(y2-y1)*(mx-x1) < 0){inside=false;break;}
+      }
+      if (inside) return {level:lvl, bottle:bot};
+    }
+  }
+  return null;
+}
+
+function updateCpCell(level, bottle, pick) {
+  const cell = document.getElementById(`cp-${level}-${bottle}`);
+  if(cell) cell.innerHTML = `<span style="display:inline-block;width:16px;height:16px;background:${pick.hex};border-radius:2px;border:1px solid rgba(255,255,255,0.2);vertical-align:middle;margin-right:3px;"></span>${pick.hex}`;
+  updateCpAvg(level);
+  checkCpSaveReady();
+}
+
+function updateCpAvg(level) {
+  const picks = Object.values(colorPicks[level]||{});
+  if(!picks.length) return;
+  const ar=Math.round(picks.reduce((s,p)=>s+p.r,0)/picks.length);
+  const ag=Math.round(picks.reduce((s,p)=>s+p.g,0)/picks.length);
+  const ab=Math.round(picks.reduce((s,p)=>s+p.b,0)/picks.length);
+  const hex='#'+[ar,ag,ab].map(v=>v.toString(16).padStart(2,'0')).join('');
+  const cell = document.getElementById(`cp-avg-${level}`);
+  if(cell) cell.innerHTML = `<span style="display:inline-block;width:16px;height:16px;background:${hex};border-radius:2px;border:1px solid rgba(255,255,255,0.2);vertical-align:middle;margin-right:3px;"></span>${hex}`;
+}
+
+function checkCpSaveReady() {
+  let total=0;
+  for(let l=0;l<5;l++) total+=Object.keys(colorPicks[l]||{}).length;
+  document.getElementById('btnSaveColors').disabled = (total<15);
+  document.getElementById('colorPickMsg').textContent = `Selected ${total}/15 positions`;
+}
+
+function togglePickMode() {
+  pickModeOn = !pickModeOn;
+  const btn = document.getElementById('btnPickColors');
+  btn.style.background = pickModeOn ? 'var(--gold)' : '';
+  btn.style.color      = pickModeOn ? '#122017' : '';
+  document.getElementById('colorPickMsg').textContent =
+    pickModeOn ? 'Click on each reference bottle in the top row of the grid' : `Selected ${countPicks()}/15 positions`;
+  const cv = document.getElementById('cvCalib');
+  cv.style.cursor = pickModeOn ? 'cell' : 'crosshair';
+}
+
+function countPicks(){let t=0;for(let l=0;l<5;l++)t+=Object.keys(colorPicks[l]||{}).length;return t;}
+
+function resetColors() {
+  colorPicks = {};
+  for(let l=0;l<5;l++){
+    for(let b=0;b<3;b++){const c=document.getElementById(`cp-${l}-${b}`);if(c)c.innerHTML='—';}
+    const a=document.getElementById(`cp-avg-${l}`);if(a)a.innerHTML='—';
+  }
+  document.getElementById('btnSaveColors').disabled=true;
+  document.getElementById('colorPickMsg').textContent='Colors reset.';
+}
+
+async function saveColors() {
+  const bottles={};
+  for(let l=0;l<5;l++){
+    bottles[l]=[];
+    for(let b=0;b<3;b++){const p=(colorPicks[l]||{})[b];if(p)bottles[l].push({lab:p.lab,hex:p.hex});}
+  }
+  document.getElementById('btnSaveColors').disabled=true;
+  document.getElementById('spinColors').classList.add('active');
+  try {
+    const res  = await fetch('/api/save-colors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bottles})});
+    const data = await res.json();
+    document.getElementById('colorPickMsg').textContent =
+      data.ok ? `✓ Saved — ${data.levels} levels written to color.json` : '✗ ' + (data.error||'failed');
+    if(data.ok) await checkColorStatus();
+  } catch(e){ document.getElementById('colorPickMsg').textContent='Error: '+e; }
+  document.getElementById('spinColors').classList.remove('active');
+}
+
+async function checkColorStatus() {
+  try{
+    const r=await fetch('/api/color-status');
+    const d=await r.json();
+    const el=document.getElementById('colorSavedDate');
+    if(d.exists && el) el.textContent = '— saved '+d.date;
+  } catch{}
+}
+
+// Hook calibrate canvas click for color picking
+document.addEventListener('DOMContentLoaded', () => {
+  const cv = document.getElementById('cvCalib');
+  cv.addEventListener('click', (e) => {
+    if (!pickModeOn || !gridPts) return;
+    const rect = cv.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const hit = hitRefCellCalib(mx, my);
+    if (!hit){ document.getElementById('colorPickMsg').textContent='Click inside a reference cell (top row)'; return; }
+    const pick = sampleCalibColor(mx, my);
+    if (!pick) return;
+    if (!colorPicks[hit.level]) colorPicks[hit.level]={};
+    colorPicks[hit.level][hit.bottle]=pick;
+    updateCpCell(hit.level, hit.bottle, pick);
+  }, true);
+});
+
+// Show color section after grid is saved
+const _origSaveGrid = saveGrid;
+async function saveGrid() {
+  await _origSaveGrid();
+  document.getElementById('colorSection').style.display='';
+  await checkColorStatus();
 }
 
 // ── YOLO Detection ─────────────────────────────────────────────────

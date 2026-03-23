@@ -14,8 +14,10 @@ Public API:
     classify_sample(sample_lab, baseline, threshold)           -> (level, delta_e, confident)
 """
 
+import json
 import cv2
 import numpy as np
+from pathlib import Path
 
 from configs.config import INNER_CROP_PX, CONFIDENCE_MARGIN, \
                            GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX, REF_INNER_CROP_PX
@@ -138,6 +140,34 @@ def build_reference_baseline(frame, reference_positions):
         baseline[level] = (L, a, b)
 
     return baseline
+
+
+# ---------------------------------------------------------------------------
+# Static baseline (from color.json)
+# ---------------------------------------------------------------------------
+
+def load_static_baseline(path="color.json"):
+    """
+    Load pre-saved reference Lab colors from color.json.
+
+    Returns the same dict shape as build_reference_baseline() so it can be
+    used as a drop-in replacement when color.json exists.
+
+    Args:
+        path: path to color.json (default "color.json")
+
+    Returns:
+        dict {level (int): (L, a, b)} in OpenCV 8-bit Lab encoding,
+        or empty dict if the file is missing or malformed.
+    """
+    try:
+        data = json.loads(Path(path).read_text())
+        return {
+            int(lvl): tuple(float(v) for v in info["lab"])
+            for lvl, info in data["baseline"].items()
+        }
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------------------

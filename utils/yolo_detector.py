@@ -336,8 +336,13 @@ class YoloBottleDetector:
               duplicate_slots: set of slot_ids with competing detections
         """
         roi = None
-        if frames and getattr(grid_cfg, 'corners', None):
-            roi = self._roi_from_corners(grid_cfg.corners, frames[0].shape)
+        if frames:
+            if getattr(grid_cfg, 'sample_roi', None):
+                # Prefer sample-area ROI (rows 1-12 only) — excludes reference row
+                roi = tuple(grid_cfg.sample_roi)
+            elif getattr(grid_cfg, 'corners', None):
+                # Fallback: full-grid corners (old grids without sample_roi saved)
+                roi = self._roi_from_corners(grid_cfg.corners, frames[0].shape)
 
         detections_list = [self.detect_once(f, roi=roi) for f in frames]
         confirmed = self.consensus_filter(detections_list)

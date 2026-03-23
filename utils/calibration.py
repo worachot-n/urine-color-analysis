@@ -293,6 +293,27 @@ def compute_slot_polygons_from_grid(grid_pts):
     return reference_slots, slot_data
 
 
+def compute_sample_roi(grid_pts):
+    """
+    Compute the bounding box of the sample area (rows 1-12 only, excluding reference row 0).
+
+    Args:
+        grid_pts: numpy array shape (14, 17, 2) — h-lines × v-lines × (x, y)
+
+    Returns:
+        [x1, y1, x2, y2] as ints — tight bounding box of the sample area.
+        Use as the YOLO inference ROI so reference bottles are never seen.
+    """
+    grid_np = np.asarray(grid_pts)
+    # Rows 1-12 span h-lines index 1 through 13 (14 h-lines total, indices 0-13)
+    sample_pts = grid_np[1:14, :, :]   # shape (13, 17, 2)
+    x1 = int(np.min(sample_pts[:, :, 0]))
+    y1 = int(np.min(sample_pts[:, :, 1]))
+    x2 = int(np.max(sample_pts[:, :, 0]))
+    y2 = int(np.max(sample_pts[:, :, 1]))
+    return [x1, y1, x2, y2]
+
+
 def compute_slot_polygons(corners):
     """
     Compute all 195 slot polygons from the 4 outer grid corners.

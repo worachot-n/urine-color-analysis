@@ -89,6 +89,7 @@ REFS_PER_LEVEL:    int   = _cfg["color_analysis"]["refs_per_level"]
 # Grid
 # =============================================================================
 GRID_CONFIG_FILE:  str  = _cfg["grid"]["config_file"]
+COLOR_JSON_FILE:   str  = _cfg["grid"]["color_json_file"]
 GRID_COLS:         int  = _cfg["grid"]["cols"]
 GRID_ROWS:         int  = _cfg["grid"]["rows"]
 GROUPS:            list = _cfg["grid"]["groups"]

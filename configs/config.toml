@@ -101,6 +101,7 @@ refs_per_level    = 3     # Reference bottles per level in reference row
 # =============================================================================
 [grid]
 config_file    = "grid_config.json"
+color_json_file = "color.json"
 cols           = 16               # 16 columns of lines (col 0 = ZZ dead zone)
 rows           = 14               # 14 rows of lines (row 0 = reference, 1-12 = samples)
 groups         = ["A1", "A2", "A3", "A4"]
@@ -127,8 +128,8 @@ captive_portal_port = 8080   # Port 80 reserved; use 8080 for WiFi setup portal
 # TELEGRAM
 # =============================================================================
 [telegram]
-token   = ""
-chat_id = ""
+token   = "8767463351:AAF7fd0opVuizOoJBgxWWEH2qn85aydXHVg"
+chat_id = "-1003801438507"
 
 # =============================================================================
 # YOLO DETECTION

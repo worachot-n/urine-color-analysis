@@ -4,11 +4,19 @@ Single-class YOLOv8s training guide + OpenVINO export for Raspberry Pi 4B.
 =============================================================================
 CLASSES
 =============================================================================
-    Class 0: bottle — every bottle on the grid (reference row AND main grid)
+    Class 0: bottle — sample bottles ONLY (rows 1-12, main grid area)
 
-    Reference vs sample classification is done at inference time by grid
-    position: bottles near row-0 reference slots → reference; bottles near
-    rows 1-12 sample slots → sample. YOLO only needs to find the bottles.
+    IMPORTANT — ROI CONSISTENCY:
+    The production inference pipeline crops each frame to the sample-area ROI
+    (rows 1-12 only, stored as grid_config.json::system_metadata::sample_roi)
+    BEFORE running YOLO.  Reference row bottles (row 0) are intentionally
+    excluded — their colors are sampled separately via the manual color-picker
+    calibration step and saved to color.json.
+
+    Therefore training and validation images MUST also be pre-cropped to the
+    sample_roi region before labelling.  Labels must only annotate bottles in
+    rows 1-12.  Do NOT label reference row bottles — they will never appear
+    in the YOLO input at inference time.
 
 =============================================================================
 DATASET STRUCTURE

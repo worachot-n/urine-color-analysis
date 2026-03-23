@@ -95,6 +95,55 @@
   #status { font-size: 0.85rem; color: var(--color-accent); min-height: 1.1rem; }
   #status.ok  { color: var(--color-green-3); }
   #status.err { color: var(--color-red); }
+
+  /* ── Color picker section ── */
+  #color-section {
+    display: none;
+    margin-top: 1.2rem;
+    border-top: 1px solid var(--color-green-2);
+    padding-top: 1rem;
+  }
+  .color-section-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--color-accent);
+    margin-bottom: 0.6rem;
+  }
+  .color-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+    margin-bottom: 0.7rem;
+  }
+  .color-table th {
+    text-align: center;
+    padding: 0.2rem 0.3rem;
+    color: var(--color-accent);
+    border-bottom: 1px solid var(--color-green-2);
+  }
+  .color-table td {
+    text-align: center;
+    padding: 0.2rem 0.3rem;
+    border-bottom: 1px solid var(--color-green-2);
+    color: var(--color-white);
+  }
+  .swatch {
+    display: inline-block;
+    width: 20px; height: 20px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.2);
+    vertical-align: middle;
+    margin-right: 3px;
+    background: #333;
+  }
+  .color-table td.avg-row { color: var(--color-accent); font-weight: 600; }
+  .btn-pick-active { background: #e6a817 !important; color: #000 !important; }
+  #color-status-msg {
+    font-size: 0.8rem;
+    color: var(--color-green-4);
+    margin-bottom: 0.4rem;
+    min-height: 1rem;
+  }
 </style>
 {% endblock %}
 
@@ -155,6 +204,51 @@
 
     <!-- Status -->
     <div id="status"></div>
+
+    <!-- ── Color picker (shown after grid is saved) ── -->
+    <div id="color-section">
+      <div class="color-section-title">เลือกสีอ้างอิง (Reference Colors)</div>
+      <div id="color-status-msg"></div>
+
+      <!-- 5×3 swatch table + average row -->
+      <table class="color-table" id="color-table">
+        <thead>
+          <tr>
+            <th>Bottle</th>
+            <th>L0</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr id="ct-row-0"><td>#1</td>
+            <td id="ct-0-0">—</td><td id="ct-1-0">—</td><td id="ct-2-0">—</td>
+            <td id="ct-3-0">—</td><td id="ct-4-0">—</td>
+          </tr>
+          <tr id="ct-row-1"><td>#2</td>
+            <td id="ct-0-1">—</td><td id="ct-1-1">—</td><td id="ct-2-1">—</td>
+            <td id="ct-3-1">—</td><td id="ct-4-1">—</td>
+          </tr>
+          <tr id="ct-row-2"><td>#3</td>
+            <td id="ct-0-2">—</td><td id="ct-1-2">—</td><td id="ct-2-2">—</td>
+            <td id="ct-3-2">—</td><td id="ct-4-2">—</td>
+          </tr>
+          <tr>
+            <td class="avg-row">avg</td>
+            <td class="avg-row" id="ct-avg-0">—</td>
+            <td class="avg-row" id="ct-avg-1">—</td>
+            <td class="avg-row" id="ct-avg-2">—</td>
+            <td class="avg-row" id="ct-avg-3">—</td>
+            <td class="avg-row" id="ct-avg-4">—</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <button id="btn-pick-mode" class="btn btn-navy" onclick="togglePickMode()">
+        &#127752; เลือกสีอ้างอิง
+      </button>
+      <button class="btn btn-red"   style="margin-top:0.4rem" onclick="resetColors()">รีเซ็ตค่าสี</button>
+      <button id="btn-save-colors" class="btn btn-green" style="margin-top:0.4rem"
+              onclick="saveColors()" disabled>บันทึกค่าสี</button>
+    </div>
 
   </div>
 </div>
@@ -505,6 +599,193 @@ async function showSlotOverlay() {
 function setStatus(msg, type = '') {
   statusEl.textContent = msg;
   statusEl.className   = type;
+}
+
+// ---------------------------------------------------------------------------
+// Color picker
+// ---------------------------------------------------------------------------
+// colorPicks[level][bottle] = {r,g,b,lab,hex}  (level 0-4, bottle 0-2)
+let colorPicks   = {};
+let pickModeOn   = false;
+const SAMPLE_R   = 6;   // px radius to average when sampling
+
+function rgbToLab(r, g, b) {
+  // sRGB → linear → XYZ D65 → CIE Lab → OpenCV 8-bit encoding
+  let R = r / 255, G = g / 255, B = b / 255;
+  R = R > 0.04045 ? Math.pow((R + 0.055) / 1.055, 2.4) : R / 12.92;
+  G = G > 0.04045 ? Math.pow((G + 0.055) / 1.055, 2.4) : G / 12.92;
+  B = B > 0.04045 ? Math.pow((B + 0.055) / 1.055, 2.4) : B / 12.92;
+  let X = R * 0.4124564 + G * 0.3575761 + B * 0.1804375;
+  let Y = R * 0.2126729 + G * 0.7151522 + B * 0.0721750;
+  let Z = R * 0.0193339 + G * 0.1191920 + B * 0.9503041;
+  X /= 0.95047; Z /= 1.08883;
+  function f(t) { return t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116; }
+  const L = 116 * f(Y) - 16;
+  const A = 500 * (f(X) - f(Y));
+  const Bv = 200 * (f(Y) - f(Z));
+  // OpenCV 8-bit Lab encoding: L*255/100, a+128, b+128
+  return [L * 255 / 100, A + 128, Bv + 128];
+}
+
+function sampleCanvasColor(cx, cy) {
+  const px = Math.round(cx), py = Math.round(cy), r = SAMPLE_R;
+  const data = ctx.getImageData(Math.max(0, px - r), Math.max(0, py - r),
+                                r * 2, r * 2).data;
+  let rs = 0, gs = 0, bs = 0, n = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    rs += data[i]; gs += data[i + 1]; bs += data[i + 2]; n++;
+  }
+  if (!n) return null;
+  rs = Math.round(rs / n); gs = Math.round(gs / n); bs = Math.round(bs / n);
+  return { r: rs, g: gs, b: bs,
+           lab: rgbToLab(rs, gs, bs),
+           hex: '#' + [rs, gs, bs].map(v => v.toString(16).padStart(2, '0')).join('') };
+}
+
+function refCellCenter(level, bottle) {
+  // Reference row = gridPts[0..1], columns 1-15
+  // Level groups: L0→cols 1-3, L1→cols 4-6, ... L4→cols 13-15
+  // bottle: 0-2 within the group
+  if (!gridPts) return null;
+  const col = 1 + level * 3 + bottle;
+  const [x1, y1] = gridPts[0][col],     [x2, y2] = gridPts[0][col + 1];
+  const [x3, y3] = gridPts[1][col],     [x4, y4] = gridPts[1][col + 1];
+  return [(x1 + x2 + x3 + x4) / 4, (y1 + y2 + y3 + y4) / 4];
+}
+
+function hitRefCell(mx, my) {
+  // Return {level, bottle} if (mx,my) is inside a reference cell, else null
+  if (!gridPts) return null;
+  for (let lvl = 0; lvl < 5; lvl++) {
+    for (let bot = 0; bot < 3; bot++) {
+      const col = 1 + lvl * 3 + bot;
+      const pts = [
+        gridPts[0][col], gridPts[0][col + 1],
+        gridPts[1][col + 1], gridPts[1][col]
+      ];
+      if (pointInQuad(mx, my, pts)) return { level: lvl, bottle: bot };
+    }
+  }
+  return null;
+}
+
+function pointInQuad(px, py, quad) {
+  // Simple cross-product point-in-quadrilateral test
+  for (let i = 0; i < 4; i++) {
+    const [x1, y1] = quad[i], [x2, y2] = quad[(i + 1) % 4];
+    if ((x2 - x1) * (py - y1) - (y2 - y1) * (px - x1) < 0) return false;
+  }
+  return true;
+}
+
+function updateSwatchCell(level, bottle, pick) {
+  const cell = document.getElementById(`ct-${level}-${bottle}`);
+  if (!cell) return;
+  cell.innerHTML = `<span class="swatch" style="background:${pick.hex}"></span>${pick.hex}`;
+  updateAvgRow(level);
+  checkSaveReady();
+}
+
+function updateAvgRow(level) {
+  const picks = colorPicks[level] || {};
+  const vals = Object.values(picks);
+  if (!vals.length) return;
+  const ar = Math.round(vals.reduce((s,p)=>s+p.r,0)/vals.length);
+  const ag = Math.round(vals.reduce((s,p)=>s+p.g,0)/vals.length);
+  const ab = Math.round(vals.reduce((s,p)=>s+p.b,0)/vals.length);
+  const hex = '#' + [ar, ag, ab].map(v => v.toString(16).padStart(2, '0')).join('');
+  const cell = document.getElementById(`ct-avg-${level}`);
+  if (cell) cell.innerHTML = `<span class="swatch" style="background:${hex}"></span>${hex}`;
+}
+
+function checkSaveReady() {
+  let total = 0;
+  for (let lvl = 0; lvl < 5; lvl++)
+    total += Object.keys(colorPicks[lvl] || {}).length;
+  document.getElementById('btn-save-colors').disabled = (total < 15);
+  document.getElementById('color-status-msg').textContent =
+    `เลือกแล้ว ${total}/15 ตำแหน่ง`;
+}
+
+function togglePickMode() {
+  pickModeOn = !pickModeOn;
+  const btn = document.getElementById('btn-pick-mode');
+  btn.classList.toggle('btn-pick-active', pickModeOn);
+  canvas.style.cursor = pickModeOn ? 'cell' : 'crosshair';
+  document.getElementById('color-status-msg').textContent =
+    pickModeOn ? 'คลิกบนขวดอ้างอิงแต่ละตำแหน่งในแถวบน' : '';
+}
+
+function resetColors() {
+  colorPicks = {};
+  for (let lvl = 0; lvl < 5; lvl++) {
+    for (let bot = 0; bot < 3; bot++) {
+      const cell = document.getElementById(`ct-${lvl}-${bot}`);
+      if (cell) cell.innerHTML = '—';
+    }
+    const avg = document.getElementById(`ct-avg-${lvl}`);
+    if (avg) avg.innerHTML = '—';
+  }
+  document.getElementById('btn-save-colors').disabled = true;
+  document.getElementById('color-status-msg').textContent = 'รีเซ็ตแล้ว';
+}
+
+async function saveColors() {
+  const bottles = {};
+  for (let lvl = 0; lvl < 5; lvl++) {
+    bottles[lvl] = [];
+    for (let bot = 0; bot < 3; bot++) {
+      const p = (colorPicks[lvl] || {})[bot];
+      if (p) bottles[lvl].push({ lab: p.lab, hex: p.hex });
+    }
+  }
+  document.getElementById('btn-save-colors').disabled = true;
+  document.getElementById('color-status-msg').textContent = 'กำลังบันทึก...';
+  try {
+    const res  = await fetch('/api/calibrate/save-colors', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ bottles }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('color-status-msg').textContent =
+        `✓ บันทึกสำเร็จ — ${data.levels} ระดับสี`;
+    } else {
+      document.getElementById('color-status-msg').textContent =
+        'บันทึกล้มเหลว: ' + (data.error || 'unknown');
+      document.getElementById('btn-save-colors').disabled = false;
+    }
+  } catch(e) {
+    document.getElementById('color-status-msg').textContent = 'Error: ' + e;
+    document.getElementById('btn-save-colors').disabled = false;
+  }
+}
+
+// Intercept canvas clicks in pick mode (added after gridPts is set)
+canvas.addEventListener('click', (e) => {
+  if (!pickModeOn || !gridPts) return;
+  const [mx, my] = getEventPos(e);
+  const hit = hitRefCell(mx, my);
+  if (!hit) {
+    document.getElementById('color-status-msg').textContent =
+      'คลิกในเซลล์อ้างอิง (แถวบนสุด)';
+    return;
+  }
+  const { level, bottle } = hit;
+  const pick = sampleCanvasColor(mx, my);
+  if (!pick) return;
+  if (!colorPicks[level]) colorPicks[level] = {};
+  colorPicks[level][bottle] = pick;
+  updateSwatchCell(level, bottle, pick);
+}, true); // capture phase so this runs before the corner-click handler
+
+// Show color section after successful save
+const _origShowSlotOverlay = showSlotOverlay;
+async function showSlotOverlay() {
+  await _origShowSlotOverlay();
+  document.getElementById('color-section').style.display = 'block';
+  checkSaveReady();
 }
 </script>
 {% endblock %}

@@ -378,9 +378,10 @@ def _create_dashboard_app() -> Flask:
             return jsonify({"error": "grid_pts missing"}), 400
 
         try:
-            from utils.calibration import compute_slot_polygons_from_grid
+            from utils.calibration import compute_slot_polygons_from_grid, compute_sample_roi
             grid_np = np.array(grid_pts, dtype=np.float64)  # (14, 17, 2)
             reference_slots, slot_data = compute_slot_polygons_from_grid(grid_np)
+            sample_roi = compute_sample_roi(grid_np)
 
             output = {
                 "system_metadata": {
@@ -389,6 +390,7 @@ def _create_dashboard_app() -> Flask:
                     "calibration_date":  datetime.now().strftime("%Y-%m-%d"),
                     "corners":           corners,
                     "grid_pts":          grid_pts,
+                    "sample_roi":        sample_roi,
                 },
                 "reference_row": {
                     "description": "Top row for dynamic color calibration (3 bottles per level)",
@@ -407,6 +409,55 @@ def _create_dashboard_app() -> Flask:
             return jsonify({"ok": True})
         except Exception as e:
             logger.error("calib_save: %s", e)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    @app.route("/api/calibrate/color-status")
+    def calib_color_status():
+        path = Path(config.COLOR_JSON_FILE)
+        if path.exists():
+            try:
+                d = json.loads(path.read_text())
+                date = d.get("calibration_date", "")
+            except Exception:
+                date = ""
+            return jsonify({"exists": True, "date": date})
+        return jsonify({"exists": False, "date": None})
+
+    @app.route("/api/calibrate/save-colors", methods=["POST"])
+    def calib_save_colors():
+        """
+        Save 15 reference bottle Lab+hex values and 5 averaged baselines to color.json.
+        Body: {"bottles": {"0": [{"lab":[L,a,b],"hex":"#rrggbb"},...×3], ...×5}}
+        """
+        data = request.get_json(force=True)
+        bottles = data.get("bottles", {})
+        if len(bottles) != 5:
+            return jsonify({"error": "Need exactly 5 levels (0-4)"}), 400
+
+        baseline = {}
+        for lvl_str, bottle_list in bottles.items():
+            if not bottle_list:
+                continue
+            labs = [b["lab"] for b in bottle_list if "lab" in b]
+            if not labs:
+                continue
+            avg_lab = [sum(v[i] for v in labs) / len(labs) for i in range(3)]
+            r  = int(sum(int(b["hex"][1:3], 16) for b in bottle_list) / len(bottle_list))
+            g  = int(sum(int(b["hex"][3:5], 16) for b in bottle_list) / len(bottle_list))
+            bv = int(sum(int(b["hex"][5:7], 16) for b in bottle_list) / len(bottle_list))
+            baseline[lvl_str] = {"lab": avg_lab, "hex": f"#{r:02x}{g:02x}{bv:02x}"}
+
+        payload = {
+            "calibration_date": datetime.now().strftime("%Y-%m-%d"),
+            "bottles":  bottles,
+            "baseline": baseline,
+        }
+        try:
+            Path(config.COLOR_JSON_FILE).write_text(json.dumps(payload, indent=2))
+            logger.info("color.json saved with %d levels", len(baseline))
+            return jsonify({"ok": True, "levels": len(baseline)})
+        except Exception as e:
+            logger.error("calib_save_colors: %s", e)
             return jsonify({"ok": False, "error": str(e)}), 500
 
     return app

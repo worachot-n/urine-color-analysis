@@ -34,6 +34,7 @@ from utils.color_analysis import (
     classify_sample,
     extract_bottle_color,
     delta_e_cie76,
+    load_static_baseline,
     WHITE_LAB,
 )
 from utils.image_processing import build_slot_red_mask, slot_has_red_ring
@@ -221,7 +222,16 @@ def analyze_frame_yolo(frames: list, grid_cfg):
                 sum(len(v) for v in ref_positions_yolo.values()),
                 len(yolo_hits), len(duplicate_slots))
 
-    baseline = build_reference_baseline(frames[0], merged_ref_positions)
+    # Prefer pre-saved static baseline (color.json) over dynamic live sampling.
+    # Static baseline is set once during calibration and is unaffected by YOLO
+    # missing the reference row (which is now excluded from the sample-area ROI).
+    static = load_static_baseline(config.COLOR_JSON_FILE)
+    if static:
+        baseline = static
+        logger.info("Using static color baseline from %s", config.COLOR_JSON_FILE)
+    else:
+        baseline = build_reference_baseline(frames[0], merged_ref_positions)
+
     if not baseline:
         logger.warning("Reference baseline empty — cannot classify samples")
         return None
