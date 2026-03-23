@@ -1,5 +1,5 @@
 """
-Two-class YOLOv11s training guide + OpenVINO export for Raspberry Pi 4B.
+Two-class YOLOv8s training guide + OpenVINO export for Raspberry Pi 4B.
 
 =============================================================================
 CLASSES
@@ -65,7 +65,7 @@ TRAINING COMMAND  (run on PC with CUDA GPU)
     pip install ultralytics
 
     yolo train \\
-        model=yolo11s.pt \\
+        model=yolov8s.pt \\
         data=dataset/data.yaml \\
         epochs=100 \\
         imgsz=640 \\
@@ -87,7 +87,7 @@ EXPORT  (run this script after training)
 =============================================================================
     python scripts/export_model.py
 
-    Copy output directory to: models/bottle_yolo11s_openvino/ on Raspberry Pi
+    Copy output directory to: models/bottle_yolo8s_openvino/ on Raspberry Pi
 
 =============================================================================
 INSTALLATION ON PI
@@ -120,4 +120,4 @@ model.export(
 
 print("\nModel exported.")
 print("Copy the output *_openvino_model/ directory to:")
-print("  models/bottle_yolo11s_openvino/  on the Raspberry Pi")
+print("  models/bottle_yolo8s_openvino/  on the Raspberry Pi")

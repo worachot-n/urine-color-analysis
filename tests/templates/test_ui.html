@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Test Lab — Urine Analyzer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #122017;
+      --bg2:      #1a2e22;
+      --bg3:      #223a2c;
+      --gold:     #FCBA54;
+      --gold-dim: #c9943e;
+      --text:     #d4e8d8;
+      --text-dim: #7a9e84;
+      --red:      #e05252;
+      --green:    #4caf82;
+      --blue:     #5fa8d3;
+      --radius:   8px;
+    }
+    body {
+      font-family: 'Kanit', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────── */
+    header {
+      background: var(--bg2);
+      border-bottom: 2px solid var(--gold);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header img { height: 40px; }
+    header h1 { font-size: 1.25rem; font-weight: 700; color: var(--gold); flex: 1; }
+    .image-selector { display: flex; align-items: center; gap: 8px; }
+    .image-selector label { font-size: .85rem; color: var(--text-dim); white-space: nowrap; }
+    select {
+      background: var(--bg3);
+      color: var(--text);
+      border: 1px solid var(--gold-dim);
+      border-radius: var(--radius);
+      padding: 6px 10px;
+      font-family: inherit;
+      font-size: .9rem;
+      cursor: pointer;
+    }
+    select:focus { outline: none; border-color: var(--gold); }
+
+    /* ── Tabs ─────────────────────────────────────────────────────── */
+    nav.tabs {
+      background: var(--bg2);
+      display: flex;
+      gap: 4px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--bg3);
+    }
+    nav.tabs button {
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: .95rem;
+      font-weight: 600;
+      padding: 12px 20px;
+      transition: color .2s, border-color .2s;
+    }
+    nav.tabs button:hover { color: var(--text); }
+    nav.tabs button.active { color: var(--gold); border-bottom-color: var(--gold); }
+
+    /* ── Main layout ──────────────────────────────────────────────── */
+    main { flex: 1; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+    .panel { display: none; }
+    .panel.active { display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── Cards ────────────────────────────────────────────────────── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--bg3);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+    }
+    .card h2 { font-size: 1rem; font-weight: 700; color: var(--gold); margin-bottom: 12px; }
+
+    /* ── Buttons ──────────────────────────────────────────────────── */
+    .btn {
+      background: var(--gold);
+      border: none;
+      border-radius: var(--radius);
+      color: #122017;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: .9rem;
+      font-weight: 700;
+      padding: 8px 18px;
+      transition: background .2s, opacity .2s;
+    }
+    .btn:hover { background: var(--gold-dim); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-ghost {
+      background: var(--bg3);
+      border: 1px solid var(--text-dim);
+      color: var(--text);
+    }
+    .btn-ghost:hover { border-color: var(--text); }
+
+    /* ── Badges ───────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      font-size: .75rem;
+      font-weight: 700;
+      padding: 3px 10px;
+    }
+    .badge-green  { background: #1e4a30; color: var(--green); }
+    .badge-orange { background: #4a2e0a; color: var(--gold); }
+    .badge-red    { background: #4a1010; color: var(--red); }
+    .badge-blue   { background: #0e2e45; color: var(--blue); }
+
+    /* ── Canvas wrapper ───────────────────────────────────────────── */
+    .canvas-wrap {
+      position: relative;
+      display: inline-block;
+      cursor: crosshair;
+      border: 1px solid var(--bg3);
+      border-radius: var(--radius);
+      overflow: hidden;
+      max-width: 100%;
+    }
+    .canvas-wrap canvas { display: block; max-width: 100%; }
+
+    /* ── Result image ─────────────────────────────────────────────── */
+    .result-img {
+      border: 1px solid var(--bg3);
+      border-radius: var(--radius);
+      max-width: 100%;
+    }
+
+    /* ── Two-column layout ────────────────────────────────────────── */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Table ────────────────────────────────────────────────────── */
+    .tbl-wrap { max-height: 400px; overflow-y: auto; border-radius: var(--radius); }
+    table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    thead th {
+      background: var(--bg3);
+      color: var(--gold);
+      font-weight: 600;
+      padding: 8px 10px;
+      position: sticky;
+      top: 0;
+      text-align: left;
+    }
+    tbody tr { border-bottom: 1px solid var(--bg3); }
+    tbody tr:hover { background: var(--bg3); }
+    tbody td { padding: 7px 10px; color: var(--text); }
+    .row-ok   { }
+    .row-err  td:first-child { border-left: 3px solid var(--red); }
+    .row-ghost td:first-child { border-left: 3px solid var(--text-dim); }
+
+    /* ── Level bar chart ──────────────────────────────────────────── */
+    .level-bars { display: flex; gap: 12px; align-items: flex-end; height: 80px; }
+    .level-bar-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1; }
+    .level-bar {
+      width: 100%;
+      background: var(--gold);
+      border-radius: 4px 4px 0 0;
+      transition: height .4s;
+      min-height: 4px;
+    }
+    .level-bar-label { font-size: .75rem; color: var(--text-dim); }
+    .level-bar-count { font-size: .9rem; font-weight: 700; color: var(--gold); }
+
+    /* ── Error list ───────────────────────────────────────────────── */
+    .error-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+    .error-list li {
+      background: #4a1010;
+      border: 1px solid var(--red);
+      border-radius: var(--radius);
+      color: var(--red);
+      font-size: .85rem;
+      padding: 6px 12px;
+    }
+
+    /* ── Status bar ───────────────────────────────────────────────── */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--bg3);
+      border-top-color: var(--gold);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner.active { display: inline-block; }
+
+    /* ── Corner dot ───────────────────────────────────────────────── */
+    .corner-info { font-size: .82rem; color: var(--text-dim); }
+
+    /* ── Detection table cells ────────────────────────────────────── */
+    .cls-ref    { color: var(--blue); font-weight: 600; }
+    .cls-sample { color: var(--green); font-weight: 600; }
+    .conf-high  { color: var(--green); }
+    .conf-low   { color: var(--red); }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────── -->
+<header>
+  <img src="/assets/logo.svg" alt="logo" onerror="this.style.display='none'" />
+  <h1>Test Lab — Local Validation</h1>
+  <div class="image-selector">
+    <label for="imgSelect">Image:</label>
+    <select id="imgSelect">
+      <option value="">— loading —</option>
+    </select>
+  </div>
+</header>
+
+<!-- ── Tabs ───────────────────────────────────────────────────────── -->
+<nav class="tabs">
+  <button class="active" onclick="switchTab('calibrate', this)">① Calibrate</button>
+  <button onclick="switchTab('detect', this)">② Detect (YOLO)</button>
+  <button onclick="switchTab('classify', this)">③ Classify</button>
+</nav>
+
+<!-- ── Main ───────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       TAB 1 — CALIBRATE
+  ════════════════════════════════════════════════════════════════ -->
+  <section id="panel-calibrate" class="panel active">
+
+    <div class="card">
+      <h2>Grid Corner Calibration</h2>
+      <p style="font-size:.85rem;color:var(--text-dim);margin-bottom:12px;">
+        Click the image to mark the 4 outer corners of the physical grid in order:
+        <strong style="color:var(--gold)">① Top-Left → ② Top-Right → ③ Bottom-Right → ④ Bottom-Left</strong>.
+        Then click <em>Compute Grid</em>.
+      </p>
+      <div class="status-bar" style="margin-bottom:12px;">
+        <div id="gridStatus" class="badge badge-orange">Not Calibrated</div>
+        <span id="gridDate" style="font-size:.8rem;color:var(--text-dim);"></span>
+        <button class="btn btn-ghost" onclick="clearCorners()">Clear Corners</button>
+        <button class="btn" id="btnComputeGrid" onclick="computeGrid()">Compute Grid</button>
+        <div class="spinner" id="spinCalib"></div>
+        <span id="calibMsg" style="font-size:.85rem;"></span>
+      </div>
+      <p class="corner-info" id="cornerInfo">Corners marked: 0 / 4</p>
+    </div>
+
+    <div class="two-col">
+      <div class="card" style="padding:10px;">
+        <h2>Source Image (click to mark corners)</h2>
+        <div class="canvas-wrap" id="canvasWrap">
+          <canvas id="cvCalib" onclick="markCorner(event)"></canvas>
+        </div>
+      </div>
+      <div class="card" style="padding:10px;">
+        <h2>Grid Overlay Preview</h2>
+        <img id="gridOverlay" class="result-img" src="" alt="Grid overlay will appear here after computing"
+             style="width:100%;display:block;opacity:.4;background:var(--bg3);min-height:200px;" />
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       TAB 2 — DETECT
+  ════════════════════════════════════════════════════════════════ -->
+  <section id="panel-detect" class="panel">
+
+    <div class="card">
+      <h2>YOLO Object Detection</h2>
+      <div class="status-bar">
+        <button class="btn" id="btnDetect" onclick="runDetect()">Run Detection</button>
+        <div class="spinner" id="spinDetect"></div>
+        <span id="detectMode" class="badge" style="display:none;"></span>
+        <span id="detectMsg" style="font-size:.85rem;"></span>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="card" style="padding:10px;">
+        <h2>Annotated Result</h2>
+        <img id="detectImg" class="result-img" src=""
+             style="width:100%;display:block;min-height:200px;background:var(--bg3);" />
+      </div>
+      <div class="card">
+        <h2>Detections <span id="detectCount" style="color:var(--text-dim);font-size:.85rem;"></span></h2>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Class</th>
+                <th>Center (cx, cy)</th>
+                <th>Size (w×h)</th>
+                <th>Conf</th>
+              </tr>
+            </thead>
+            <tbody id="detectTbody">
+              <tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:20px;">
+                No detections yet
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       TAB 3 — CLASSIFY
+  ════════════════════════════════════════════════════════════════ -->
+  <section id="panel-classify" class="panel">
+
+    <div class="card">
+      <h2>Full Pipeline — Color Classification</h2>
+      <div class="status-bar">
+        <button class="btn" id="btnClassify" onclick="runClassify()">Run Full Pipeline</button>
+        <div class="spinner" id="spinClassify"></div>
+        <span id="classifyMsg" style="font-size:.85rem;"></span>
+      </div>
+    </div>
+
+    <!-- Level counts bar chart -->
+    <div class="card">
+      <h2>Bottle Counts by Color Level</h2>
+      <div class="level-bars" id="levelBars">
+        <div class="level-bar-wrap" id="bar0">
+          <div class="level-bar-count" id="cnt0">—</div>
+          <div class="level-bar" id="bbar0" style="height:4px;"></div>
+          <div class="level-bar-label">L0</div>
+        </div>
+        <div class="level-bar-wrap" id="bar1">
+          <div class="level-bar-count" id="cnt1">—</div>
+          <div class="level-bar" id="bbar1" style="height:4px;"></div>
+          <div class="level-bar-label">L1</div>
+        </div>
+        <div class="level-bar-wrap" id="bar2">
+          <div class="level-bar-count" id="cnt2">—</div>
+          <div class="level-bar" id="bbar2" style="height:4px;"></div>
+          <div class="level-bar-label">L2</div>
+        </div>
+        <div class="level-bar-wrap" id="bar3">
+          <div class="level-bar-count" id="cnt3">—</div>
+          <div class="level-bar" id="bbar3" style="height:4px;"></div>
+          <div class="level-bar-label">L3</div>
+        </div>
+        <div class="level-bar-wrap" id="bar4">
+          <div class="level-bar-count" id="cnt4">—</div>
+          <div class="level-bar" id="bbar4" style="height:4px;"></div>
+          <div class="level-bar-label">L4</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="card" style="padding:10px;">
+        <h2>Annotated Result</h2>
+        <img id="classifyImg" class="result-img" src=""
+             style="width:100%;display:block;min-height:200px;background:var(--bg3);" />
+      </div>
+      <div class="card">
+        <h2>Slot Results <span id="slotCount" style="color:var(--text-dim);font-size:.85rem;"></span></h2>
+
+        <!-- Error list -->
+        <ul class="error-list" id="errorList" style="margin-bottom:12px;display:none;"></ul>
+
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Slot ID</th>
+                <th>Expected</th>
+                <th>Detected</th>
+                <th>ΔE</th>
+                <th>Confident</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="classifyTbody">
+              <tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px;">
+                No results yet
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+let corners = [];
+let calibImg = null;   // HTMLImageElement for calibration canvas
+let gridReady = false;
+
+// ── Tab switching ──────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+// ── On load ────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  await loadImages();
+  await checkGridStatus();
+  const sel = document.getElementById('imgSelect');
+  sel.addEventListener('change', () => loadCalibImage());
+  if (sel.value) loadCalibImage();
+});
+
+// ── Image list ─────────────────────────────────────────────────────
+async function loadImages() {
+  const res = await fetch('/api/images');
+  const { images } = await res.json();
+  const sel = document.getElementById('imgSelect');
+  sel.innerHTML = '';
+  if (!images.length) {
+    sel.innerHTML = '<option value="">No images in data/</option>';
+    return;
+  }
+  images.forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = f;
+    sel.appendChild(opt);
+  });
+}
+
+// ── Grid status badge ──────────────────────────────────────────────
+async function checkGridStatus() {
+  try {
+    const res = await fetch('/api/grid-status');
+    const data = await res.json();
+    gridReady = data.exists;
+    const badge = document.getElementById('gridStatus');
+    const dateEl = document.getElementById('gridDate');
+    if (data.exists) {
+      badge.className = 'badge badge-green';
+      badge.textContent = 'Grid Ready';
+      dateEl.textContent = data.date ? `(calibrated ${data.date})` : '';
+    } else {
+      badge.className = 'badge badge-orange';
+      badge.textContent = 'Not Calibrated';
+      dateEl.textContent = '';
+    }
+  } catch {}
+}
+
+// ── Calibration canvas ─────────────────────────────────────────────
+function loadCalibImage() {
+  const sel = document.getElementById('imgSelect');
+  if (!sel.value) return;
+  corners = [];
+  updateCornerInfo();
+  const img = new Image();
+  img.onload = () => {
+    calibImg = img;
+    drawCalibCanvas();
+  };
+  img.src = '/data/' + sel.value + '?t=' + Date.now();
+}
+
+function drawCalibCanvas() {
+  if (!calibImg) return;
+  const canvas = document.getElementById('cvCalib');
+  const wrap = document.getElementById('canvasWrap');
+  const maxW = wrap.clientWidth || 640;
+  const scale = Math.min(maxW / calibImg.width, 800 / calibImg.height, 1);
+  canvas.width  = Math.round(calibImg.width  * scale);
+  canvas.height = Math.round(calibImg.height * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(calibImg, 0, 0, canvas.width, canvas.height);
+
+  const scaleX = canvas.width  / calibImg.width;
+  const scaleY = canvas.height / calibImg.height;
+  const colors = ['#FCBA54', '#5fa8d3', '#4caf82', '#e05252'];
+  const labels = ['TL', 'TR', 'BR', 'BL'];
+
+  corners.forEach(([x, y], i) => {
+    const px = x * scaleX;
+    const py = y * scaleY;
+    ctx.beginPath();
+    ctx.arc(px, py, 8, 0, 2 * Math.PI);
+    ctx.fillStyle = colors[i];
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 11px Kanit, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(labels[i], px, py);
+  });
+
+  // Draw connecting lines if 4 corners marked
+  if (corners.length === 4) {
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(252,186,84,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    const pts = corners.map(([x, y]) => [x * scaleX, y * scaleY]);
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    [1, 2, 3, 0].forEach(i => ctx.lineTo(pts[i][0], pts[i][1]));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function markCorner(e) {
+  if (!calibImg) return;
+  if (corners.length >= 4) return;
+  const canvas = document.getElementById('cvCalib');
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = calibImg.width  / canvas.width;
+  const scaleY = calibImg.height / canvas.height;
+  const px = (e.clientX - rect.left) * scaleX;
+  const py = (e.clientY - rect.top)  * scaleY;
+  corners.push([Math.round(px), Math.round(py)]);
+  updateCornerInfo();
+  drawCalibCanvas();
+}
+
+function clearCorners() {
+  corners = [];
+  updateCornerInfo();
+  drawCalibCanvas();
+}
+
+function updateCornerInfo() {
+  document.getElementById('cornerInfo').textContent = `Corners marked: ${corners.length} / 4`;
+}
+
+// ── Compute grid ───────────────────────────────────────────────────
+async function computeGrid() {
+  const sel = document.getElementById('imgSelect');
+  if (!sel.value) return alert('Select an image first.');
+  if (corners.length < 4) return alert('Mark all 4 corners first.');
+
+  const spin = document.getElementById('spinCalib');
+  const msg  = document.getElementById('calibMsg');
+  spin.classList.add('active');
+  msg.textContent = 'Computing grid…';
+  msg.style.color = 'var(--text-dim)';
+
+  try {
+    const res = await fetch('/api/calibrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: sel.value, corners }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+
+    msg.textContent = `✓ grid_config.json saved — ${data.slots} slots computed`;
+    msg.style.color = 'var(--green)';
+
+    // Show overlay
+    const overlay = document.getElementById('gridOverlay');
+    overlay.src = data.annotated_url + '?t=' + Date.now();
+    overlay.style.opacity = '1';
+
+    gridReady = true;
+    await checkGridStatus();
+  } catch (err) {
+    msg.textContent = '✗ ' + err.message;
+    msg.style.color = 'var(--red)';
+  } finally {
+    spin.classList.remove('active');
+  }
+}
+
+// ── YOLO Detection ─────────────────────────────────────────────────
+async function runDetect() {
+  const sel = document.getElementById('imgSelect');
+  if (!sel.value) return alert('Select an image first.');
+
+  const spin = document.getElementById('spinDetect');
+  const msg  = document.getElementById('detectMsg');
+  const modeEl = document.getElementById('detectMode');
+  spin.classList.add('active');
+  msg.textContent = 'Running detection…';
+  modeEl.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: sel.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+
+    // Mode badge
+    modeEl.style.display = '';
+    if (data.mode === 'yolo') {
+      modeEl.className = 'badge badge-green';
+      modeEl.textContent = 'YOLO';
+    } else {
+      modeEl.className = 'badge badge-orange';
+      modeEl.textContent = 'OpenCV fallback';
+    }
+
+    msg.textContent = `${data.count} object${data.count !== 1 ? 's' : ''} detected`;
+    msg.style.color = 'var(--text)';
+
+    document.getElementById('detectImg').src = data.annotated_url + '?t=' + Date.now();
+
+    // Count display
+    const refs = data.boxes.filter(b => b.cls === 0).length;
+    const samps = data.boxes.filter(b => b.cls === 1).length;
+    document.getElementById('detectCount').textContent =
+      `(${refs} ref_bottle + ${samps} sample_bottle)`;
+
+    // Table
+    const tbody = document.getElementById('detectTbody');
+    if (!data.boxes.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">No detections</td></tr>';
+    } else {
+      tbody.innerHTML = data.boxes.map((b, i) => {
+        const clsName = b.cls === 0
+          ? '<span class="cls-ref">ref_bottle</span>'
+          : '<span class="cls-sample">sample_bottle</span>';
+        const confCls = b.conf >= 0.75 ? 'conf-high' : 'conf-low';
+        return `<tr>
+          <td>${i + 1}</td>
+          <td>${clsName}</td>
+          <td>${b.cx}, ${b.cy}</td>
+          <td>${b.w} × ${b.h}</td>
+          <td class="${confCls}">${(b.conf * 100).toFixed(1)}%</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch (err) {
+    msg.textContent = '✗ ' + err.message;
+    msg.style.color = 'var(--red)';
+  } finally {
+    spin.classList.remove('active');
+  }
+}
+
+// ── Full pipeline classify ─────────────────────────────────────────
+async function runClassify() {
+  const sel = document.getElementById('imgSelect');
+  if (!sel.value) return alert('Select an image first.');
+  if (!gridReady) return alert('Run Calibrate first to generate grid_config.json.');
+
+  const spin = document.getElementById('spinClassify');
+  const msg  = document.getElementById('classifyMsg');
+  spin.classList.add('active');
+  msg.textContent = 'Running pipeline…';
+  msg.style.color = 'var(--text-dim)';
+
+  try {
+    const res = await fetch('/api/classify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: sel.value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+
+    const total = Object.keys(data.slot_assignments).length;
+    const errCount = data.errors.length;
+    msg.textContent = `${total} bottle${total !== 1 ? 's' : ''} classified — ${errCount} error${errCount !== 1 ? 's' : ''}`;
+    msg.style.color = errCount ? 'var(--red)' : 'var(--green)';
+
+    document.getElementById('classifyImg').src = data.annotated_url + '?t=' + Date.now();
+    document.getElementById('slotCount').textContent = `(${total} bottles)`;
+
+    // Level bars
+    const counts = data.counts;
+    const maxCount = Math.max(...Object.values(counts), 1);
+    for (let i = 0; i <= 4; i++) {
+      const c = counts[i] || 0;
+      document.getElementById('cnt' + i).textContent = c;
+      document.getElementById('bbar' + i).style.height = Math.max(4, (c / maxCount) * 60) + 'px';
+    }
+
+    // Error list
+    const errList = document.getElementById('errorList');
+    if (data.errors.length) {
+      errList.style.display = '';
+      errList.innerHTML = data.errors.map(e => `<li>⚠ ${e}</li>`).join('');
+    } else {
+      errList.style.display = 'none';
+    }
+
+    // Slot table
+    const slots = data.slot_assignments;
+    const keys = Object.keys(slots).sort();
+    const tbody = document.getElementById('classifyTbody');
+    if (!keys.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:16px;">No slots classified</td></tr>';
+    } else {
+      tbody.innerHTML = keys.map(sid => {
+        const s = slots[sid];
+        const rowCls = s.ghost ? 'row-ghost' : s.error ? 'row-err' : 'row-ok';
+        const status = s.ghost
+          ? '<span class="badge badge-orange">Ghost</span>'
+          : s.error
+            ? '<span class="badge badge-red">Mismatch</span>'
+            : s.duplicate
+              ? '<span class="badge badge-orange">Duplicate</span>'
+              : '<span class="badge badge-green">OK</span>';
+        const conf = s.confident
+          ? '<span class="conf-high">✓</span>'
+          : '<span class="conf-low">~</span>';
+        return `<tr class="${rowCls}">
+          <td>${sid}</td>
+          <td>L${s.expected_level ?? '?'}</td>
+          <td>L${s.level ?? '?'}</td>
+          <td>${s.delta_e !== null ? s.delta_e.toFixed(2) : '—'}</td>
+          <td>${conf}</td>
+          <td>${status}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch (err) {
+    msg.textContent = '✗ ' + err.message;
+    msg.style.color = 'var(--red)';
+  } finally {
+    spin.classList.remove('active');
+  }
+}
+</script>
+</body>
+</html>

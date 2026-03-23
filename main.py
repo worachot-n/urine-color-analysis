@@ -187,13 +187,13 @@ def analyze_frame(frame, grid_cfg):
 
 
 # ===========================================================================
-# YOLOv11 analysis pipeline
+# YOLOv8 analysis pipeline
 # ===========================================================================
 
 
 def analyze_frame_yolo(frames: list, grid_cfg):
     """
-    YOLOv11 + consensus + color-classification pipeline.
+    YOLOv8 + consensus + color-classification pipeline.
 
     Args:
         frames:   list of BGR frames from capture_multi_snapshot()

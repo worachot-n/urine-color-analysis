@@ -1,24 +1,27 @@
 # Urine Color Analysis System
 
-An automated vision system running on **Raspberry Pi 4B** that analyzes urine sample bottles placed on a physical grid, classifies their color levels (0–4), and validates whether each bottle is in the correct zone.
+An automated vision system running on **Raspberry Pi 4B** that analyzes urine sample bottles placed on a physical 16×14 grid, classifies their color levels (L0–L4), and validates whether each bottle is in the correct zone.
 
 ---
 
 ## How It Works
 
-A top-down camera captures the grid. The system:
+A top-down camera captures the grid when a button is pressed. The system runs a hybrid pipeline:
 
-1. **Guides WiFi setup** on first boot via LCD + hotspot + captive-portal web form
-2. **Serves a web dashboard** at `http://<pi-ip>:5000` with results and grid calibration
-3. **Waits for push button** (GPIO 24) press to start each scan
-4. **Samples 15 reference bottles** (row 0) every scan to build a live color baseline — self-correcting for lighting changes
-5. **Detects red bottle caps** using HSV masking + Hough circles on the full frame
-6. **Assigns each circle to a slot** via majority-rule polygon overlap (>50% of circle area must be inside the slot)
-7. **Classifies each bottle** by computing CIE Lab Delta E against the live baseline — never raw RGB
-8. **Validates placement** — classified level must match the slot's expected level
-9. **Updates hardware outputs** — relay LED tower, TM1637 displays, LCD
-10. **Sends a Telegram report** — text summary + annotated image after every scan
-11. **Saves an annotated image** to `logs/` for every scan
+1. **WiFi setup** on first boot — LCD + hotspot + captive-portal web form at `http://10.42.0.1`
+2. **Web dashboard** at `http://<pi-ip>:5000` — results, annotated images, grid calibration
+3. **Waits for button press** (GPIO 24) to start each scan
+4. **Captures 3 snapshots** with 200 ms delay and ±15% exposure variation (multi-snapshot consensus)
+5. **YOLO detection** (YOLOv8s / OpenVINO) — two-class model detects `ref_bottle` and `sample_bottle`
+6. **Consensus filter** — keeps only detections that appear in ≥ 2 of 3 snapshots (eliminates glare ghosts)
+7. **Geometric validation** — maps each confirmed box center to the nearest grid slot
+8. **Ghost check** — rejects any detection whose CIE Lab color is too close to white paper (ΔE < 8)
+9. **Auto-calibrated baseline** — `ref_bottle` YOLO detections from row 0 build a live color reference; calibrated slot positions are used as fallback for any missed level
+10. **CIE Lab Delta E classification** — each sample bottle is assigned the level with the lowest ΔE distance to the live baseline; never raw RGB
+11. **Placement validation** — classified level must match the slot's expected level encoded in the slot ID
+12. **Hardware output** — relay LED tower (Red/Yellow/Green), 5× TM1637 displays, LCD 16×4
+13. **Telegram report** — text summary + annotated JPEG after every scan
+14. **SQLite log** — every scan saved to `logs/scan_results.db`
 
 ---
 
@@ -26,32 +29,33 @@ A top-down camera captures the grid. The system:
 
 ```
 Col:  0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
-     [ZZ] [--- REF_L0 ---] [--- REF_L1 ---] [--- REF_L2 ---] [--- REF_L3 ---] [--- REF_L4 ---]   ← Row 0 (Reference)
-     ─────────────────────────────────────────────────────────────────────────────────────────────
-     [ZZ] [A11_0][A12_0][A13_0] [A11_1] ... [A13_4]   ← Row 1  ┐
-     [ZZ] [A14_0][A15_0][A16_0] [A14_1] ... [A16_4]   ← Row 2  │ Group A1
-     [ZZ] [A17_0][A18_0][A19_0] [A17_1] ... [A19_4]   ← Row 3  ┘
-     ...                                                          Groups A2, A3, A4
-     [ZZ] [A47_0]...[A49_0]     [A47_1] ... [A49_4]   ← Row 12 ┘ Group A4
+     [ZZ] [------- REF_L0 -------] [--- REF_L1 ---] [--- REF_L2 ---] [--- REF_L3 ---] [--- REF_L4 ---]  ← Row 0 (Reference)
+     ─────────────────────────────────────────────────────────────────────────────────────────────────
+     [ZZ] [A11_0][A12_0][A13_0]   [A11_1]…[A13_1]   …   [A11_4]…[A13_4]   ← Row 1  ┐
+     [ZZ] [A14_0][A15_0][A16_0]   …                                          ← Row 2  │ Group A1
+     [ZZ] [A17_0][A18_0][A19_0]   …                                          ← Row 3  ┘
+     …                                                                         Rows 4–6  Group A2
+     …                                                                         Rows 7–9  Group A3
+     [ZZ] [A47_0]…[A49_0]         …   [A47_4]…[A49_4]                        ← Row 12 ┘ Group A4
 ```
 
 - **Col 0 (ZZ)** — exclusion zone, never processed
-- **Row 0** — 15 fixed reference bottles (3 per level), never moved
-- **Rows 1–12** — 180 sample slots across 4 groups × 9 slots × 5 levels
-- **Slot ID format:** `A{group}{slot}_{level}` e.g. `A25_3` = Group A2, Slot 5, expected Level 3
+- **Row 0** — 15 fixed reference bottles (3 per level L0–L4), never moved
+- **Rows 1–12** — 180 sample slots: 4 groups × 9 slots × 5 levels
+- **Slot ID format:** `A{group}{slot}_{level}` — e.g. `A25_3` = Group A2, Slot 5, expected Level 3
 
 ---
 
 ## Hardware
 
 | Component | GPIO / Interface |
-|---|---|
+|-----------|-----------------|
 | Raspberry Pi 4B | — |
 | Camera Module 3 | CSI (via `picamera2`) |
 | Push Button | GPIO 24 / Pin 18 (active LOW, internal pull-up) |
-| 3-Channel Relay (LED Tower) | Red=GPIO 20, Yellow=GPIO 21, Green=GPIO 12 |
-| 5× TM1637 7-Segment Displays | CLK/DIO pairs — see `config.py` |
-| LCD 16×4 I2C | SDA=GPIO 2, SCL=GPIO 3, addr `0x27` |
+| 3-Channel Relay (LED Tower) | Red=GPIO 21, Yellow=GPIO 20, Green=GPIO 12 (active LOW) |
+| 5× TM1637 7-Segment Displays | CLK/DIO pairs — see `configs/config.toml` |
+| LCD 16×4 I2C | SDA=GPIO 2, SCL=GPIO 3, addr `0x27`, bus 1 |
 
 ---
 
@@ -59,26 +63,63 @@ Col:  0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   
 
 ```
 urine-color-analysis/
-├── main.py             # Entry point — single boot sequence
-├── config.py           # All constants, pins, thresholds
-├── color_analysis.py   # CIE Lab + Delta E classification engine
-├── image_processing.py # Red mask + Hough circle detection
-├── grid.py             # Grid config loader, majority-rule slot assignment
-├── hardware.py         # Relay, TM1637, LCD, button drivers
-├── calibration.py      # AWB lock + grid math (used by web_server.py)
-├── network.py          # WiFi detection, hotspot (nmcli), captive portal
-├── web_server.py       # Flask dashboard + calibration UI + WiFi setup portal
-├── telegram_bot.py     # Telegram summary + image sender
-├── utils.py            # Logger + annotated image saving to logs/
-├── pyproject.toml      # Project metadata and dependencies (uv)
-├── requirements-pi.txt # Raspberry Pi-only packages (Linux)
-├── .env                # Credentials: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
-├── grid_config.json    # Generated by web calibration — slot polygons
-├── logs/               # Auto-saved annotated images + daily text log
-└── tests/
-    ├── test_color_analysis.py
-    ├── test_grid.py
-    └── test_image_processing.py
+│
+├── main.py                     # Entry point — boot sequence, scan loop
+│
+├── configs/
+│   ├── config.toml             # All constants: GPIO, camera, YOLO, thresholds, paths
+│   └── config.py               # TOML loader — exposes flat constants
+│
+├── utils/
+│   ├── calibration.py          # AWB lock, grid math, semi-auto corner calibration
+│   ├── color_analysis.py       # CIE Lab extraction, Delta E, baseline builder, classifier
+│   ├── db.py                   # SQLite scan result persistence
+│   ├── grid.py                 # GridConfig loader, majority-rule slot assignment
+│   ├── hardware.py             # Relay, TM1637, LCD, button drivers (graceful no-op on non-Pi)
+│   ├── image_processing.py     # CLAHE, red mask, morphology, contour detection (legacy fallback)
+│   ├── network.py              # WiFi detection, hotspot (nmcli), captive portal
+│   ├── utils.py                # Logger, annotated image saving
+│   ├── web_server.py           # Flask dashboard + calibration UI + WiFi setup portal
+│   └── yolo_detector.py        # YOLOv8 OpenVINO wrapper — consensus, geometric validation
+│
+├── bot/
+│   └── telegram_bot.py         # Telegram summary + image sender
+│
+├── scripts/
+│   └── export_model.py         # YOLOv8s → OpenVINO export + two-class training spec
+│
+├── templates/
+│   ├── base.html               # Shared layout (dark green / gold theme, Kanit font)
+│   ├── dashboard.html          # Scan results page
+│   ├── analysis.html           # Per-slot detail view
+│   ├── calibrate.html          # Two-phase grid calibration (canvas + line editor)
+│   ├── wifi_setup.html         # WiFi credential form
+│   ├── wifi_connecting.html    # Connection progress indicator
+│   └── global.css
+│
+├── assets/
+│   ├── logo.svg
+│   └── logo.ico
+│
+├── models/
+│   └── bottle_yolov8s_openvino/  # Place exported OpenVINO model here (see scripts/export_model.py)
+│       ├── yolov8s.xml
+│       ├── yolov8s.bin
+│       └── metadata.yaml
+│
+├── tests/
+│   ├── test_color_analysis.py
+│   ├── test_grid.py
+│   ├── test_image_processing.py
+│   ├── test_web.py             # Local Windows test server (port 5001) — see Test Lab section
+│   └── templates/
+│       └── test_ui.html        # Test Lab UI (Calibrate / Detect / Classify tabs)
+│
+├── grid_config.json            # Generated by calibration — slot polygons (195 slots)
+├── logs/
+│   ├── img/                    # Annotated scan JPEGs
+│   └── scan_results.db         # SQLite history
+└── data/                       # Local test images (for development on Windows)
 ```
 
 ---
@@ -88,7 +129,7 @@ urine-color-analysis/
 ### Requirements
 
 - Python 3.9+
-- [uv](https://docs.astral.sh/uv/) — Python package manager
+- [uv](https://docs.astral.sh/uv/) package manager
 
 ### Install uv
 
@@ -104,124 +145,170 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 ```bash
 cd urine-color-analysis
-
-# Create virtual environment and install dependencies
 uv sync --group dev
 ```
 
-Installs: `opencv-python`, `numpy`, `flask`, `python-dotenv`, `requests`, and `pytest`.
+Installs: `opencv-python`, `numpy`, `flask`, `python-dotenv`, `requests`, `pytest`.
 
-### On Raspberry Pi — additional packages
+### Raspberry Pi — additional packages
 
 ```bash
 pip install -r requirements-pi.txt
 ```
 
-Installs the Linux-only packages: `picamera2`, `RPi.GPIO`, `smbus2`.
+Installs Pi-only packages: `picamera2`, `RPi.GPIO`, `smbus2`.
 
-> All hardware calls degrade gracefully to no-ops when these libraries are absent, so the system runs on non-Pi machines for development and testing.
+> All hardware calls degrade gracefully to no-ops when these libraries are absent — the full analysis pipeline runs on Windows/Mac for development.
+
+---
+
+## Model Setup
+
+The YOLO detection engine requires a trained YOLOv8s model exported to OpenVINO format.
+
+### Train (on a PC with GPU)
+
+```bash
+yolo train \
+    model=yolov8s.pt \
+    data=dataset/data.yaml \
+    epochs=100 \
+    imgsz=640 \
+    batch=16 \
+    mosaic=1.0 blur_p=0.3 hsv_v=0.4 hsv_s=0.5 \
+    flipud=0.0 fliplr=0.5 \
+    project=runs/urine_detector name=v1
+```
+
+**Two-class dataset** (`data.yaml`):
+```yaml
+nc: 2
+names: ['ref_bottle', 'sample_bottle']
+```
+
+- **Class 0 `ref_bottle`** — 15 reference bottles in the top row
+- **Class 1 `sample_bottle`** — all test bottles in the main 16×14 grid
+- Include 10–20% empty-grid images (no labels) as background negatives to suppress glare ghosts
+
+### Export to OpenVINO
+
+```bash
+python scripts/export_model.py
+```
+
+Copy the output folder to `models/bottle_yolov8s_openvino/` on the Pi.
 
 ---
 
 ## Configuration
 
-### Telegram Bot
+All settings live in **`configs/config.toml`** — edit that file only; `configs/config.py` is a read-only loader.
 
-Fill in `.env` with your Telegram credentials:
+### Key parameters
+
+| Section | Key | Default | Description |
+|---------|-----|---------|-------------|
+| `[gpio.button]` | `pin` | `24` | Push button GPIO pin |
+| `[camera]` | `capture_resolution` | `[4608, 2592]` | Camera Module 3 max |
+| `[yolo]` | `model_path` | `models/bottle_yolov8s_openvino` | OpenVINO model directory |
+| `[yolo]` | `conf_threshold` | `0.75` | YOLO confidence cutoff |
+| `[yolo]` | `snapshots` | `3` | Captures per button press |
+| `[yolo]` | `consensus_min_votes` | `2` | Snapshots a box must appear in |
+| `[yolo]` | `slot_max_dist_ratio` | `0.60` | Max box→slot distance (× slot radius) |
+| `[color_analysis]` | `ghost_de_threshold` | `8.0` | Min ΔE vs white paper to accept detection |
+| `[color_analysis]` | `confidence_margin` | `3.0` | Best–second-best ΔE gap for "confident" |
+| `[color_analysis]` | `ref_inner_crop_px` | `25` | Inner crop for reference bottles |
+| `[color_analysis]` | `inner_crop_px` | `15` | Inner crop for sample bottles |
+| `[system]` | `watchdog_timeout_sec` | `60` | Max processing time per scan |
+| `[debug]` | `img_dir` | `logs/img/` | Annotated scan image output |
+
+### Telegram
+
+Add credentials to `.env`:
 
 ```env
-TELEGRAM_TOKEN=your_bot_token_from_botfather
-TELEGRAM_CHAT_ID=your_group_or_chat_id
-```
-
-If left blank, Telegram notifications are silently skipped.
-
-### GPIO Pins (`.env`)
-
-```env
-BUTTON_PIN=24
-RELAY_1=20
-RELAY_2=21
-RELAY_3=12
-TM1637_H0_CLK=4
-TM1637_H0_DIO=17
-TM1637_H1_CLK=27
-TM1637_H1_DIO=22
-TM1637_H2_CLK=5
-TM1637_H2_DIO=6
-TM1637_H3_CLK=13
-TM1637_H3_DIO=19
-TM1637_H4_CLK=26
-TM1637_H4_DIO=16
+TELEGRAM_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
 ```
 
 ---
 
-## Usage
+## Running
 
-### Start the system
+### On Raspberry Pi
 
 ```bash
 python main.py
 ```
 
-That's it — one command, no flags needed.
-
----
-
-### Boot sequence
-
-1. **Hardware init** — relay, LCD, button
-2. **Network setup**
-   - If no WiFi: launches hotspot `signal` (password: `angad`), LCD shows connection info
-   - Open browser → `http://192.168.4.1/wifi-setup` → enter your WiFi credentials → Pi connects
-   - LCD shows: `WiFi Connected / SSID / IP / Press NEXT to`
-3. **AWB lock** — point camera at a white card; exposure and white balance are locked
-4. **Web server** starts at `http://<pi-ip>:5000`
-5. **Grid load** — loads `grid_config.json`; if missing, LCD prompts you to calibrate via web
-6. **Press button** (GPIO 24) to start first scan
-
----
-
-### Web Dashboard (`http://<pi-ip>:5000`)
-
-Two pages accessible from the navbar:
-
-#### Results (`/`)
-- Bottle counts per level (L0–L4)
-- Error list
-- Latest annotated scan image
-- Auto-refreshes every 10 seconds
-
-#### Calibrate (`/calibrate`)
-
-Used to map the physical grid the first time, or after moving the camera.
-
-**Step 1 — Choose image source:**
-- **Capture from Camera** — triggers a live capture from the Pi camera
-- **Upload Image** — upload a photo from your device
-
-**Step 2 — Click 4 corners:**
-Click the outer corners of the grid in order: Top-Left → Top-Right → Bottom-Right → Bottom-Left.
-The grid overlay is computed automatically and drawn on the image.
-
-**Step 3 — Fine-tune (optional):**
-Drag any grid line to nudge its position. Horizontal lines drag vertically; vertical lines drag horizontally.
-
-**Step 4 — Save:**
-Click **Save Calibration**. `grid_config.json` is written immediately. The running scan loop reloads the new grid without restarting.
-
----
+**Boot sequence:**
+1. Hardware init — relay, LCD, button
+2. Network — if no WiFi: launches hotspot `signal` (password: `angad@1234`); LCD shows IP
+3. AWB lock — point camera at a white card; exposure + white balance locked
+4. Web server starts at `http://<pi-ip>:5000`
+5. Grid load — reads `grid_config.json`; LCD prompts calibration via web if missing
+6. Press button → scan starts
 
 ### Scan cycle (each button press)
 
-1. Yellow LED on → capture frame
-2. Analyze → classify → validate
-3. Green LED = all OK / Red LED = error detected
-4. TM1637 displays show bottle count per level
-5. LCD shows result or first error + dashboard URL
-6. Telegram: text summary + annotated image sent to group
-7. Press button again to re-scan
+1. Yellow LED on
+2. Capture 3 snapshots (200 ms apart, ±15% exposure variation)
+3. YOLO inference × 3 → consensus filter → geometric slot assignment
+4. Ghost rejection (ΔE < 8 vs white paper → skip)
+5. Reference baseline built from detected `ref_bottle` positions
+6. CIE Lab Delta E classification for each `sample_bottle`
+7. Placement validation — classified level vs expected level in slot ID
+8. Green LED = all OK / Red LED = mismatch or duplicate
+9. TM1637 displays updated (count per level L0–L4)
+10. LCD shows result or first error
+11. Telegram: text summary + annotated image
+12. Result saved to `logs/scan_results.db` + `logs/img/`
+
+---
+
+## Web Dashboard (`http://<pi-ip>:5000`)
+
+### Results (`/`)
+- Bottle counts per level (L0–L4)
+- Error list (mismatches, duplicates)
+- Latest annotated scan image
+- Auto-refreshes every 10 seconds
+
+### Analysis (`/analysis`)
+- Per-slot breakdown: detected level, ΔE score, confidence, error flag
+
+### Calibrate (`/calibrate`)
+
+Used to map the physical grid on first run or after moving the camera.
+
+1. **Capture** from Pi camera or **Upload** a photo
+2. **Click 4 corners** of the grid: TL → TR → BR → BL
+3. Grid polygons are computed automatically (bilinear interpolation across 16×14 lines)
+4. **Fine-tune** — drag any grid line to correct misalignment
+5. **Save** — writes `grid_config.json`; running scan loop reloads without restart
+
+---
+
+## Local Development — Test Lab
+
+For developing and validating on Windows without Pi hardware:
+
+```bash
+cd urine-color-analysis
+python tests/test_web.py
+```
+
+Open **http://localhost:5001**
+
+Three tabs:
+
+| Tab | What it tests |
+|-----|---------------|
+| **① Calibrate** | Click 4 corners on a `data/` image → computes `grid_config.json` → shows grid overlay |
+| **② Detect** | Runs YOLO `detect_once()` on the image; falls back to OpenCV red-cap detection if model absent |
+| **③ Classify** | Full pipeline — detection → consensus → baseline → ΔE classification; shows slot table + bar chart |
+
+> **Python path note:** The project venv may not have `opencv` and `flask`. Run with the system Python if `uv sync` hasn't been run yet, or install manually: `pip install opencv-python-headless flask`.
 
 ---
 
@@ -229,11 +316,7 @@ Click **Save Calibration**. `grid_config.json` is written immediately. The runni
 
 ```bash
 uv run pytest
-```
-
-Or verbose:
-
-```bash
+# or verbose:
 uv run pytest -v
 ```
 
@@ -244,61 +327,69 @@ uv run pytest -v
 ### LED Tower
 
 | State | LED |
-|---|---|
+|-------|-----|
 | Processing | Yellow |
 | All bottles correct | Green |
-| Any error detected | Red |
+| Any error | Red |
 
 ### TM1637 Displays
 
-Each of the 5 displays (H0–H4) shows the count of bottles classified at that color level.
+Five displays (H0–H4) show the count of bottles classified at each color level.
 
 ### LCD Messages (16×4)
 
-| Condition | Line 1 | Line 2 | Line 3 | Line 4 |
-|---|---|---|---|---|
-| WiFi not found | `WiFi Not Found` | `Hotspot:signal` | `Pass:angad` | `IP:192.168.4.1` |
-| WiFi connected | `WiFi Connected` | `SSID:<name>` | `IP:<ip>` | `Press NEXT to` |
-| No grid config | `No grid config` | `Open browser:` | `<ip>:5000` | `/calibrate` |
-| Grid reloaded | `Grid reloaded!` | `Press button` | — | `<ip>:5000` |
-| Scanning | `Scanning...` | — | — | — |
-| All correct | `ALL OK` | level counts | level counts | `<ip>:5000` |
-| Error | `Error:` | error detail | — | `<ip>:5000` |
-| Timeout | `ERROR:Timeout` | — | — | — |
+| Condition | Line 1 | Line 2 |
+|-----------|--------|--------|
+| No WiFi | `WiFi Not Found` | `Hotspot:signal` |
+| WiFi connected | `WiFi Connected` | `IP:<ip>` |
+| No grid config | `No grid config` | `Open <ip>:5000` |
+| Scanning | `Scanning...` | — |
+| All correct | `ALL OK` | level counts |
+| Error detected | `Error:` | slot + level |
+| Timeout | `ERROR:Timeout` | — |
 
-### Telegram Report (after each scan)
+### Telegram Report
 
 ```
-Scan Result — 2026-03-20 14:32
+Scan Result — 2026-03-22 14:32
 L0:5 | L1:3 | L2:7 | L3:2 | L4:1
 Errors: A11_0 Dup, A25_2 Mismatch (L3)
-Status: ❌ / ✅
+Status: ❌
 ```
 
-Followed by the annotated scan image as a photo.
+Followed by the annotated scan image.
 
-### Log Images (`logs/`)
+### Annotated Images (`logs/img/`)
 
-Every scan saves `logs/YYYY-MM-DD_HH-MM-SS.jpg` with:
-- Grid slot polygon outlines (green = sample, yellow = reference)
-- Detected bottle circles (green = OK, orange = uncertain, red = error)
-- Label per bottle: Slot ID + detected level (e.g. `A25_2 L2`)
+Every scan saves `YYYY-MM-DD_HH-MM-SS.jpg` with:
+- Grid slot outlines (green = sample, cyan = reference)
+- Detected bottles — green box = OK, orange = uncertain, red = error/duplicate
+- Label per bottle: `SlotID L{level} ΔE={value}`
+- Red ✕ on rejected ghost detections
 
 ---
 
-## Configuration Reference (`config.py`)
+## Architecture Overview
 
-| Constant | Default | Description |
-|---|---|---|
-| `PIN_BUTTON` | `24` | GPIO pin for push button trigger |
-| `HOTSPOT_SSID` | `signal` | AP network name during onboarding |
-| `HOTSPOT_PASSWORD` | `angad` | AP password during onboarding |
-| `WEB_SERVER_PORT` | `5000` | Flask dashboard port |
-| `LCD_COLS` | `16` | LCD character width |
-| `INNER_CROP_PX` | `15` | Pixels to shrink from bottle crop edges |
-| `DELTA_E_THRESHOLD` | `15.0` | Max Delta E for confident classification |
-| `WATCHDOG_TIMEOUT_SEC` | `10` | Max processing time before timeout |
-| `HOUGH_MIN_RADIUS` | `20` | Min circle radius to detect (px) |
-| `HOUGH_MAX_RADIUS` | `60` | Max circle radius to detect (px) |
-| `CAPTURE_RESOLUTION` | `(4608, 2592)` | Camera capture resolution |
-| `LOG_DIR` | `logs/` | Output directory for annotated images |
+```
+Button press
+    ↓
+capture_multi_snapshot()          3 frames × (normal / -15% / +15% exposure)
+    ↓
+YoloBottleDetector.detect_once()  × 3 frames  →  [[cx,cy,w,h,conf,cls], ...]
+    ↓
+consensus_filter()                keep boxes in ≥ 2/3 snapshots  →  confirmed boxes
+    ↓
+geometric_validate_ref()          cls=0 → {level: [(cx,cy,r), ...]}  ref positions
+geometric_validate()              cls=1 → {slot_id: {cx,cy,w,h,conf}}  sample hits
+    ↓
+build_reference_baseline()        ref positions → {level: (L,a,b)}  live standard
+    ↓
+for each sample hit:
+    extract_bottle_color()        inner crop → median CIE Lab
+    delta_e_cie76(lab, WHITE_LAB) ghost check  (ΔE < 8 → reject)
+    classify_sample()             min ΔE to baseline → level + confidence
+    validate vs expected_level    mismatch → error flag
+    ↓
+update_hardware()  +  save_annotated_image()  +  telegram_bot.send()
+```

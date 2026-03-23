@@ -1,5 +1,5 @@
 """
-YOLOv11 + OpenVINO bottle detector with multi-snapshot consensus.
+YOLOv8 + OpenVINO bottle detector with multi-snapshot consensus.
 
 Two-class model:
     Class 0: ref_bottle   — 15 reference bottles in the top row
@@ -37,7 +37,7 @@ CLS_SAMPLE_BOTTLE = 1
 
 class YoloBottleDetector:
     """
-    Wraps a YOLOv11 OpenVINO model with CLAHE preprocessing,
+    Wraps a YOLOv8 OpenVINO model with CLAHE preprocessing,
     multi-snapshot consensus, and two-class geometric slot validation.
     """
 
@@ -65,7 +65,7 @@ class YoloBottleDetector:
 
     def detect_once(self, frame: np.ndarray) -> list:
         """
-        Run YOLOv11 on one frame.
+        Run YOLOv8 on one frame.
 
         Returns:
             list of [cx, cy, w, h, conf, cls] in original pixel coords
