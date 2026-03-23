@@ -15,7 +15,7 @@
 
   .result-image {
     flex: 0 0 auto;
-    max-width: 55%;
+    max-width: 70%;
   }
   .result-image img {
     width: 100%;
@@ -62,7 +62,56 @@
   /* Status badges */
   .status-ok  { color: var(--color-green-3); font-weight: bold; }
   .status-err { color: var(--color-red);     font-weight: bold; }
-  .errors-list { font-size: 0.88rem; color: var(--color-yellow); margin-top: 0.3rem; }
+
+  /* Error table */
+  .error-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    margin-top: 0.4rem;
+  }
+  .error-table th {
+    text-align: left;
+    padding: 0.3rem 0.7rem;
+    color: var(--color-accent);
+    border-bottom: 1px solid var(--color-green-2);
+    font-weight: 600;
+  }
+  .error-table td {
+    padding: 0.35rem 0.7rem;
+    border-bottom: 1px solid var(--color-green-2);
+    color: var(--color-white);
+  }
+  .error-table tr:last-child td { border-bottom: none; }
+
+  /* Mismatch row — red left bar */
+  .tr-mismatch { border-left: 3px solid var(--color-red); }
+  .tr-mismatch td:first-child { padding-left: 0.5rem; }
+  .td-mismatch-val { color: var(--color-red) !important; font-weight: bold; }
+  .badge-mismatch {
+    display: inline-block;
+    background: rgba(220,50,50,0.18);
+    color: var(--color-red);
+    border: 1px solid var(--color-red);
+    border-radius: 3px;
+    font-size: 0.75rem;
+    padding: 0.05rem 0.4rem;
+    font-weight: 600;
+  }
+
+  /* Duplicate row — yellow left bar */
+  .tr-dup { border-left: 3px solid var(--color-yellow); }
+  .tr-dup td:first-child { padding-left: 0.5rem; }
+  .badge-dup {
+    display: inline-block;
+    background: rgba(220,190,50,0.18);
+    color: var(--color-yellow);
+    border: 1px solid var(--color-yellow);
+    border-radius: 3px;
+    font-size: 0.75rem;
+    padding: 0.05rem 0.4rem;
+    font-weight: 600;
+  }
 
   /* Action buttons */
   .action-btns {
@@ -162,10 +211,35 @@
     </div>
 
     {% if errors %}
-      <p class="status-err">&#9888; พบข้อผิดพลาด</p>
-      <ul class="errors-list">
-        {% for e in errors %}<li>{{ e }}</li>{% endfor %}
-      </ul>
+      <p class="status-err">&#9888; พบข้อผิดพลาด ({{ errors|length }} รายการ)</p>
+      <table class="error-table">
+        <thead>
+          <tr><th>Slot ID</th><th>Expected</th><th>Detected</th><th>Type</th></tr>
+        </thead>
+        <tbody>
+          {% for e in errors %}
+            {% set parts = e.split(' ') %}
+            {% set slot_id = parts[0] %}
+            {% set expected = 'L' + slot_id.split('_')[1] %}
+            {% if 'Dup' in e %}
+              <tr class="tr-dup">
+                <td>{{ slot_id }}</td>
+                <td>{{ expected }}</td>
+                <td>—</td>
+                <td><span class="badge-dup">Duplicate</span></td>
+              </tr>
+            {% else %}
+              {% set detected = e.split('(')[1].rstrip(')') %}
+              <tr class="tr-mismatch">
+                <td>{{ slot_id }}</td>
+                <td>{{ expected }}</td>
+                <td class="td-mismatch-val">{{ detected }}</td>
+                <td><span class="badge-mismatch">Mismatch</span></td>
+              </tr>
+            {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
     {% else %}
       <p class="status-ok">&#10003; ปกติ</p>
     {% endif %}

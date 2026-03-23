@@ -1,9 +1,12 @@
 """
-YOLOv8 + OpenVINO bottle detector with multi-snapshot consensus.
+YOLO26s + OpenVINO bottle detector with multi-snapshot consensus.
 
-Two-class model:
-    Class 0: ref_bottle   — 15 reference bottles in the top row
-    Class 1: sample_bottle — all test bottles in the 16x14 main grid
+Single-class model:
+    Class 0: bottle — all bottles (reference and sample alike)
+
+Reference vs sample classification is done by grid position at inference time:
+    - Bottles whose center falls within a reference slot (row 0) → ref_bottle
+    - Bottles whose center falls within a main-grid slot (rows 1-12) → sample_bottle
 
 Public API:
     YoloBottleDetector(model_path)
@@ -26,24 +29,19 @@ import numpy as np
 from configs.config import (
     YOLO_IMGSZ, YOLO_CONF_THRESHOLD, YOLO_IOU_THRESHOLD, YOLO_AUGMENT,
     YOLO_CONSENSUS_MIN, YOLO_CONSENSUS_IOU, YOLO_SLOT_MAX_DIST,
-    YOLO_CLAHE_CLIP, YOLO_CLAHE_TILE,
+    YOLO_CLAHE_CLIP, YOLO_CLAHE_TILE, YOLO_ROI_PADDING,
     IMG_DIR,
 )
-
-# YOLO class indices
-CLS_REF_BOTTLE    = 0
-CLS_SAMPLE_BOTTLE = 1
-
 
 class YoloBottleDetector:
     """
     Wraps a YOLOv8 OpenVINO model with CLAHE preprocessing,
-    multi-snapshot consensus, and two-class geometric slot validation.
+    multi-snapshot consensus, and position-based ref/sample slot validation.
     """
 
     def __init__(self, model_path: str):
         from ultralytics import YOLO
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path, task="detect")
         self._clahe = cv2.createCLAHE(
             clipLimit=YOLO_CLAHE_CLIP,
             tileGridSize=(YOLO_CLAHE_TILE, YOLO_CLAHE_TILE),
@@ -63,14 +61,26 @@ class YoloBottleDetector:
     # Single-frame inference
     # ------------------------------------------------------------------
 
-    def detect_once(self, frame: np.ndarray) -> list:
+    def detect_once(self, frame: np.ndarray, roi: tuple = None) -> list:
         """
-        Run YOLOv8 on one frame.
+        Run YOLO26s on one frame.
+
+        Args:
+            frame: full-resolution BGR frame
+            roi:   optional (x1, y1, x2, y2) crop region in pixel coords.
+                   If provided, the frame is cropped before inference and all
+                   returned box coordinates are offset back to full-frame space.
 
         Returns:
-            list of [cx, cy, w, h, conf, cls] in original pixel coords
-            cls: 0 = ref_bottle, 1 = sample_bottle
+            list of [cx, cy, w, h, conf, cls] in original (full-frame) pixel coords
+            cls: always 0 (single-class model — "bottle")
         """
+        x_off, y_off = 0, 0
+        if roi is not None:
+            rx1, ry1, rx2, ry2 = roi
+            frame = frame[ry1:ry2, rx1:rx2]
+            x_off, y_off = rx1, ry1
+
         enhanced = self._enhance(frame)
 
         results = self.model(
@@ -86,8 +96,8 @@ class YoloBottleDetector:
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                cx   = (x1 + x2) / 2
-                cy   = (y1 + y2) / 2
+                cx   = (x1 + x2) / 2 + x_off
+                cy   = (y1 + y2) / 2 + y_off
                 w    = x2 - x1
                 h    = y2 - y1
                 conf = float(box.conf[0])
@@ -127,29 +137,41 @@ class YoloBottleDetector:
         if not detections_list:
             return []
 
-        anchors = list(detections_list[0])
-        votes   = [[box] for box in anchors]
-
-        for frame_boxes in detections_list[1:]:
-            matched = set()
-            for anchor_idx, anchor in enumerate(anchors):
-                for j, box in enumerate(frame_boxes):
-                    if j in matched:
-                        continue
-                    if self._iou(anchor, box) >= YOLO_CONSENSUS_IOU:
-                        votes[anchor_idx].append(box)
-                        matched.add(j)
-
+        n_frames = len(detections_list)
+        used = [set() for _ in range(n_frames)]
         confirmed = []
-        for group in votes:
-            if len(group) >= YOLO_CONSENSUS_MIN:
-                cx   = float(np.mean([b[0] for b in group]))
-                cy   = float(np.mean([b[1] for b in group]))
-                w    = float(np.mean([b[2] for b in group]))
-                h    = float(np.mean([b[3] for b in group]))
-                conf = float(np.mean([b[4] for b in group]))
-                cls  = Counter(int(b[5]) for b in group).most_common(1)[0][0]
-                confirmed.append([cx, cy, w, h, conf, cls])
+
+        for fi, frame_boxes in enumerate(detections_list):
+            for bi, anchor in enumerate(frame_boxes):
+                if bi in used[fi]:
+                    continue                          # already claimed by an earlier anchor
+
+                group = [anchor]
+                used[fi].add(bi)
+
+                for other_fi, other_boxes in enumerate(detections_list):
+                    if other_fi == fi:
+                        continue
+                    best_j, best_iou = None, YOLO_CONSENSUS_IOU - 1e-9
+                    for j, box in enumerate(other_boxes):
+                        if j in used[other_fi]:
+                            continue
+                        iou = self._iou(anchor, box)
+                        if iou > best_iou:
+                            best_iou = iou
+                            best_j = j
+                    if best_j is not None:
+                        group.append(other_boxes[best_j])
+                        used[other_fi].add(best_j)
+
+                if len(group) >= YOLO_CONSENSUS_MIN:
+                    cx   = float(np.mean([b[0] for b in group]))
+                    cy   = float(np.mean([b[1] for b in group]))
+                    w    = float(np.mean([b[2] for b in group]))
+                    h    = float(np.mean([b[3] for b in group]))
+                    conf = float(np.mean([b[4] for b in group]))
+                    cls  = Counter(int(b[5]) for b in group).most_common(1)[0][0]
+                    confirmed.append([cx, cy, w, h, conf, cls])
 
         return confirmed
 
@@ -159,21 +181,21 @@ class YoloBottleDetector:
 
     def geometric_validate_ref(self, confirmed_boxes: list, grid_cfg) -> dict:
         """
-        Map ref_bottle (cls=0) boxes to reference slots and group by level.
+        Map detected bottles to reference slots (row 0) by proximity, grouped by level.
 
         Each REF_Lx slot covers 3 physical bottles. The function assigns each
-        detected ref bottle to the nearest reference slot, then groups by level.
+        detected bottle whose center falls near a reference slot to that level.
+        Reference vs sample distinction is purely positional — no class filter.
 
         Args:
-            confirmed_boxes: output of consensus_filter() — includes all classes
+            confirmed_boxes: output of consensus_filter()
             grid_cfg:        GridConfig instance
 
         Returns:
             dict {level (int): [(cx, cy, radius), ...]}
             Compatible with build_reference_baseline() input format.
         """
-        ref_boxes = [b for b in confirmed_boxes if int(b[5]) == CLS_REF_BOTTLE]
-        if not ref_boxes:
+        if not confirmed_boxes:
             return {}
 
         # Build reference slot centers {slot_id: (scx, scy, r, level)}
@@ -188,10 +210,10 @@ class YoloBottleDetector:
             )
             ref_centers[slot_id] = (scx, scy, r, info['level'])
 
-        level_positions: dict = {}
-        for box in ref_boxes:
+        # Build slot → list of candidate boxes
+        slot_candidates: dict = {}
+        for box in confirmed_boxes:
             bcx, bcy = box[0], box[1]
-            br = max(1, min(int(box[2]), int(box[3])) // 2)
             best_slot = None
             best_dist = float('inf')
             for slot_id, (scx, scy, r, _level) in ref_centers.items():
@@ -200,8 +222,16 @@ class YoloBottleDetector:
                     best_dist = dist
                     best_slot = slot_id
             if best_slot is not None:
-                level = ref_centers[best_slot][3]
-                level_positions.setdefault(level, []).append((int(bcx), int(bcy), br))
+                slot_candidates.setdefault(best_slot, []).append(box)
+
+        # Keep one box per ref slot (highest confidence); group by level
+        level_positions: dict = {}
+        for slot_id, candidates in slot_candidates.items():
+            best_box = max(candidates, key=lambda b: b[4])
+            bcx, bcy = best_box[0], best_box[1]
+            br = max(1, min(int(best_box[2]), int(best_box[3])) // 2)
+            level = ref_centers[slot_id][3]
+            level_positions.setdefault(level, []).append((int(bcx), int(bcy), br))
 
         return level_positions
 
@@ -211,13 +241,14 @@ class YoloBottleDetector:
 
     def geometric_validate(self, confirmed_boxes: list, grid_cfg) -> tuple:
         """
-        Map sample_bottle (cls=1) boxes to grid slots using slot→candidates grouping.
+        Map detected bottles to main-grid slots (rows 1-12) by proximity.
 
         When multiple boxes compete for one slot, keep the highest-confidence
         box and record the slot in duplicate_slots.
+        Reference vs sample distinction is purely positional — no class filter.
 
         Args:
-            confirmed_boxes: output of consensus_filter() — includes all classes
+            confirmed_boxes: output of consensus_filter()
             grid_cfg:        GridConfig instance
 
         Returns:
@@ -225,9 +256,6 @@ class YoloBottleDetector:
               assigned:        dict {slot_id: {'cx','cy','w','h','conf'}}
               duplicate_slots: set of slot_ids that had more than one box competing
         """
-        # Only process sample_bottle detections
-        sample_boxes = [b for b in confirmed_boxes if int(b[5]) == CLS_SAMPLE_BOTTLE]
-
         slot_centers = {}
         for slot_id, info in grid_cfg.slot_data.items():
             coords = info['coords']
@@ -241,7 +269,7 @@ class YoloBottleDetector:
 
         # Build slot → list of (dist, box) candidates
         slot_candidates: dict = {}
-        for box in sample_boxes:
+        for box in confirmed_boxes:
             bcx, bcy = box[0], box[1]
             best_slot = None
             best_dist = float('inf')
@@ -272,20 +300,46 @@ class YoloBottleDetector:
         return assigned, duplicate_slots
 
     # ------------------------------------------------------------------
+    # ROI helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _roi_from_corners(corners, frame_shape, padding: int = YOLO_ROI_PADDING) -> tuple:
+        """
+        Compute (x1, y1, x2, y2) ROI bounding box from 4 calibration corners + padding.
+        Clamps to frame boundaries.
+        """
+        xs = [c[0] for c in corners]
+        ys = [c[1] for c in corners]
+        fh, fw = frame_shape[:2]
+        x1 = max(0,      int(min(xs)) - padding)
+        y1 = max(0,      int(min(ys)) - padding)
+        x2 = min(fw - 1, int(max(xs)) + padding)
+        y2 = min(fh - 1, int(max(ys)) + padding)
+        return x1, y1, x2, y2
+
+    # ------------------------------------------------------------------
     # Full pipeline: frames → (ref_positions, sample_hits, duplicate_slots)
     # ------------------------------------------------------------------
 
     def detect_multi(self, frames: list, grid_cfg) -> tuple:
         """
-        Run the full multi-snapshot → consensus → two-class geometric pipeline.
+        Run the full multi-snapshot → consensus → position-based geometric pipeline.
+
+        Automatically crops each frame to the grid ROI (from grid_cfg.corners)
+        before YOLO inference to eliminate false positives outside the grid area.
 
         Returns:
             (ref_positions, sample_hits, duplicate_slots)
-              ref_positions:   dict {level: [(cx, cy, r), ...]} — from ref_bottle detections
-              sample_hits:     dict {slot_id: {cx, cy, w, h, conf}} — from sample_bottle
-              duplicate_slots: set of slot_ids with competing sample_bottle detections
+              ref_positions:   dict {level: [(cx, cy, r), ...]} — bottles near row-0 slots
+              sample_hits:     dict {slot_id: {cx, cy, w, h, conf}} — bottles near main-grid slots
+              duplicate_slots: set of slot_ids with competing detections
         """
-        detections_list = [self.detect_once(f) for f in frames]
+        roi = None
+        if frames and getattr(grid_cfg, 'corners', None):
+            roi = self._roi_from_corners(grid_cfg.corners, frames[0].shape)
+
+        detections_list = [self.detect_once(f, roi=roi) for f in frames]
         confirmed = self.consensus_filter(detections_list)
         ref_positions = self.geometric_validate_ref(confirmed, grid_cfg)
         sample_hits, duplicate_slots = self.geometric_validate(confirmed, grid_cfg)

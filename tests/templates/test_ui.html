@@ -252,34 +252,26 @@
   <section id="panel-calibrate" class="panel active">
 
     <div class="card">
-      <h2>Grid Corner Calibration</h2>
-      <p style="font-size:.85rem;color:var(--text-dim);margin-bottom:12px;">
-        Click the image to mark the 4 outer corners of the physical grid in order:
-        <strong style="color:var(--gold)">① Top-Left → ② Top-Right → ③ Bottom-Right → ④ Bottom-Left</strong>.
-        Then click <em>Compute Grid</em>.
-      </p>
-      <div class="status-bar" style="margin-bottom:12px;">
+      <h2>Grid Calibration</h2>
+      <div class="status-bar" style="flex-wrap:wrap;gap:8px;">
         <div id="gridStatus" class="badge badge-orange">Not Calibrated</div>
         <span id="gridDate" style="font-size:.8rem;color:var(--text-dim);"></span>
-        <button class="btn btn-ghost" onclick="clearCorners()">Clear Corners</button>
-        <button class="btn" id="btnComputeGrid" onclick="computeGrid()">Compute Grid</button>
+        <button class="btn btn-ghost" id="btnRestore" onclick="restoreGrid()">Load Saved Grid</button>
+        <button class="btn btn-ghost" id="btnReset" onclick="resetCorners()">Reset Corners</button>
+        <button class="btn" id="btnSave" onclick="saveGrid()" disabled>Save Grid</button>
         <div class="spinner" id="spinCalib"></div>
         <span id="calibMsg" style="font-size:.85rem;"></span>
       </div>
-      <p class="corner-info" id="cornerInfo">Corners marked: 0 / 4</p>
+      <p style="font-size:.8rem;color:var(--text-dim);margin-top:8px;" id="calibHint">
+        ① Click 4 corners on the image (TL → TR → BR → BL) — grid computes automatically.
+        ② Drag any grid line to fine-tune. ③ Click <strong style="color:var(--gold)">Save Grid</strong>.
+      </p>
     </div>
 
-    <div class="two-col">
-      <div class="card" style="padding:10px;">
-        <h2>Source Image (click to mark corners)</h2>
-        <div class="canvas-wrap" id="canvasWrap">
-          <canvas id="cvCalib" onclick="markCorner(event)"></canvas>
-        </div>
-      </div>
-      <div class="card" style="padding:10px;">
-        <h2>Grid Overlay Preview</h2>
-        <img id="gridOverlay" class="result-img" src="" alt="Grid overlay will appear here after computing"
-             style="width:100%;display:block;opacity:.4;background:var(--bg3);min-height:200px;" />
+    <div class="card" style="padding:10px;">
+      <h2>Grid Overlay Preview <span style="font-size:.75rem;color:var(--text-dim);">(drag lines to adjust)</span></h2>
+      <div style="position:relative;display:inline-block;max-width:100%;border:1px solid var(--bg3);border-radius:8px;overflow:hidden;">
+        <canvas id="cvCalib"></canvas>
       </div>
     </div>
 
@@ -417,9 +409,18 @@
 
 <script>
 // ── State ──────────────────────────────────────────────────────────
-let corners = [];
-let calibImg = null;   // HTMLImageElement for calibration canvas
-let gridReady = false;
+let calibImg  = null;   // loaded Image element
+let origW = 0, origH = 0, scaleX = 1, scaleY = 1;
+let corners  = [];      // canvas-space corner points
+let gridPts  = null;    // canvas-space grid_pts (14×17 array of [x,y])
+let dragging = null;
+let hover    = null;
+let slotLayout = null;
+let showLabels = false;
+let gridReady  = false;
+
+const cvCalib = document.getElementById('cvCalib');
+const ctxCalib = cvCalib.getContext('2d');
 
 // ── Tab switching ──────────────────────────────────────────────────
 function switchTab(name, btn) {
@@ -450,8 +451,7 @@ async function loadImages() {
   }
   images.forEach(f => {
     const opt = document.createElement('option');
-    opt.value = f;
-    opt.textContent = f;
+    opt.value = f; opt.textContent = f;
     sel.appendChild(opt);
   });
 }
@@ -459,145 +459,303 @@ async function loadImages() {
 // ── Grid status badge ──────────────────────────────────────────────
 async function checkGridStatus() {
   try {
-    const res = await fetch('/api/grid-status');
+    const res  = await fetch('/api/grid-status');
     const data = await res.json();
     gridReady = data.exists;
-    const badge = document.getElementById('gridStatus');
+    const badge  = document.getElementById('gridStatus');
     const dateEl = document.getElementById('gridDate');
     if (data.exists) {
-      badge.className = 'badge badge-green';
+      badge.className   = 'badge badge-green';
       badge.textContent = 'Grid Ready';
       dateEl.textContent = data.date ? `(calibrated ${data.date})` : '';
     } else {
-      badge.className = 'badge badge-orange';
+      badge.className   = 'badge badge-orange';
       badge.textContent = 'Not Calibrated';
       dateEl.textContent = '';
     }
   } catch {}
 }
 
-// ── Calibration canvas ─────────────────────────────────────────────
+// ── Load calibration image from data/ selector ─────────────────────
 function loadCalibImage() {
   const sel = document.getElementById('imgSelect');
   if (!sel.value) return;
-  corners = [];
-  updateCornerInfo();
   const img = new Image();
   img.onload = () => {
     calibImg = img;
-    drawCalibCanvas();
+    origW = img.naturalWidth; origH = img.naturalHeight;
+    const maxW = Math.min(window.innerWidth * 0.90, 1400);
+    const maxH = Math.min(window.innerHeight * 0.72, 900);
+    const s = Math.min(maxW / origW, maxH / origH, 1);
+    scaleX = s; scaleY = s;
+    cvCalib.width  = Math.round(origW * s);
+    cvCalib.height = Math.round(origH * s);
+    // don't reset corners/gridPts if we already have a grid loaded
+    if (!gridPts) { corners = []; }
+    drawCalib();
+    setCalibMsg('');
   };
   img.src = '/data/' + sel.value + '?t=' + Date.now();
 }
 
-function drawCalibCanvas() {
-  if (!calibImg) return;
-  const canvas = document.getElementById('cvCalib');
-  const wrap = document.getElementById('canvasWrap');
-  const maxW = wrap.clientWidth || 640;
-  const scale = Math.min(maxW / calibImg.width, 800 / calibImg.height, 1);
-  canvas.width  = Math.round(calibImg.width  * scale);
-  canvas.height = Math.round(calibImg.height * scale);
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(calibImg, 0, 0, canvas.width, canvas.height);
+// ── Draw ───────────────────────────────────────────────────────────
+function drawCalib() {
+  ctxCalib.clearRect(0, 0, cvCalib.width, cvCalib.height);
+  if (calibImg) ctxCalib.drawImage(calibImg, 0, 0, cvCalib.width, cvCalib.height);
 
-  const scaleX = canvas.width  / calibImg.width;
-  const scaleY = canvas.height / calibImg.height;
-  const colors = ['#FCBA54', '#5fa8d3', '#4caf82', '#e05252'];
-  const labels = ['TL', 'TR', 'BR', 'BL'];
-
+  // Corner dots
+  const cColors = ['#FCBA54','#5fa8d3','#4caf82','#e05252'];
+  const cLabels = ['TL','TR','BR','BL'];
   corners.forEach(([x, y], i) => {
-    const px = x * scaleX;
-    const py = y * scaleY;
-    ctx.beginPath();
-    ctx.arc(px, py, 8, 0, 2 * Math.PI);
-    ctx.fillStyle = colors[i];
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = '#000';
-    ctx.font = 'bold 11px Kanit, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(labels[i], px, py);
+    ctxCalib.beginPath();
+    ctxCalib.arc(x, y, 9, 0, 2 * Math.PI);
+    ctxCalib.fillStyle = cColors[i];
+    ctxCalib.fill();
+    ctxCalib.strokeStyle = '#fff';
+    ctxCalib.lineWidth = 2;
+    ctxCalib.stroke();
+    ctxCalib.fillStyle = '#000';
+    ctxCalib.font = 'bold 10px monospace';
+    ctxCalib.textAlign = 'center';
+    ctxCalib.textBaseline = 'middle';
+    ctxCalib.fillText(cLabels[i], x, y);
   });
+  ctxCalib.textAlign = 'left'; ctxCalib.textBaseline = 'alphabetic';
 
-  // Draw connecting lines if 4 corners marked
-  if (corners.length === 4) {
-    ctx.beginPath();
-    ctx.strokeStyle = 'rgba(252,186,84,0.6)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 4]);
-    const pts = corners.map(([x, y]) => [x * scaleX, y * scaleY]);
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    [1, 2, 3, 0].forEach(i => ctx.lineTo(pts[i][0], pts[i][1]));
-    ctx.stroke();
-    ctx.setLineDash([]);
+  if (!gridPts) return;
+
+  // Horizontal lines
+  for (let r = 0; r < gridPts.length; r++) {
+    const isHov = hover && hover.type === 'h' && hover.index === r;
+    ctxCalib.lineWidth   = isHov ? 3 : 1;
+    ctxCalib.strokeStyle = isHov   ? 'rgba(0,220,255,0.95)'
+                         : r === 0 ? 'rgba(255,220,0,0.80)'
+                                   : 'rgba(0,230,80,0.65)';
+    ctxCalib.beginPath();
+    gridPts[r].forEach(([x, y], c) => c === 0 ? ctxCalib.moveTo(x, y) : ctxCalib.lineTo(x, y));
+    ctxCalib.stroke();
   }
+  // Vertical lines
+  for (let c = 0; c < gridPts[0].length; c++) {
+    const isHov = hover && hover.type === 'v' && hover.index === c;
+    ctxCalib.lineWidth   = isHov ? 3 : 1;
+    ctxCalib.strokeStyle = isHov   ? 'rgba(0,220,255,0.95)'
+                         : c === 0 ? 'rgba(255,80,80,0.60)'
+                                   : 'rgba(0,230,80,0.65)';
+    ctxCalib.beginPath();
+    gridPts.forEach((row, r) => r === 0
+      ? ctxCalib.moveTo(row[c][0], row[c][1])
+      : ctxCalib.lineTo(row[c][0], row[c][1]));
+    ctxCalib.stroke();
+  }
+
+  if (showLabels && slotLayout) drawSlotLabels();
 }
 
-function markCorner(e) {
-  if (!calibImg) return;
-  if (corners.length >= 4) return;
-  const canvas = document.getElementById('cvCalib');
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = calibImg.width  / canvas.width;
-  const scaleY = calibImg.height / canvas.height;
-  const px = (e.clientX - rect.left) * scaleX;
-  const py = (e.clientY - rect.top)  * scaleY;
-  corners.push([Math.round(px), Math.round(py)]);
-  updateCornerInfo();
-  drawCalibCanvas();
+function drawSlotLabels() {
+  if (!gridPts || !slotLayout) return;
+  const nR = gridPts.length - 1, nC = gridPts[0].length - 1;
+  ctxCalib.textAlign = 'center'; ctxCalib.textBaseline = 'middle';
+  for (let r = 0; r < Math.min(nR, slotLayout.length); r++) {
+    for (let c = 0; c < Math.min(nC, slotLayout[r].length); c++) {
+      const name = slotLayout[r][c];
+      if (!name || name === 'ZZ') continue;
+      const [x1,y1]=gridPts[r][c], [x2,y2]=gridPts[r][c+1];
+      const [x3,y3]=gridPts[r+1][c], [x4,y4]=gridPts[r+1][c+1];
+      const cx = (x1+x2+x3+x4)/4, cy = (y1+y2+y3+y4)/4;
+      const isRef = name.startsWith('REF');
+      ctxCalib.font = isRef ? 'bold 7px monospace' : '6px monospace';
+      const tw = ctxCalib.measureText(name).width;
+      ctxCalib.fillStyle = isRef ? 'rgba(20,80,20,0.85)' : 'rgba(0,0,0,0.72)';
+      ctxCalib.fillRect(cx - tw/2 - 2, cy - 5, tw + 4, 10);
+      ctxCalib.fillStyle = isRef ? '#FFD700' : '#e0e0e0';
+      ctxCalib.fillText(name, cx, cy);
+    }
+  }
+  ctxCalib.textAlign = 'left'; ctxCalib.textBaseline = 'alphabetic';
 }
 
-function clearCorners() {
-  corners = [];
-  updateCornerInfo();
-  drawCalibCanvas();
+// ── Line hit test ──────────────────────────────────────────────────
+function lineHit(mx, my) {
+  const T = 10;
+  if (!gridPts) return null;
+  for (let r = 0; r < gridPts.length; r++)
+    for (let c = 0; c < gridPts[r].length-1; c++) {
+      const [x1,y1]=gridPts[r][c],[x2,y2]=gridPts[r][c+1];
+      if (mx < Math.min(x1,x2)-T || mx > Math.max(x1,x2)+T) continue;
+      if (Math.abs((y2-y1)*mx-(x2-x1)*my+x2*y1-y2*x1)/Math.hypot(y2-y1,x2-x1) < T)
+        return {type:'h', index:r};
+    }
+  for (let c = 0; c < gridPts[0].length; c++)
+    for (let r = 0; r < gridPts.length-1; r++) {
+      const [x1,y1]=gridPts[r][c],[x2,y2]=gridPts[r+1][c];
+      if (my < Math.min(y1,y2)-T || my > Math.max(y1,y2)+T) continue;
+      if (Math.abs((y2-y1)*mx-(x2-x1)*my+x2*y1-y2*x1)/Math.hypot(y2-y1,x2-x1) < T)
+        return {type:'v', index:c};
+    }
+  return null;
 }
 
-function updateCornerInfo() {
-  document.getElementById('cornerInfo').textContent = `Corners marked: ${corners.length} / 4`;
+function evtPos(e) {
+  const r = cvCalib.getBoundingClientRect();
+  if (e.touches) return [e.touches[0].clientX - r.left, e.touches[0].clientY - r.top];
+  return [e.clientX - r.left, e.clientY - r.top];
 }
 
-// ── Compute grid ───────────────────────────────────────────────────
-async function computeGrid() {
-  const sel = document.getElementById('imgSelect');
-  if (!sel.value) return alert('Select an image first.');
-  if (corners.length < 4) return alert('Mark all 4 corners first.');
+// ── Canvas mouse / touch events ────────────────────────────────────
+cvCalib.addEventListener('click', async e => {
+  if (gridPts || corners.length >= 4) return;   // ignore clicks in edit mode
+  const [mx, my] = evtPos(e);
+  corners.push([mx, my]);
+  drawCalib();
+  if (corners.length === 4) {
+    await computeGridFromCorners();
+  } else {
+    const labels = ['Top-Left','Top-Right','Bottom-Right','Bottom-Left'];
+    setCalibMsg(`Corner ${corners.length}/4 — click ${labels[corners.length]}`);
+  }
+});
 
+cvCalib.addEventListener('mousedown', e => {
+  if (!gridPts) return;
+  const [mx, my] = evtPos(e);
+  const hit = lineHit(mx, my);
+  if (hit) { dragging = {...hit, sx:mx, sy:my}; e.preventDefault(); }
+});
+cvCalib.addEventListener('mousemove', e => {
+  const [mx, my] = evtPos(e);
+  if (dragging) {
+    const dx = mx - dragging.sx, dy = my - dragging.sy;
+    dragging.sx = mx; dragging.sy = my;
+    if (dragging.type === 'h')
+      gridPts[dragging.index] = gridPts[dragging.index].map(([x,y]) => [x, y+dy]);
+    else
+      gridPts.forEach(row => { row[dragging.index][0] += dx; });
+    drawCalib();
+  } else if (gridPts) {
+    const hit = lineHit(mx, my);
+    if (JSON.stringify(hover) !== JSON.stringify(hit)) { hover = hit; drawCalib(); }
+    cvCalib.style.cursor = hit ? 'grab' : (corners.length < 4 ? 'crosshair' : 'default');
+  }
+});
+cvCalib.addEventListener('mouseup',    () => { dragging = null; });
+cvCalib.addEventListener('mouseleave', () => { dragging = null; hover = null; drawCalib(); });
+
+cvCalib.addEventListener('touchstart', e => {
+  if (!gridPts) return;
+  const [mx,my] = evtPos(e);
+  const hit = lineHit(mx, my);
+  if (hit) { dragging = {...hit, sx:mx, sy:my}; e.preventDefault(); }
+}, {passive:false});
+cvCalib.addEventListener('touchmove', e => {
+  if (!dragging) return;
+  const [mx,my] = evtPos(e);
+  const dx = mx-dragging.sx, dy = my-dragging.sy;
+  dragging.sx = mx; dragging.sy = my;
+  if (dragging.type === 'h')
+    gridPts[dragging.index] = gridPts[dragging.index].map(([x,y]) => [x, y+dy]);
+  else
+    gridPts.forEach(row => { row[dragging.index][0] += dx; });
+  drawCalib(); e.preventDefault();
+}, {passive:false});
+cvCalib.addEventListener('touchend', () => { dragging = null; });
+
+// ── Compute grid from 4 corners ────────────────────────────────────
+async function computeGridFromCorners() {
   const spin = document.getElementById('spinCalib');
-  const msg  = document.getElementById('calibMsg');
   spin.classList.add('active');
-  msg.textContent = 'Computing grid…';
-  msg.style.color = 'var(--text-dim)';
-
+  setCalibMsg('Computing grid…');
+  const origCorners = corners.map(([x,y]) => [x/scaleX, y/scaleY]);
   try {
-    const res = await fetch('/api/calibrate', {
+    const res  = await fetch('/api/compute-grid', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: sel.value, corners }),
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({corners: origCorners}),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Server error');
-
-    msg.textContent = `✓ grid_config.json saved — ${data.slots} slots computed`;
-    msg.style.color = 'var(--green)';
-
-    // Show overlay
-    const overlay = document.getElementById('gridOverlay');
-    overlay.src = data.annotated_url + '?t=' + Date.now();
-    overlay.style.opacity = '1';
-
-    gridReady = true;
-    await checkGridStatus();
-  } catch (err) {
-    msg.textContent = '✗ ' + err.message;
-    msg.style.color = 'var(--red)';
+    gridPts = data.grid_pts.map(row => row.map(([x,y]) => [x*scaleX, y*scaleY]));
+    drawCalib();
+    document.getElementById('btnSave').disabled = false;
+    setCalibMsg('✓ Grid computed — drag lines to adjust, then Save Grid', 'var(--green)');
+  } catch(err) {
+    setCalibMsg('✗ ' + err.message, 'var(--red)');
   } finally {
     spin.classList.remove('active');
   }
+}
+
+// ── Load saved grid ────────────────────────────────────────────────
+async function restoreGrid() {
+  if (!calibImg) { alert('Select an image first.'); return; }
+  const spin = document.getElementById('spinCalib');
+  spin.classList.add('active');
+  setCalibMsg('Loading saved grid…');
+  try {
+    const res  = await fetch('/api/restore-grid');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Not found');
+    corners = data.corners.map(([x,y]) => [x*scaleX, y*scaleY]);
+    gridPts = data.grid_pts.map(row => row.map(([x,y]) => [x*scaleX, y*scaleY]));
+    drawCalib();
+    document.getElementById('btnSave').disabled = false;
+    setCalibMsg(`✓ Grid loaded (${data.date}) — drag to adjust, then Save`, 'var(--green)');
+  } catch(err) {
+    setCalibMsg('✗ ' + err.message, 'var(--red)');
+  } finally {
+    spin.classList.remove('active');
+  }
+}
+
+// ── Reset corners ──────────────────────────────────────────────────
+function resetCorners() {
+  corners = []; gridPts = null; dragging = null; hover = null;
+  showLabels = false; slotLayout = null;
+  document.getElementById('btnSave').disabled = true;
+  cvCalib.style.cursor = 'crosshair';
+  drawCalib();
+  setCalibMsg('Click Top-Left corner…');
+}
+
+// ── Save grid ──────────────────────────────────────────────────────
+async function saveGrid() {
+  if (!gridPts) return;
+  const btn  = document.getElementById('btnSave');
+  const spin = document.getElementById('spinCalib');
+  btn.disabled = true;
+  spin.classList.add('active');
+  setCalibMsg('Saving…');
+  const origCorners = corners.map(([x,y]) => [x/scaleX, y/scaleY]);
+  const origGrid    = gridPts.map(row => row.map(([x,y]) => [x/scaleX, y/scaleY]));
+  try {
+    const res  = await fetch('/api/save-grid', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({corners: origCorners, grid_pts: origGrid}),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Save failed');
+    setCalibMsg(`✓ Saved — ${data.slots} slots written to grid_config.json`, 'var(--green)');
+    gridReady = true;
+    await checkGridStatus();
+    // Show slot ID labels overlay
+    try {
+      const lr = await fetch('/api/layout');
+      const ld = await lr.json();
+      if (!ld.error) { slotLayout = ld.layout; showLabels = true; drawCalib(); }
+    } catch {}
+  } catch(err) {
+    setCalibMsg('✗ ' + err.message, 'var(--red)');
+    btn.disabled = false;
+  } finally {
+    spin.classList.remove('active');
+  }
+}
+
+function setCalibMsg(msg, color = 'var(--text-dim)') {
+  const el = document.getElementById('calibMsg');
+  el.textContent = msg;
+  el.style.color = color;
 }
 
 // ── YOLO Detection ─────────────────────────────────────────────────
@@ -637,10 +795,8 @@ async function runDetect() {
     document.getElementById('detectImg').src = data.annotated_url + '?t=' + Date.now();
 
     // Count display
-    const refs = data.boxes.filter(b => b.cls === 0).length;
-    const samps = data.boxes.filter(b => b.cls === 1).length;
     document.getElementById('detectCount').textContent =
-      `(${refs} ref_bottle + ${samps} sample_bottle)`;
+      `(${data.boxes.length} bottle)`;
 
     // Table
     const tbody = document.getElementById('detectTbody');
@@ -648,9 +804,7 @@ async function runDetect() {
       tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-dim);padding:16px;">No detections</td></tr>';
     } else {
       tbody.innerHTML = data.boxes.map((b, i) => {
-        const clsName = b.cls === 0
-          ? '<span class="cls-ref">ref_bottle</span>'
-          : '<span class="cls-sample">sample_bottle</span>';
+        const clsName = '<span class="cls-sample">bottle</span>';
         const confCls = b.conf >= 0.75 ? 'conf-high' : 'conf-low';
         return `<tr>
           <td>${i + 1}</td>

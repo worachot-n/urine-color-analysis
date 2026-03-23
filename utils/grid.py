@@ -36,6 +36,7 @@ class GridConfig:
         self.config_file = config_file
         self.slot_data = {}
         self.reference_slots = {}
+        self.corners = None   # [[x,y]×4] TL/TR/BR/BL in full-image pixel space
         self._load()
 
     def _load(self):
@@ -48,6 +49,11 @@ class GridConfig:
 
         with open(path, 'r') as f:
             data = json.load(f)
+
+        # Expose calibration corners for ROI computation
+        corners_raw = data.get("system_metadata", {}).get("corners", None)
+        if corners_raw:
+            self.corners = [[float(p[0]), float(p[1])] for p in corners_raw]
 
         for slot_id, info in data['reference_row']['slots'].items():
             self.reference_slots[slot_id] = {

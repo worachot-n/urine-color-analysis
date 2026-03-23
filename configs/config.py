@@ -131,6 +131,7 @@ YOLO_CONSENSUS_IOU:      float = _cfg["yolo"]["consensus_iou"]
 YOLO_SLOT_MAX_DIST:      float = _cfg["yolo"]["slot_max_dist_ratio"]
 YOLO_CLAHE_CLIP:         float = _cfg["yolo"]["clahe_clip_limit"]
 YOLO_CLAHE_TILE:         int   = _cfg["yolo"]["clahe_tile_size"]
+YOLO_ROI_PADDING:        int   = int(_cfg["yolo"].get("roi_padding_px", 30))
 
 # =============================================================================
 # System / debug

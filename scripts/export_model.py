@@ -1,11 +1,14 @@
 """
-Two-class YOLOv8s training guide + OpenVINO export for Raspberry Pi 4B.
+Single-class YOLOv8s training guide + OpenVINO export for Raspberry Pi 4B.
 
 =============================================================================
 CLASSES
 =============================================================================
-    Class 0: ref_bottle    — 15 reference bottles in the top row (known color standards)
-    Class 1: sample_bottle — all test bottles placed in the 16x14 main grid
+    Class 0: bottle — every bottle on the grid (reference row AND main grid)
+
+    Reference vs sample classification is done at inference time by grid
+    position: bottles near row-0 reference slots → reference; bottles near
+    rows 1-12 sample slots → sample. YOLO only needs to find the bottles.
 
 =============================================================================
 DATASET STRUCTURE
@@ -25,10 +28,9 @@ data.yaml  (save as dataset/data.yaml)
     path: /absolute/path/to/dataset
     train: images/train
     val:   images/val
-    nc: 2
+    nc: 1
     names:
-      0: ref_bottle
-      1: sample_bottle
+      0: bottle
 
 =============================================================================
 ANNOTATION FORMAT  (YOLO .txt — one line per object)
@@ -36,8 +38,10 @@ ANNOTATION FORMAT  (YOLO .txt — one line per object)
     <class_id> <x_center> <y_center> <width> <height>   (all 0-1 normalized)
 
     Examples:
-      0 0.12 0.04 0.03 0.06   # ref_bottle in top row
-      1 0.45 0.35 0.03 0.06   # sample_bottle in main grid
+      0 0.12 0.04 0.03 0.06   # bottle in reference row (top)
+      0 0.45 0.35 0.03 0.06   # bottle in main grid
+
+    All bottles use class 0 — position on the grid determines ref vs sample.
 
     Background images (empty grid): create an empty .txt file (zero bytes).
     YOLO treats images with no annotations as pure negative samples.
@@ -65,7 +69,7 @@ TRAINING COMMAND  (run on PC with CUDA GPU)
     pip install ultralytics
 
     yolo train \\
-        model=yolov8s.pt \\
+        model=yolo26s.pt \\
         data=dataset/data.yaml \\
         epochs=100 \\
         imgsz=640 \\
@@ -87,7 +91,7 @@ EXPORT  (run this script after training)
 =============================================================================
     python scripts/export_model.py
 
-    Copy output directory to: models/bottle_yolo8s_openvino/ on Raspberry Pi
+    Copy output directory to: models/bottle_yolo26s_openvino/ on Raspberry Pi
 
 =============================================================================
 INSTALLATION ON PI
@@ -98,9 +102,10 @@ INSTALLATION ON PI
 VERIFICATION
 =============================================================================
     Run inference on one test image and confirm:
-      - ref_bottle (cls=0) detected only in the top row
-      - sample_bottle (cls=1) detected only in the main grid
+      - All bottles detected (class 0 "bottle") regardless of row
       - Empty grid image → zero detections
+      - In the test web app (Classify tab): ref row bottles populate baseline,
+        main-grid bottles get classified against that baseline
 
     If ghosts remain on empty grid: add more background images to training set.
     If bottles missed: lower conf_threshold in config.toml (0.75 → 0.65).
@@ -120,4 +125,4 @@ model.export(
 
 print("\nModel exported.")
 print("Copy the output *_openvino_model/ directory to:")
-print("  models/bottle_yolo8s_openvino/  on the Raspberry Pi")
+print("  models/bottle_yolo26s_openvino/  on the Raspberry Pi")

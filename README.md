@@ -12,16 +12,17 @@ A top-down camera captures the grid when a button is pressed. The system runs a 
 2. **Web dashboard** at `http://<pi-ip>:5000` — results, annotated images, grid calibration
 3. **Waits for button press** (GPIO 24) to start each scan
 4. **Captures 3 snapshots** with 200 ms delay and ±15% exposure variation (multi-snapshot consensus)
-5. **YOLO detection** (YOLOv8s / OpenVINO) — two-class model detects `ref_bottle` and `sample_bottle`
-6. **Consensus filter** — keeps only detections that appear in ≥ 2 of 3 snapshots (eliminates glare ghosts)
-7. **Geometric validation** — maps each confirmed box center to the nearest grid slot
-8. **Ghost check** — rejects any detection whose CIE Lab color is too close to white paper (ΔE < 8)
-9. **Auto-calibrated baseline** — `ref_bottle` YOLO detections from row 0 build a live color reference; calibrated slot positions are used as fallback for any missed level
-10. **CIE Lab Delta E classification** — each sample bottle is assigned the level with the lowest ΔE distance to the live baseline; never raw RGB
-11. **Placement validation** — classified level must match the slot's expected level encoded in the slot ID
-12. **Hardware output** — relay LED tower (Red/Yellow/Green), 5× TM1637 displays, LCD 16×4
-13. **Telegram report** — text summary + annotated JPEG after every scan
-14. **SQLite log** — every scan saved to `logs/scan_results.db`
+5. **ROI crop** — frame is cropped to the grid bounding box (from calibration corners + 10 px padding) before YOLO inference to eliminate false positives outside the grid
+6. **YOLO detection** (yolo26s / OpenVINO) — single-class model detects `bottle` (all bottles look identical; ref vs sample is determined by grid position, not YOLO class)
+7. **Consensus filter** — keeps only detections that appear in ≥ 2 of 3 snapshots (eliminates glare ghosts)
+8. **Geometric validation** — maps each confirmed box center to the nearest grid slot; row-0 slots → reference baseline, rows 1–12 → sample hits
+9. **Ghost check** — rejects any detection whose CIE Lab color is too close to white paper (ΔE < 8)
+10. **Auto-calibrated baseline** — bottles mapped to row-0 reference slots build a live color reference every scan cycle
+11. **CIE Lab Delta E classification** — each sample bottle is assigned the level with the lowest ΔE distance to the live baseline; never raw RGB
+12. **Placement validation** — classified level must match the slot's expected level encoded in the slot ID
+13. **Hardware output** — relay LED tower (Red/Yellow/Green), 5× TM1637 displays, LCD 16×4
+14. **Telegram report** — text summary + annotated JPEG after every scan
+15. **SQLite log** — every scan saved to `logs/scan_results.db`
 
 ---
 
@@ -74,19 +75,19 @@ urine-color-analysis/
 │   ├── calibration.py          # AWB lock, grid math, semi-auto corner calibration
 │   ├── color_analysis.py       # CIE Lab extraction, Delta E, baseline builder, classifier
 │   ├── db.py                   # SQLite scan result persistence
-│   ├── grid.py                 # GridConfig loader, majority-rule slot assignment
+│   ├── grid.py                 # GridConfig loader (slot polygons + corner coords)
 │   ├── hardware.py             # Relay, TM1637, LCD, button drivers (graceful no-op on non-Pi)
 │   ├── image_processing.py     # CLAHE, red mask, morphology, contour detection (legacy fallback)
 │   ├── network.py              # WiFi detection, hotspot (nmcli), captive portal
 │   ├── utils.py                # Logger, annotated image saving
 │   ├── web_server.py           # Flask dashboard + calibration UI + WiFi setup portal
-│   └── yolo_detector.py        # YOLOv8 OpenVINO wrapper — consensus, geometric validation
+│   └── yolo_detector.py        # yolo26s OpenVINO wrapper — ROI crop, consensus, geometric validation
 │
 ├── bot/
 │   └── telegram_bot.py         # Telegram summary + image sender
 │
 ├── scripts/
-│   └── export_model.py         # YOLOv8s → OpenVINO export + two-class training spec
+│   └── export_model.py         # yolo26s → OpenVINO export + single-class training spec
 │
 ├── templates/
 │   ├── base.html               # Shared layout (dark green / gold theme, Kanit font)
@@ -102,9 +103,9 @@ urine-color-analysis/
 │   └── logo.ico
 │
 ├── models/
-│   └── bottle_yolov8s_openvino/  # Place exported OpenVINO model here (see scripts/export_model.py)
-│       ├── yolov8s.xml
-│       ├── yolov8s.bin
+│   └── bottle_yolo26s_openvino_model/  # Directory name MUST end with _openvino_model (ultralytics requirement)
+│       ├── best.xml
+│       ├── best.bin
 │       └── metadata.yaml
 │
 ├── tests/
@@ -112,12 +113,14 @@ urine-color-analysis/
 │   ├── test_grid.py
 │   ├── test_image_processing.py
 │   ├── test_web.py             # Local Windows test server (port 5001) — see Test Lab section
+│   ├── test_yolo_detect.py     # Standalone YOLO visual log — runs detect_once() on data/ images
 │   └── templates/
 │       └── test_ui.html        # Test Lab UI (Calibrate / Detect / Classify tabs)
 │
-├── grid_config.json            # Generated by calibration — slot polygons (195 slots)
+├── grid_config.json            # Generated by calibration — slot polygons (195 slots) + corner coords
 ├── logs/
 │   ├── img/                    # Annotated scan JPEGs
+│   │   └── detect_test/        # Output from test_yolo_detect.py
 │   └── scan_results.db         # SQLite history
 └── data/                       # Local test images (for development on Windows)
 ```
@@ -164,13 +167,13 @@ Installs Pi-only packages: `picamera2`, `RPi.GPIO`, `smbus2`.
 
 ## Model Setup
 
-The YOLO detection engine requires a trained YOLOv8s model exported to OpenVINO format.
+The YOLO detection engine requires a trained yolo26s model exported to OpenVINO format.
 
 ### Train (on a PC with GPU)
 
 ```bash
 yolo train \
-    model=yolov8s.pt \
+    model=yolo26s.pt \
     data=dataset/data.yaml \
     epochs=100 \
     imgsz=640 \
@@ -180,14 +183,15 @@ yolo train \
     project=runs/urine_detector name=v1
 ```
 
-**Two-class dataset** (`data.yaml`):
+**Single-class dataset** (`data.yaml`):
 ```yaml
-nc: 2
-names: ['ref_bottle', 'sample_bottle']
+nc: 1
+names: ['bottle']
 ```
 
-- **Class 0 `ref_bottle`** — 15 reference bottles in the top row
-- **Class 1 `sample_bottle`** — all test bottles in the main 16×14 grid
+- **Class 0 `bottle`** — every bottle on the grid; reference row and main grid use the same label
+- Reference vs sample classification happens at inference time via **grid position**, not YOLO class
+- Training image size `imgsz=640`; production frames (1920×1080) are auto-letterboxed by ultralytics — no code change needed
 - Include 10–20% empty-grid images (no labels) as background negatives to suppress glare ghosts
 
 ### Export to OpenVINO
@@ -196,7 +200,7 @@ names: ['ref_bottle', 'sample_bottle']
 python scripts/export_model.py
 ```
 
-Copy the output folder to `models/bottle_yolov8s_openvino/` on the Pi.
+Copy the output folder to `models/bottle_yolo26s_openvino/` on the Pi.
 
 ---
 
@@ -206,15 +210,19 @@ All settings live in **`configs/config.toml`** — edit that file only; `configs
 
 ### Key parameters
 
-| Section | Key | Default | Description |
-|---------|-----|---------|-------------|
+| Section | Key | Value | Description |
+|---------|-----|-------|-------------|
 | `[gpio.button]` | `pin` | `24` | Push button GPIO pin |
 | `[camera]` | `capture_resolution` | `[4608, 2592]` | Camera Module 3 max |
-| `[yolo]` | `model_path` | `models/bottle_yolov8s_openvino` | OpenVINO model directory |
-| `[yolo]` | `conf_threshold` | `0.75` | YOLO confidence cutoff |
+| `[yolo]` | `model_path` | `models/bottle_yolo26s_openvino_model` | OpenVINO model directory (must end `_openvino_model`) |
+| `[yolo]` | `imgsz` | `640` | YOLO inference image size |
+| `[yolo]` | `conf_threshold` | `0.40` | YOLO confidence cutoff |
+| `[yolo]` | `iou_threshold` | `0.45` | NMS IoU threshold |
+| `[yolo]` | `augment` | `false` | TTA disabled — lowers confidence on fixed-angle camera |
 | `[yolo]` | `snapshots` | `3` | Captures per button press |
 | `[yolo]` | `consensus_min_votes` | `2` | Snapshots a box must appear in |
 | `[yolo]` | `slot_max_dist_ratio` | `0.60` | Max box→slot distance (× slot radius) |
+| `[yolo]` | `roi_padding_px` | `10` | Padding around grid corners for ROI crop |
 | `[color_analysis]` | `ghost_de_threshold` | `8.0` | Min ΔE vs white paper to accept detection |
 | `[color_analysis]` | `confidence_margin` | `3.0` | Best–second-best ΔE gap for "confident" |
 | `[color_analysis]` | `ref_inner_crop_px` | `25` | Inner crop for reference bottles |
@@ -253,16 +261,18 @@ python main.py
 
 1. Yellow LED on
 2. Capture 3 snapshots (200 ms apart, ±15% exposure variation)
-3. YOLO inference × 3 → consensus filter → geometric slot assignment
-4. Ghost rejection (ΔE < 8 vs white paper → skip)
-5. Reference baseline built from detected `ref_bottle` positions
-6. CIE Lab Delta E classification for each `sample_bottle`
-7. Placement validation — classified level vs expected level in slot ID
-8. Green LED = all OK / Red LED = mismatch or duplicate
-9. TM1637 displays updated (count per level L0–L4)
-10. LCD shows result or first error
-11. Telegram: text summary + annotated image
-12. Result saved to `logs/scan_results.db` + `logs/img/`
+3. ROI computed from grid calibration corners (full-frame bounding box + 10 px padding)
+4. YOLO inference × 3 (ROI-cropped frames) → consensus filter → confirmed boxes
+5. Geometric slot assignment — row-0 proximity → reference positions; rows 1–12 proximity → sample hits
+6. Ghost rejection (ΔE < 8 vs white paper → skip)
+7. Reference baseline built from bottles detected in row-0 reference slots
+8. CIE Lab Delta E classification for each bottle in main-grid slots
+9. Placement validation — classified level vs expected level in slot ID
+10. Green LED = all OK / Red LED = mismatch or duplicate
+11. TM1637 displays updated (count per level L0–L4)
+12. LCD shows result or first error
+13. Telegram: text summary + annotated image
+14. Result saved to `logs/scan_results.db` + `logs/img/`
 
 ---
 
@@ -287,6 +297,8 @@ Used to map the physical grid on first run or after moving the camera.
 4. **Fine-tune** — drag any grid line to correct misalignment
 5. **Save** — writes `grid_config.json`; running scan loop reloads without restart
 
+The saved `grid_config.json` also stores the 4 corner coordinates in `system_metadata.corners`. These are used at inference time to compute the ROI crop that restricts YOLO detection to the grid area.
+
 ---
 
 ## Local Development — Test Lab
@@ -305,8 +317,29 @@ Three tabs:
 | Tab | What it tests |
 |-----|---------------|
 | **① Calibrate** | Click 4 corners on a `data/` image → computes `grid_config.json` → shows grid overlay |
-| **② Detect** | Runs YOLO `detect_once()` on the image; falls back to OpenCV red-cap detection if model absent |
+| **② Detect** | Runs YOLO `detect_once()` (ROI-cropped) on the image; falls back to OpenCV red-cap detection if model absent |
 | **③ Classify** | Full pipeline — detection → consensus → baseline → ΔE classification; shows slot table + bar chart |
+
+### YOLO detection visual log
+
+To visually inspect what YOLO detects on `data/` images before running the full pipeline:
+
+```bash
+# All images in data/
+python tests/test_yolo_detect.py
+
+# Single image
+python tests/test_yolo_detect.py data/capture_xyz.jpg
+
+# Override confidence threshold
+python tests/test_yolo_detect.py --conf 0.35
+```
+
+Annotated images (scaled to max 1600 px wide) are saved to `logs/img/detect_test/`:
+- **Green box** — detected bottle (normal size)
+- **Orange box** — suspiciously small detection (w or h < 30 px)
+- **Cyan-yellow border** — ROI boundary
+- **Top-left overlay** — mode, conf threshold, total count, ROI coords
 
 > **Python path note:** The project venv may not have `opencv` and `flask`. Run with the system Python if `uv sync` hasn't been run yet, or install manually: `pip install opencv-python-headless flask`.
 
@@ -376,12 +409,14 @@ Button press
     ↓
 capture_multi_snapshot()          3 frames × (normal / -15% / +15% exposure)
     ↓
-YoloBottleDetector.detect_once()  × 3 frames  →  [[cx,cy,w,h,conf,cls], ...]
+ROI crop                          grid bounding box from calibration corners + 10 px padding
     ↓
+YoloBottleDetector.detect_once()  × 3 frames (ROI-cropped)  →  [[cx,cy,w,h,conf,cls], ...]
+    ↓                             coordinates offset back to full-frame space
 consensus_filter()                keep boxes in ≥ 2/3 snapshots  →  confirmed boxes
     ↓
-geometric_validate_ref()          cls=0 → {level: [(cx,cy,r), ...]}  ref positions
-geometric_validate()              cls=1 → {slot_id: {cx,cy,w,h,conf}}  sample hits
+geometric_validate_ref()          proximity to row-0 slots  →  {level: [(cx,cy,r), ...]}
+geometric_validate()              proximity to rows 1-12    →  {slot_id: {cx,cy,w,h,conf}}
     ↓
 build_reference_baseline()        ref positions → {level: (L,a,b)}  live standard
     ↓

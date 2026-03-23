@@ -124,79 +124,108 @@ def api_grid_status():
     return jsonify({"exists": False, "date": None})
 
 
-# ── API — calibrate ───────────────────────────────────────────────────────────
+# ── API — calibration (3-step: compute → adjust → save) ──────────────────────
 
-@app.route("/api/calibrate", methods=["POST"])
-def api_calibrate():
+@app.route("/api/compute-grid", methods=["POST"])
+def api_compute_grid():
+    """Phase 1: 4 corners → return grid_pts JSON for canvas editor. Does NOT save."""
     body = request.get_json(force=True)
-    image_name = body.get("image", "")
     corners_raw = body.get("corners", [])
-
     if len(corners_raw) != 4:
         return jsonify({"error": "Exactly 4 corners required"}), 400
+    try:
+        from utils.calibration import _corners_to_grid_pts
+        grid_pts = _corners_to_grid_pts(corners_raw)
+        return jsonify({"grid_pts": grid_pts.tolist()})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
-    frame, err = _load_frame(image_name)
-    if err:
-        return err
 
-    corners = [(float(p[0]), float(p[1])) for p in corners_raw]
+@app.route("/api/restore-grid")
+def api_restore_grid():
+    """Return saved corners + grid_pts from grid_config.json for the canvas editor."""
+    if not _GRID_CFG.exists():
+        return jsonify({"error": "grid_config.json not found — calibrate first"}), 404
+    try:
+        with open(_GRID_CFG) as f:
+            cfg = json.load(f)
+        meta = cfg.get("system_metadata", {})
+        corners   = meta.get("corners")
+        grid_pts  = meta.get("grid_pts")
+        calib_date = meta.get("calibration_date", "")
+        if not corners or len(corners) != 4:
+            return jsonify({"error": "No corners saved in grid_config.json"}), 400
+        if not grid_pts:
+            from utils.calibration import _corners_to_grid_pts
+            grid_pts = _corners_to_grid_pts(corners).tolist()
+        return jsonify({"corners": corners, "grid_pts": grid_pts, "date": calib_date})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/save-grid", methods=["POST"])
+def api_save_grid():
+    """Phase 2: receive final corners + adjusted grid_pts, compute polygons, save grid_config.json."""
+    body     = request.get_json(force=True)
+    corners  = body.get("corners",  [])
+    grid_pts = body.get("grid_pts", [])
+
+    if len(corners) != 4:
+        return jsonify({"error": "Need exactly 4 corners"}), 400
+    if not grid_pts:
+        return jsonify({"error": "grid_pts missing"}), 400
 
     try:
-        from utils.calibration import compute_slot_polygons
-        ref_slots, slot_data = compute_slot_polygons(corners)
+        from utils.calibration import compute_slot_polygons_from_grid
+        grid_np = np.array(grid_pts, dtype=np.float64)
+        ref_slots, slot_data = compute_slot_polygons_from_grid(grid_np)
+
+        def _ser(info: dict) -> dict:
+            out = {}
+            for k, v in info.items():
+                out[k] = v.tolist() if isinstance(v, np.ndarray) else v
+            return out
+
+        payload = {
+            "system_metadata": {
+                "project_name":    "Urine Color Analysis",
+                "grid_dimensions": "16x14 lines",
+                "calibration_date": datetime.now().strftime("%Y-%m-%d"),
+                "corners":  corners,
+                "grid_pts": grid_pts,
+            },
+            "reference_row": {
+                "slots": {sid: _ser(info) for sid, info in ref_slots.items()}
+            },
+            "main_grid": {
+                "slot_data": {sid: _ser(info) for sid, info in slot_data.items()}
+            },
+        }
+        with open(_GRID_CFG, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        return jsonify({"ok": True, "slots": len(slot_data)})
     except Exception as exc:
-        return jsonify({"error": f"Calibration failed: {exc}"}), 500
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
-    # ---- Serialise and save grid_config.json ----
-    def _serialise_slot(info: dict) -> dict:
-        """Convert numpy arrays to plain lists for JSON."""
-        out = {}
-        for k, v in info.items():
-            if isinstance(v, np.ndarray):
-                out[k] = v.tolist()
-            elif isinstance(v, list) and v and isinstance(v[0], (list, np.ndarray)):
-                out[k] = [
-                    (x.tolist() if isinstance(x, np.ndarray) else x) for x in v
-                ]
-            else:
-                out[k] = v
-        return out
 
-    payload = {
-        "system_metadata": {
-            "project_name":    "Urine Color Analysis",
-            "grid_dimensions": "16x14 lines",
-            "calibration_date": datetime.now().strftime("%Y-%m-%d"),
-            "corners": corners_raw,
-        },
-        "reference_row": {
-            "slots": {sid: _serialise_slot(info) for sid, info in ref_slots.items()}
-        },
-        "main_grid": {
-            "slot_data": {sid: _serialise_slot(info) for sid, info in slot_data.items()}
-        },
-    }
-
-    with open(_GRID_CFG, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
-    # ---- Draw overlay and save ----
-    vis = _draw_grid_overlay(frame, ref_slots, slot_data)
-
-    # Mark the 4 clicked corners
-    corner_colors = [(0, 212, 252), (100, 212, 0), (0, 212, 100), (0, 80, 252)]
-    labels = ["TL", "TR", "BR", "BL"]
-    for i, (cx, cy) in enumerate(corners):
-        cv2.circle(vis, (int(cx), int(cy)), 14, corner_colors[i], -1)
-        cv2.putText(vis, labels[i], (int(cx) - 8, int(cy) + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
-
-    annotated_url = _save_result(vis, "calib")
-    return jsonify({
-        "ok": True,
-        "slots": len(slot_data),
-        "annotated_url": annotated_url,
-    })
+@app.route("/api/layout")
+def api_layout():
+    """Return slot ID layout table for canvas label overlay (ref row + 12 main rows)."""
+    try:
+        from utils.grid import load_grid_layout
+        ref_row = (
+            ["ZZ"]
+            + ["REF_L0"] * 3
+            + ["REF_L1"] * 3
+            + ["REF_L2"] * 3
+            + ["REF_L3"] * 3
+            + ["REF_L4"] * 3
+        )
+        layout = [ref_row] + load_grid_layout()   # 13 rows: 1 ref + 12 main
+        return jsonify({"layout": layout})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 # ── API — detect ──────────────────────────────────────────────────────────────
@@ -214,6 +243,17 @@ def api_detect():
     mode  = "opencv"
     warn  = None
 
+    # ---- Compute ROI once — shared by YOLO and OpenCV paths ----
+    roi = None
+    try:
+        from utils.yolo_detector import YoloBottleDetector as _YD
+        from utils.grid import GridConfig as _GC
+        _gcfg = _GC()
+        if _gcfg.corners:
+            roi = _YD._roi_from_corners(_gcfg.corners, frame.shape)
+    except Exception:
+        pass
+
     # ---- Try YOLO first ----
     try:
         import configs.config as config
@@ -224,7 +264,7 @@ def api_detect():
             raise FileNotFoundError(f"Model not found: {model_path}")
 
         detector = YoloBottleDetector(model_path)
-        raw_boxes = detector.detect_once(frame)   # [[cx,cy,w,h,conf,cls], ...]
+        raw_boxes = detector.detect_once(frame, roi=roi)   # [[cx,cy,w,h,conf,cls], ...]
         boxes = [
             {"cx": int(b[0]), "cy": int(b[1]), "w": int(b[2]), "h": int(b[3]),
              "conf": round(float(b[4]), 4), "cls": int(b[5])}
@@ -243,10 +283,17 @@ def api_detect():
     if mode == "opencv":
         try:
             from utils.image_processing import detect_red_caps
-            circles = detect_red_caps(frame) or []
+            # Apply ROI crop to eliminate black-area false positives
+            crop = frame
+            x_off, y_off = 0, 0
+            if roi is not None:
+                rx1, ry1, rx2, ry2 = roi
+                crop = frame[ry1:ry2, rx1:rx2]
+                x_off, y_off = rx1, ry1
+            circles = detect_red_caps(crop) or []
             boxes = [
-                {"cx": int(cx), "cy": int(cy), "w": int(r * 2), "h": int(r * 2),
-                 "conf": 1.0, "cls": 1}
+                {"cx": int(cx) + x_off, "cy": int(cy) + y_off,
+                 "w": int(r * 2), "h": int(r * 2), "conf": 1.0, "cls": 0}
                 for cx, cy, r in circles
             ]
         except Exception as exc:
@@ -254,8 +301,8 @@ def api_detect():
 
     # ---- Draw annotated image ----
     vis = frame.copy()
-    cls_colors = {0: (252, 186, 0), 1: (80, 200, 120)}   # gold for ref, green for sample
-    cls_names  = {0: "ref", 1: "sample"}
+    cls_colors = {0: (80, 200, 120)}   # green for all bottles (single-class model)
+    cls_names  = {0: "bottle"}
 
     for b in boxes:
         cx, cy, w, h = b["cx"], b["cy"], b["w"], b["h"]
@@ -324,7 +371,7 @@ def api_classify():
 
             detector = YoloBottleDetector(model_path)
             ref_positions_yolo, yolo_hits, duplicate_slots = detector.detect_multi(
-                [frame], grid_cfg
+                [frame] * config.YOLO_CONSENSUS_MIN, grid_cfg
             )
             detection_mode = "yolo"
 

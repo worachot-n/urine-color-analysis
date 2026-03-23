@@ -11,9 +11,10 @@ dependencies = [
     "werkzeug",
     "python-dotenv",
     "requests",
-    "RPi.GPIO>=0.7.1",
-    "smbus2>=0.4.3",
-    "picamera2>=0.3.12",
+    # "RPi.GPIO>=0.7.1",
+    # "smbus2>=0.4.3",
+    # "picamera2>=0.3.12",
+    "ultralytics>=8.4.24",
 ]
 
 [dependency-groups]

@@ -217,7 +217,7 @@ def analyze_frame_yolo(frames: list, grid_cfg):
         logger.warning("YOLO missed ref levels %s — using calibrated positions as fallback",
                        sorted(fallback_levels))
 
-    logger.info("YOLO: %d ref bottle detections, %d sample bottles, %d duplicate slots",
+    logger.info("YOLO: %d ref bottles, %d sample hits, %d duplicate slots",
                 sum(len(v) for v in ref_positions_yolo.values()),
                 len(yolo_hits), len(duplicate_slots))
 

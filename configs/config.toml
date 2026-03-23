@@ -134,11 +134,11 @@ chat_id = ""
 # YOLO DETECTION
 # =============================================================================
 [yolo]
-model_path          = "models/bottle_yolo8s_openvino"
+model_path          = "models/bottle_yolo26s_openvino_model"
 imgsz               = 640
-conf_threshold      = 0.75
+conf_threshold      = 0.40
 iou_threshold       = 0.45       # NMS IoU threshold
-augment             = true       # Test-time augmentation (TTA)
+augment             = false      # TTA disabled — lowers confidence scores on fixed-angle camera
 snapshots           = 3          # Number of consecutive snapshots per trigger
 snapshot_delay_ms   = 200        # Milliseconds between snapshots
 exposure_variation  = 0.15       # ±15% ExposureTime variation across snapshots
@@ -147,6 +147,7 @@ consensus_iou       = 0.50       # IoU threshold for matching boxes across snaps
 slot_max_dist_ratio = 0.60       # Max distance from slot center as fraction of slot radius
 clahe_clip_limit    = 2.0        # CLAHE clip for pre-inference enhancement
 clahe_tile_size     = 8          # CLAHE tile grid size (NxN)
+roi_padding_px      = 10         # Padding (px) added around grid corners for ROI crop
 
 # =============================================================================
 # SYSTEM SAFETY
