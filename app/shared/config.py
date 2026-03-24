@@ -68,8 +68,9 @@ class Settings(BaseSettings):
     model_iou:        float = _mdl.get("iou_threshold",          0.45)
 
     # ── Persistence ────────────────────────────────────────────────────────
-    database_path: str = _db.get("path", "data/results.db")
-    captures_dir:  str = _st.get("captures_dir", "app/web/static/captures")
+    database_path:   str = _db.get("path", "data/results.db")
+    captures_dir:    str = _st.get("captures_dir", "app/web/static/captures")
+    visual_log_dir:  str = _st.get("visual_log_dir", "logs/img")
 
     # ── Camera ─────────────────────────────────────────────────────────────
     camera_width:  int = _cam.get("width",  4608)

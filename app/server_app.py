@@ -42,6 +42,8 @@ from app.shared.processor import (
     scale_coordinates,
     find_slot_conflicts,
     validate_color_zones,
+    save_visual_log,
+    generate_visual_report,
 )
 
 
@@ -54,12 +56,14 @@ class _Base(DeclarativeBase):
 class AnalysisResult(_Base):
     __tablename__ = "results"
 
-    id          = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp   = Column(DateTime, default=datetime.utcnow)
-    count       = Column(Integer)
-    color_json  = Column(String)             # JSON string of {color: count} summary
-    image_path  = Column(String)             # Relative URL path served under /static/
-    errors_json = Column(String, nullable=True)  # JSON: {duplicate_slots, wrong_color_slots}
+    id                 = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp          = Column(DateTime, default=datetime.utcnow)
+    count              = Column(Integer)
+    color_json         = Column(String)                  # JSON: {"L0": n, …, "L4": n}
+    image_path         = Column(String)                  # /static/captures/{uuid}.jpg
+    errors_json        = Column(String, nullable=True)   # JSON: {duplicate_slots, wrong_color_slots}
+    log_image_filename = Column(String, nullable=True)   # logs/img/URINE_SCAN_*.jpg
+    detailed_results   = Column(String, nullable=True)   # JSON: per-slot validation detail
 
 
 def _make_engine():
@@ -78,7 +82,7 @@ class _YoloInference:
     """
     Wraps a YOLOv8 PyTorch model (.pt).  Loaded once at app startup.
 
-    detect(img_bytes) → (count, color_summary, annotated_bgr, errors)
+    detect(img_bytes, log_path) → (count, color_summary, annotated, errors, validation_results)
     """
 
     def __init__(self):
@@ -92,15 +96,42 @@ class _YoloInference:
 
     # ------------------------------------------------------------------
 
-    def detect(self, img_bytes: bytes) -> tuple[int, dict, np.ndarray, dict]:
+    def detect(
+        self,
+        img_bytes: bytes,
+        log_path: "Path | None" = None,
+    ) -> "tuple[int, dict, np.ndarray, dict, dict]":
         """
         Run inference on raw JPEG bytes.
 
-        Returns:
-            count          — number of unique slots occupied (or raw box count if no grid)
-            color_summary  — {f"L{i}": count} per level (zeros if no grid calibration)
-            annotated      — BGR image with bounding-box overlays
-            errors         — {duplicate_slots: [...], wrong_color_slots: [...]}
+        Args:
+            img_bytes:  Raw JPEG bytes from the Pi camera.
+            log_path:   When provided, save_visual_log() writes a full
+                        diagnostic JPEG with bounding boxes, rings, and
+                        Thai text labels.
+
+        Returns (5-tuple):
+            count              — unique occupied slots (or raw box count if no grid)
+            color_summary      — {"L0"…"L4": count}
+            annotated          — simple BGR image (boxes + confidence, for dashboard)
+            errors             — {"duplicate_slots": [...], "wrong_color_slots": [...]}
+            validation_results — per-slot detail dict (see structure below)
+
+        validation_results structure:
+            {
+              "slots": {
+                slot_id: {
+                  "cx": int, "cy": int, "radius": int,
+                  "level": int | None,
+                  "ok": bool,
+                  "wrong_color": bool,
+                  "duplicate": bool,
+                  "expected": int   # only when wrong_color=True
+                }
+              },
+              "duplicate_slots": [...],
+              "wrong_color_slots": [...],
+            }
         """
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -127,21 +158,22 @@ class _YoloInference:
         boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y)
 
         # ── Slot-based color analysis (requires grid_config.json) ─────────
-        color_summary: dict[str, int] = {f"L{i}": 0 for i in range(5)}
-        sample_hits:      dict[str, dict] = {}
+        color_summary:     dict[str, int] = {f"L{i}": 0 for i in range(5)}
+        sample_hits:       dict[str, dict] = {}
         classified_levels: dict[str, int]  = {}
-        errors: dict = {}
+        errors:            dict             = {}
+        grid_inst                           = None   # reused for visual log
 
         try:
             from utils.grid import GridConfig
-            grid_cfg = GridConfig()
-            if grid_cfg.slot_data:
+            grid_inst = GridConfig()
+            if grid_inst.slot_data:
                 color_summary, sample_hits, classified_levels = _run_color_analysis(
-                    img, boxes_orig, grid_cfg
+                    img, boxes_orig, grid_inst
                 )
                 count = len(sample_hits)
                 errors = {
-                    "duplicate_slots":  find_slot_conflicts(sample_hits),
+                    "duplicate_slots":   find_slot_conflicts(sample_hits),
                     "wrong_color_slots": validate_color_zones(sample_hits, classified_levels),
                 }
             else:
@@ -150,19 +182,66 @@ class _YoloInference:
             logger.warning("Color analysis / slot mapping skipped: {}", exc)
             count = len(boxes_orig)
 
-        # ── Draw bounding boxes on a copy of the original image ───────────
+        # ── Build structured validation_results ───────────────────────────
+        wrong_ids: set[str] = {
+            e["slot_id"] for e in errors.get("wrong_color_slots", [])
+        }
+        dup_ids: set[str] = {
+            s for d in errors.get("duplicate_slots", []) for s in d["slots"]
+        }
+        slots_detail: dict[str, dict] = {}
+        for slot_id, hit in sample_hits.items():
+            is_wc  = slot_id in wrong_ids
+            is_dup = slot_id in dup_ids
+            entry: dict = {
+                "cx":          hit["cx"],
+                "cy":          hit["cy"],
+                "radius":      hit.get("radius", 50),
+                "level":       classified_levels.get(slot_id),
+                "ok":          not is_wc and not is_dup,
+                "wrong_color": is_wc,
+                "duplicate":   is_dup,
+            }
+            if is_wc:
+                wc_entry = next(
+                    (e for e in errors.get("wrong_color_slots", [])
+                     if e["slot_id"] == slot_id), None
+                )
+                if wc_entry:
+                    entry["expected"] = wc_entry["expected"]
+            slots_detail[slot_id] = entry
+
+        validation_results: dict = {
+            "slots":             slots_detail,
+            "duplicate_slots":   errors.get("duplicate_slots",   []),
+            "wrong_color_slots": errors.get("wrong_color_slots", []),
+        }
+
+        # ── Dashboard thumbnail: simple green boxes + confidence scores ───
         annotated = img.copy()
         for box in boxes_orig:
             x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-            conf = box[4]
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 220, 0), 3)
             cv2.putText(
-                annotated, f"{conf:.2f}",
+                annotated, f"{box[4]:.2f}",
                 (x1, max(y1 - 8, 0)),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 220, 0), 2, cv2.LINE_AA,
             )
 
-        return count, color_summary, annotated, errors
+        # ── Detailed visual log (bounding boxes + rings + Thai labels) ────
+        if log_path is not None:
+            try:
+                save_visual_log(
+                    image=img,
+                    validation_results=validation_results,
+                    grid_cfg=grid_inst,
+                    filepath=log_path,
+                )
+                logger.debug("Visual log saved → {}", log_path)
+            except Exception as exc:
+                logger.warning("save_visual_log failed: {}", exc)
+
+        return count, color_summary, annotated, errors, validation_results
 
 
 def _run_color_analysis(
@@ -230,7 +309,7 @@ def _run_color_analysis(
         if slot_id in sample_hits:
             continue
 
-        sample_hits[slot_id] = {"cx": cx, "cy": cy}
+        sample_hits[slot_id] = {"cx": cx, "cy": cy, "radius": radius}
 
         # ── Step 3: extract median Lab from bottle center (inner crop) ────
         lab = extract_bottle_color(img, cx, cy, radius)
@@ -250,20 +329,135 @@ def _run_color_analysis(
     return summary, sample_hits, classified_levels
 
 
+# ─── Telegram helpers ─────────────────────────────────────────────────────────
+
+def _build_thai_caption(
+    now: datetime,
+    count: int,
+    color_summary: dict,
+    errors: dict,
+    server_url: str,
+) -> str:
+    """
+    Build the Thai-language Telegram photo caption.
+
+    Thai Buddhist year = Gregorian year + 543.
+    Telegram photo captions are capped at 1024 chars; this template
+    stays safely below that even with a full error list.
+    """
+    thai_year = now.year + 543
+    date_str  = f"{now.day}/{now.month}/{thai_year}"
+    time_str  = now.strftime("%H:%M:%S")
+
+    lines = [
+        "📊 รายงานการตรวจสีปัสสาวะ",
+        f"🗓 วันที่: {date_str} | ⏱ เวลา: {time_str}",
+        "",
+        f"✅ ตรวจพบขวดทั้งหมด: {count} ขวด",
+        "🎨 สรุปผลตามกลุ่มสี:",
+    ]
+    for i in range(5):
+        n = color_summary.get(f"L{i}", 0)
+        lines.append(f"  • สี {i}: {n} นาย")
+
+    dup_list = errors.get("duplicate_slots",   [])
+    wc_list  = errors.get("wrong_color_slots", [])
+    if dup_list or wc_list:
+        lines.append("")
+        lines.append("⚠️ ข้อผิดพลาดที่พบ:")
+        for d in dup_list:
+            slots_str = ", ".join(d.get("slots", []))
+            lines.append(f"  • ช่อง {d['base']}: วางซ้ำ ({slots_str})")
+        for wc in wc_list:
+            lines.append(
+                f"  • ช่อง {wc['slot_id']}: สีผิด"
+                f" (คาดสี {wc['expected']} — พบสี {wc['actual']})"
+            )
+
+    dashboard_url = server_url.rstrip("/") + "/dashboard"
+    lines.extend(["", f"🔗 ดูรายละเอียดเพิ่มเติม: {dashboard_url}"])
+    return "\n".join(lines)
+
+
+def _send_telegram_report(
+    img_bytes: bytes,
+    caption: str,
+    token: str,
+    chat_id: str,
+) -> None:
+    """
+    Send a JPEG image with a Thai caption via the Telegram Bot API.
+
+    Uses multipart/form-data sendPhoto.  Raises RuntimeError on API failure
+    so the caller can log it without crashing the /analyze endpoint.
+
+    Args:
+        img_bytes:  Raw JPEG bytes (from generate_visual_report or log file).
+        caption:    Up to 1024-char UTF-8 caption string.
+        token:      Telegram bot token (from TELEGRAM_TOKEN in .env).
+        chat_id:    Target chat / group ID (from TELEGRAM_CHAT_ID in .env).
+    """
+    import requests as _req
+
+    url  = f"https://api.telegram.org/bot{token}/sendPhoto"
+    resp = _req.post(
+        url,
+        data={"chat_id": chat_id, "caption": caption},
+        files={"photo": ("visual_report.jpg", img_bytes, "image/jpeg")},
+        timeout=30,
+    )
+    if not resp.ok:
+        raise RuntimeError(
+            f"Telegram API returned {resp.status_code}: {resp.text[:300]}"
+        )
+    logger.debug("Telegram report sent to chat_id={}", chat_id)
+
+
 # ─── FastAPI application ──────────────────────────────────────────────────────
+
+def _migrate_db() -> None:
+    """Add columns that were introduced after initial deployment."""
+    new_columns = [
+        ("errors_json",        "TEXT"),
+        ("log_image_filename", "TEXT"),
+        ("detailed_results",   "TEXT"),
+    ]
+    with _engine.connect() as conn:
+        for col_name, col_type in new_columns:
+            try:
+                conn.execute(text(f"ALTER TABLE results ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+                logger.info("DB migration: added column '{}'", col_name)
+            except Exception:
+                pass  # column already exists
+
+
+def _cleanup_old_logs(log_dir: Path, max_age_days: int = 30) -> None:
+    """Delete visual log JPEGs older than *max_age_days* days."""
+    if not log_dir.exists():
+        return
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    deleted = 0
+    for jpg in log_dir.glob("URINE_SCAN_*.jpg"):
+        try:
+            mtime = datetime.utcfromtimestamp(jpg.stat().st_mtime)
+            if mtime < cutoff:
+                jpg.unlink(missing_ok=True)
+                deleted += 1
+        except Exception:
+            pass
+    if deleted:
+        logger.info("Cleanup: removed {} visual log(s) older than {} days", deleted, max_age_days)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────
     _Base.metadata.create_all(_engine)
-    # Migrate existing DBs that pre-date the errors_json column
-    with _engine.connect() as conn:
-        try:
-            conn.execute(text("ALTER TABLE results ADD COLUMN errors_json TEXT"))
-            conn.commit()
-        except Exception:
-            pass  # column already exists
+    _migrate_db()
     Path(cfg.captures_dir).mkdir(parents=True, exist_ok=True)
+    Path(cfg.visual_log_dir).mkdir(parents=True, exist_ok=True)
+    _cleanup_old_logs(Path(cfg.visual_log_dir), max_age_days=30)
     app.state.yolo = _YoloInference()
     logger.success("Server startup complete — listening on {}:{}", cfg.server_host, cfg.server_port)
     yield
@@ -308,62 +502,96 @@ async def analyze(file: UploadFile = File(...)):
     if not img_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    # Generate filenames before inference so timestamps match the log record
+    now       = datetime.utcnow()
+    image_id  = str(uuid.uuid4())
+    ts_str    = now.strftime("%Y%m%d_%H%M%S")
+
+    # Dashboard thumbnail  →  /static/captures/{uuid}.jpg
+    captures    = Path(cfg.captures_dir)
+    captures.mkdir(parents=True, exist_ok=True)
+    thumb_path  = captures / f"{image_id}.jpg"
+    static_url  = f"/static/captures/{image_id}.jpg"
+
+    # Detailed visual log  →  logs/img/URINE_SCAN_{timestamp}.jpg
+    log_dir     = Path(cfg.visual_log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path    = log_dir / f"URINE_SCAN_{ts_str}.jpg"
+
     try:
-        count, color_summary, annotated, errors = app.state.yolo.detect(img_bytes)
+        count, color_summary, annotated, errors, validation_results = app.state.yolo.detect(
+            img_bytes, log_path=log_path
+        )
     except Exception as exc:
         logger.exception("Inference failed")
         raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
 
-    # Save annotated image
-    image_id = str(uuid.uuid4())
-    captures = Path(cfg.captures_dir)
-    captures.mkdir(parents=True, exist_ok=True)
-    img_filename = f"{image_id}.jpg"
-    img_path = captures / img_filename
-    cv2.imwrite(str(img_path), annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
-    static_url = f"/static/captures/{img_filename}"
+    # Save dashboard thumbnail
+    cv2.imwrite(str(thumb_path), annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
+
+    # Build DB-safe detailed_results: strip pixel coords (cx/cy/radius) from slots
+    db_slots = {
+        sid: {k: v for k, v in info.items() if k not in ("cx", "cy", "radius")}
+        for sid, info in validation_results.get("slots", {}).items()
+    }
+    detailed_results_doc = {
+        "slots":             db_slots,
+        "duplicate_slots":   validation_results.get("duplicate_slots",   []),
+        "wrong_color_slots": validation_results.get("wrong_color_slots", []),
+    }
 
     # Persist to SQLite
     with _Session() as session:
         row = AnalysisResult(
-            timestamp=datetime.utcnow(),
+            timestamp=now,
             count=count,
             color_json=json.dumps(color_summary),
             errors_json=json.dumps(errors),
             image_path=static_url,
+            log_image_filename=str(log_path),
+            detailed_results=json.dumps(detailed_results_doc),
         )
         session.add(row)
         session.commit()
 
-    now = datetime.utcnow()
     logger.success(
-        "Analysis done — count={}, colors={}, dups={}, wc={}, id={}",
+        "Analysis done — count={}, colors={}, dups={}, wc={}, log={}",
         count,
         color_summary,
         len(errors.get("duplicate_slots", [])),
         len(errors.get("wrong_color_slots", [])),
-        image_id,
+        log_path.name,
     )
 
-    # ── Telegram notification (non-blocking, non-critical) ────────────────
-    try:
-        from bot.telegram_bot import send_scan_report
-        send_scan_report(
-            count=count,
-            color_summary=color_summary,
-            image_path=img_path,
-            timestamp=now,
-        )
-    except Exception as exc:
-        logger.warning("Telegram notification failed: {}", exc)
+    # ── Telegram report (non-blocking, non-critical) ──────────────────────
+    if cfg.telegram_token and cfg.telegram_chat_id:
+        try:
+            caption = _build_thai_caption(
+                now=now,
+                count=count,
+                color_summary=color_summary,
+                errors=errors,
+                server_url=cfg.server_url,
+            )
+            # The visual log is always written by detect() above; read it back
+            report_bytes = log_path.read_bytes()
+            _send_telegram_report(
+                img_bytes=report_bytes,
+                caption=caption,
+                token=cfg.telegram_token,
+                chat_id=cfg.telegram_chat_id,
+            )
+        except Exception as exc:
+            logger.warning("Telegram report failed (non-critical): {}", exc)
 
     return {
         "status":               "success",
-        "total_physical_count": count,   # total unique occupied slots (for TM1637)
-        "count":                count,   # legacy alias
-        "summary":              color_summary,  # per-level counts keyed L0–L4
-        "color_summary":        color_summary,  # legacy alias
+        "total_physical_count": count,         # unique occupied slots (for TM1637)
+        "count":                count,         # legacy alias
+        "summary":              color_summary, # {"L0": n, …, "L4": n}
+        "color_summary":        color_summary, # legacy alias
         "errors":               errors,
+        "detailed_results":     detailed_results_doc,
         "timestamp":            now.isoformat(),
         "image_id":             image_id,
     }

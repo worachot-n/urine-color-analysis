@@ -35,6 +35,7 @@ server = [
     "python-multipart",
     "ultralytics>=8.4.24",
     "psutil>=5.9",
+    "Pillow>=10.0",
 ]
 
 [dependency-groups]

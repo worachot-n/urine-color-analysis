@@ -13,6 +13,7 @@ database:
 
 storage:
   captures_dir: "app/web/static/captures"
+  visual_log_dir: "logs/img"
 
 camera:
   width: 4608
