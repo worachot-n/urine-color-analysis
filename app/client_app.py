@@ -80,18 +80,26 @@ def run_client(server_url: str) -> None:
 
     import RPi.GPIO as GPIO  # noqa: N813
 
-    # ── Step 1: GPIO mode — must be first, before any GPIO call ──────────────
+    # ── Step 1: GPIO mode — FIRST, before any GPIO or library call ───────────
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    # ── Step 2: Hardware init — safe now that BCM mode is confirmed ───────────
+    # ── Step 2: Patch TM1637.__del__ BEFORE creating the object ──────────────
+    # ROOT CAUSE FIX: tm1637 library's __del__ calls GPIO.cleanup(), which
+    # destroys the entire GPIO state as soon as the object is garbage-collected.
+    # Replacing __del__ with a no-op stops the library hijacking our lifecycle.
+    try:
+        import tm1637 as _tm1637_mod
+        _tm1637_mod.TM1637.__del__ = lambda self: None
+        logger.debug("TM1637.__del__ patched — library GPIO.cleanup() disabled")
+    except Exception:
+        pass
+
+    # ── Step 3: Peripheral init (LCD, TM1637, relays) ────────────────────────
     lcd = _init_lcd()
-    tm  = _init_tm1637()   # TM1637 lifetime is tied to this function
+    tm  = _init_tm1637()
 
-    # ── Step 3: Pin setup ─────────────────────────────────────────────────────
-    GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     _relay_setup(GPIO)
-
     _lcd(lcd, "Urine Analyzer", "Ready")
     _tm(tm, 0)            # 0000 on boot
     _relay(GPIO, "idle")  # Green ON
@@ -103,29 +111,30 @@ def run_client(server_url: str) -> None:
         server_url,
     )
 
-    # ── Step 4: Clear stale edge-detection from a previous crashed run ────────
-    # If the previous process crashed without GPIO.cleanup(), the sysfs
-    # /sys/class/gpio/gpio{N}/edge entry is still exported.  remove_event_detect
-    # clears RPi.GPIO's internal tracking so wait_for_edge can set it up fresh.
+    # ── Step 4: Trigger pin LAST — after all other hardware is settled ────────
+    GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    time.sleep(0.2)   # allow pull-up to settle electrically
+
     try:
         GPIO.remove_event_detect(cfg.gpio_trigger_pin)
     except Exception:
         pass
 
-    logger.info("Waiting for button press on GPIO{}…", cfg.gpio_trigger_pin)
+    logger.info("WAITING for button press on GPIO{}…", cfg.gpio_trigger_pin)
 
     # ── Step 5: Blocking service loop ─────────────────────────────────────────
     try:
         while True:
+            # timeout=5000 wakes every 5 s to keep the GC cooperative;
+            # channel is None on timeout → continue waiting.
             channel = GPIO.wait_for_edge(
                 cfg.gpio_trigger_pin,
                 GPIO.FALLING,
                 bouncetime=500,
+                timeout=5000,
             )
             if channel is None:
-                # Spurious wakeup (can happen on timeout= arg; defensive guard)
                 continue
-
             logger.info("Button pressed! Starting analysis…")
             _on_button_press(lcd, tm, GPIO, server_url)
 
@@ -133,11 +142,9 @@ def run_client(server_url: str) -> None:
         logger.info("Client stopping…")
 
     finally:
-        # Shut relays off and drop TM1637 reference so TM1637.__del__ fires
-        # HERE while BCM mode is still active — before main.py calls GPIO.cleanup().
         _relay_all_off(GPIO)
         try:
-            tm = None   # noqa: F841 — triggers TM1637.__del__ while mode is live
+            tm = None   # noqa: F841
             gc.collect()
         except Exception:
             pass
