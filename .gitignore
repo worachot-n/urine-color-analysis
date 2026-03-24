@@ -7,3 +7,4 @@ output.jpg
 result.json
 logs/
 data/
+models/bottle_yolo26s_openvino_model/

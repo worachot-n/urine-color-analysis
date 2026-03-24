@@ -62,6 +62,22 @@ class YoloBottleDetector:
     # Single-frame inference
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _white_letterbox(img: np.ndarray, target: int = 640):
+        """Resize img to target×target with white fill (255,255,255) — matches Roboflow Fit.
+        Returns (padded_img, scale, pad_x, pad_y).
+        """
+        h, w = img.shape[:2]
+        scale = min(target / w, target / h)
+        nw = int(round(w * scale))
+        nh = int(round(h * scale))
+        resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        pad_x = (target - nw) // 2
+        pad_y = (target - nh) // 2
+        padded = np.full((target, target, 3), 255, dtype=np.uint8)
+        padded[pad_y:pad_y + nh, pad_x:pad_x + nw] = resized
+        return padded, scale, pad_x, pad_y
+
     def detect_once(self, frame: np.ndarray, roi: tuple = None) -> list:
         """
         Run YOLO26s on one frame.
@@ -82,10 +98,12 @@ class YoloBottleDetector:
             frame = frame[ry1:ry2, rx1:rx2]
             x_off, y_off = rx1, ry1
 
-        enhanced = self._enhance(frame)
+        # Pre-pad with white fill to match Roboflow Fit training preprocessing (no CLAHE —
+        # training pipeline was raw → Fit white edges → 640×640 only, no CLAHE applied)
+        padded, lb_scale, lb_pad_x, lb_pad_y = self._white_letterbox(frame, YOLO_IMGSZ)
 
         results = self.model(
-            enhanced,
+            padded,
             imgsz=YOLO_IMGSZ,
             conf=YOLO_CONF_THRESHOLD,
             iou=YOLO_IOU_THRESHOLD,
@@ -97,10 +115,11 @@ class YoloBottleDetector:
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                cx   = (x1 + x2) / 2 + x_off
-                cy   = (y1 + y2) / 2 + y_off
-                w    = x2 - x1
-                h    = y2 - y1
+                # Inverse-transform: padded-640 space → original frame space
+                cx   = ((x1 + x2) / 2 - lb_pad_x) / lb_scale + x_off
+                cy   = ((y1 + y2) / 2 - lb_pad_y) / lb_scale + y_off
+                w    = (x2 - x1) / lb_scale
+                h    = (y2 - y1) / lb_scale
                 conf = float(box.conf[0])
                 cls  = int(box.cls[0])
                 boxes.append([cx, cy, w, h, conf, cls])

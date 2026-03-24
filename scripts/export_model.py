@@ -125,8 +125,9 @@ model = YOLO("runs/urine_detector/v1/weights/best.pt")
 
 model.export(
     format="openvino",
-    imgsz=640,
-    half=False,       # Pi 4B CPU: FP32 — FP16 requires hardware FP16 support
+    imgsz=[640, 416],  # rectangular — matches 3608×2352 crop ratio (stride-32 aligned)
+                       # eliminates ~112px letterbox padding vs square imgsz=640
+    half=False,        # Pi 4B CPU: FP32 — FP16 requires hardware FP16 support
     dynamic=False,
     simplify=True,
 )

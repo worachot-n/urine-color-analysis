@@ -11,9 +11,9 @@ dependencies = [
     "werkzeug",
     "python-dotenv",
     "requests",
-    # "RPi.GPIO>=0.7.1",
-    # "smbus2>=0.4.3",
-    # "picamera2>=0.3.12",
+    "RPi.GPIO>=0.7.1",
+    "smbus2>=0.4.3",
+    "picamera2>=0.3.12",
     "ultralytics>=8.4.24",
 ]
 
@@ -45,3 +45,8 @@ top    = 220
 bottom = 20
 left   = 200
 right  = 800
+
+[tool.urine-analyzer.yolo]
+conf_threshold = 0.25       # test default (production uses configs/config.toml)
+# imgsz = [640, 416]        # rectangular (needs model re-exported with matching imgsz)
+imgsz = 640

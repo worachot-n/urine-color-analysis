@@ -60,11 +60,11 @@ def _draw_roi(img, roi):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_ROI, 2, cv2.LINE_AA)
 
 
-def _draw_summary(img, boxes, roi, conf_threshold, mode="yolo"):
+def _draw_summary(img, boxes, roi, conf_threshold, mode="yolo", imgsz=640):
     total   = len(boxes)
     suspect = sum(1 for b in boxes if b[2] < 30 or b[3] < 30)
     lines = [
-        f"Mode: {mode.upper()}   conf>={conf_threshold}",
+        f"Mode: {mode.upper()}   conf>={conf_threshold}   imgsz={imgsz}",
         f"Detected: {total} bottle(s)",
         f"Suspect (tiny): {suspect}",
         f"ROI: {roi}",
@@ -78,7 +78,7 @@ def _draw_summary(img, boxes, roi, conf_threshold, mode="yolo"):
         y += 26
 
 
-def process_image(img_path: Path, model, conf_threshold: float, roi, out_dir: Path):
+def process_image(img_path: Path, model, conf_threshold: float, roi, out_dir: Path, imgsz=640):
     frame = cv2.imread(str(img_path))
     if frame is None:
         print(f"  [SKIP] Cannot read {img_path.name}")
@@ -106,7 +106,15 @@ def process_image(img_path: Path, model, conf_threshold: float, roi, out_dir: Pa
     for cx, cy, w, h, conf, cls in boxes_crop:
         boxes.append([cx + x_off, cy + y_off, w, h, conf, cls])
 
-    # ── Step 4: annotate full frame for output ───────────────────────────────
+    # ── Step 4a: annotate cropped image with boxes in crop-space ─────────────
+    vis_crop = cropped.copy()
+    for cx, cy, w, h, conf, cls in boxes_crop:
+        _draw_box(vis_crop, [cx, cy, w, h, conf, cls])
+    roi_str = f"({rx1},{ry1})-({rx2},{ry2})"
+    _draw_summary(vis_crop, boxes_crop, roi_str, conf_threshold, imgsz=imgsz)
+    cv2.imwrite(str(crop_path), vis_crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+    # ── Step 4b: annotate full frame for context ──────────────────────────────
     scale = min(1.0, 1600 / frame.shape[1])
     vis_w = int(frame.shape[1] * scale)
     vis_h = int(frame.shape[0] * scale)
@@ -115,20 +123,35 @@ def process_image(img_path: Path, model, conf_threshold: float, roi, out_dir: Pa
     def s(v):   # scale a coordinate
         return int(v * scale)
 
-    # Draw crop boundary on full-frame vis
-    cv2.rectangle(vis, (s(rx1), s(ry1)), (s(rx2), s(ry2)), COLOR_ROI, 2)
-    cv2.putText(vis, "CROP", (s(rx1) + 5, s(ry1) + 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_ROI, 2, cv2.LINE_AA)
+    # Dim the excluded area (outside ROI) with a dark overlay
+    overlay = vis.copy()
+    # Top strip
+    if s(ry1) > 0:
+        cv2.rectangle(overlay, (0, 0), (vis_w, s(ry1)), (0, 0, 0), -1)
+    # Bottom strip
+    if s(ry2) < vis_h:
+        cv2.rectangle(overlay, (0, s(ry2)), (vis_w, vis_h), (0, 0, 0), -1)
+    # Left strip
+    if s(rx1) > 0:
+        cv2.rectangle(overlay, (0, s(ry1)), (s(rx1), s(ry2)), (0, 0, 0), -1)
+    # Right strip
+    if s(rx2) < vis_w:
+        cv2.rectangle(overlay, (s(rx2), s(ry1)), (vis_w, s(ry2)), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, vis, 0.45, 0, vis)
 
-    # Draw detected boxes (translated back to full-frame, scaled for vis)
+    # Draw bright ROI boundary
+    cv2.rectangle(vis, (s(rx1), s(ry1)), (s(rx2), s(ry2)), COLOR_ROI, 3)
+    cv2.putText(vis, f"DETECT AREA  {rx2-rx1}x{ry2-ry1}px",
+                (s(rx1) + 6, s(ry1) + 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_ROI, 2, cv2.LINE_AA)
+
+    # Draw detected boxes (translated to full-frame, scaled for vis)
     for b in boxes:
         cx, cy, w, h, conf, cls = b
-        sb = [cx*scale, cy*scale, w*scale, h*scale, conf, cls]
-        _draw_box(vis, sb)
+        _draw_box(vis, [cx*scale, cy*scale, w*scale, h*scale, conf, cls])
 
-    # Draw summary overlay
-    roi_str = f"({rx1},{ry1})-({rx2},{ry2})"
-    _draw_summary(vis, boxes, roi_str, conf_threshold)
+    # Summary overlay
+    _draw_summary(vis, boxes, roi_str, conf_threshold, imgsz=imgsz)
 
     # Save annotated full-frame result
     out_path = out_dir / f"det_{img_path.stem}.jpg"
@@ -146,9 +169,20 @@ def main():
                         help="Override conf_threshold (default: from config.toml)")
     args = parser.parse_args()
 
+    # ── Load pyproject.toml (test tunables) ──────────────────────────────────
+    import tomllib
+    _pyproject = _ROOT / "pyproject.toml"
+    with open(_pyproject, "rb") as _f:
+        _pp = tomllib.load(_f)
+    _ua = _pp.get("tool", {}).get("urine-analyzer", {})
+
     # ── Load config ──────────────────────────────────────────────────────────
     import configs.config as config
-    conf_threshold = args.conf if args.conf is not None else config.YOLO_CONF_THRESHOLD
+    _default_conf = float(_ua.get("yolo", {}).get("conf_threshold", 0.25))
+    conf_threshold = args.conf if args.conf is not None else _default_conf
+
+    _imgsz_raw = _ua.get("yolo", {}).get("imgsz", 640)
+    _test_imgsz = _imgsz_raw if isinstance(_imgsz_raw, int) else list(_imgsz_raw)
 
     model_path = str(_ROOT / config.YOLO_MODEL_PATH)
     if not Path(model_path).exists():
@@ -157,8 +191,6 @@ def main():
         sys.exit(1)
 
     # ── Load model ───────────────────────────────────────────────────────────
-    import configs.config as _c
-    # Temporarily override conf threshold if --conf was passed
     from utils.yolo_detector import YoloBottleDetector
     model = YoloBottleDetector(model_path)
     if args.conf is not None:
@@ -168,12 +200,14 @@ def main():
         import utils.yolo_detector as _yd_mod
         _yd_mod.YOLO_CONF_THRESHOLD = args.conf
 
+    # Always apply imgsz from pyproject.toml (rectangular to eliminate letterbox padding)
+    import configs.config as _cfg_mod2
+    _cfg_mod2.YOLO_IMGSZ = _test_imgsz
+    import utils.yolo_detector as _yd_mod2
+    _yd_mod2.YOLO_IMGSZ = _test_imgsz
+
     # ── Load crop margins from pyproject.toml ────────────────────────────────
-    import tomllib
-    _pyproject = _ROOT / "pyproject.toml"
-    with open(_pyproject, "rb") as _f:
-        _pp = tomllib.load(_f)
-    _sroi = _pp.get("tool", {}).get("urine-analyzer", {}).get("sample_roi", {})
+    _sroi = _ua.get("sample_roi", {})
     _crop_top    = int(_sroi.get("top",    0))
     _crop_bottom = int(_sroi.get("bottom", 0))
     _crop_left   = int(_sroi.get("left",   0))
@@ -213,7 +247,7 @@ def main():
             if y2 <= y1: y2 = fh   # margin too large — keep full height
             img_roi = (x1, y1, x2, y2)
 
-        process_image(img_path, model, conf_threshold, img_roi, _OUT_DIR)
+        process_image(img_path, model, conf_threshold, img_roi, _OUT_DIR, imgsz=_test_imgsz)
 
     print(f"\nDone. Results saved to: {_OUT_DIR}")
 
