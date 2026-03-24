@@ -3,7 +3,7 @@ server:
   port: 8000
 
 model:
-  path: "models/bottle_yolo26s_openvino_model/best_model"
+  path: "models/best.pt"
   input_size: 640
   confidence_threshold: 0.25
   iou_threshold: 0.45

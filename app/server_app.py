@@ -69,7 +69,7 @@ _Session = sessionmaker(bind=_engine, autoflush=False)
 
 class _YoloInference:
     """
-    Wraps a YOLOv8-OpenVINO model.  Loaded once at app startup.
+    Wraps a YOLOv8 PyTorch model (.pt).  Loaded once at app startup.
 
     detect(img_bytes) → (count, color_summary, annotated_bgr)
     """
@@ -77,62 +77,11 @@ class _YoloInference:
     def __init__(self):
         from ultralytics import YOLO
 
-        # Resolve the .xml file — ultralytics requires a direct path to best.xml,
-        # not a plain directory name.  Accept three forms from settings.yaml:
-        #   "models/.../best.xml"          → used as-is
-        #   "models/.../"                  → first *.xml found inside
-        #   "models/.../best_model"        → first *.xml found inside that dir
-        p = Path(cfg.model_path)
-        if p.suffix == ".xml":
-            model_path = str(p)
-        elif p.is_dir():
-            xml_files = sorted(p.glob("*.xml"))
-            if not xml_files:
-                raise FileNotFoundError(f"No .xml file found in {p}")
-            model_path = str(xml_files[0])
-        else:
-            model_path = cfg.model_path   # let ultralytics report the error
-        logger.info("Resolved OpenVINO model: {}", model_path)
-
-        # Inject OpenVINO CACHE_DIR + LATENCY so compilation is cached to disk.
-        _orig_core_init = None
-        try:
-            import openvino as ov
-            _orig_core_init = ov.Core.__init__
-            _cache = str(Path(model_path).resolve().parent / "model_cache")
-            Path(_cache).mkdir(parents=True, exist_ok=True)
-
-            def _patched(self_core, *a, **kw):
-                _orig_core_init(self_core, *a, **kw)
-                try:
-                    self_core.set_property("CPU", {
-                        "CACHE_DIR": _cache,
-                        "PERFORMANCE_HINT": "LATENCY",
-                    })
-                except Exception:
-                    pass
-
-            ov.Core.__init__ = _patched
-            logger.info("OpenVINO CACHE_DIR={} injected", _cache)
-        except ImportError:
-            pass
-
+        model_path = cfg.model_path
         logger.info("Loading YOLO model: {}", model_path)
         self._model = YOLO(model_path, task="detect")
         self._input_size = cfg.model_input_size
-
-        # Restore ov.Core.__init__
-        if _orig_core_init is not None:
-            try:
-                import openvino as ov
-                ov.Core.__init__ = _orig_core_init
-            except ImportError:
-                pass
-
-        # Warmup — triggers OpenVINO JIT compilation and writes blob to cache
-        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        self._model(dummy, imgsz=self._input_size, device="cpu", verbose=False)
-        logger.success("YOLO model ready — warmup complete (device=cpu)")
+        logger.success("YOLO model loaded — {}", model_path)
 
     # ------------------------------------------------------------------
 
@@ -152,8 +101,8 @@ class _YoloInference:
 
         padded, scale, pad_x, pad_y = letterbox_white_padding(img, self._input_size)
 
-        results = self._model(
-            padded,
+        results = self._model.predict(
+            source=padded,
             imgsz=self._input_size,
             conf=cfg.model_conf,
             iou=cfg.model_iou,

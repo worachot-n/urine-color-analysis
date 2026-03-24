@@ -29,7 +29,6 @@ pi = [
 server = [
     "fastapi",
     "uvicorn[standard]",
-    "openvino",
     "opencv-python",
     "sqlalchemy",
     "jinja2",
