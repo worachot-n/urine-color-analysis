@@ -95,14 +95,25 @@ def run_client(server_url: str) -> None:
     except Exception:
         pass
 
-    # ── Step 3: Peripheral init (LCD, TM1637, relays) ────────────────────────
-    lcd = _init_lcd()
-    tm  = _init_tm1637()
+    # ── Step 3: Peripheral init — each wrapped so a hardware fault can't abort ─
+    lcd = None
+    tm  = None
+    try:
+        lcd = _init_lcd()
+    except Exception as exc:
+        logger.warning("LCD init failed ({}), continuing without display", exc)
+    try:
+        tm = _init_tm1637()
+    except Exception as exc:
+        logger.warning("TM1637 init failed ({}), continuing without display", exc)
+    try:
+        _relay_setup(GPIO)
+        _relay(GPIO, "idle")   # Green ON
+    except Exception as exc:
+        logger.warning("Relay setup failed ({}), continuing anyway", exc)
 
-    _relay_setup(GPIO)
     _lcd(lcd, "Urine Analyzer", "Ready")
-    _tm(tm, 0)            # 0000 on boot
-    _relay(GPIO, "idle")  # Green ON
+    _tm(tm, 0)   # 0000 on boot
 
     logger.info(
         "System Ready — GPIO{} trigger | relay R={} Y={} G={} | server: {}",
@@ -111,9 +122,9 @@ def run_client(server_url: str) -> None:
         server_url,
     )
 
-    # ── Step 4: Trigger pin LAST — after all other hardware is settled ────────
+    # ── Step 4: Trigger pin LAST — after all other hardware has settled ───────
     GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    time.sleep(0.2)   # allow pull-up to settle electrically
+    time.sleep(0.5)   # allow pull-up to settle electrically
 
     try:
         GPIO.remove_event_detect(cfg.gpio_trigger_pin)
@@ -122,21 +133,39 @@ def run_client(server_url: str) -> None:
 
     logger.info("WAITING for button press on GPIO{}…", cfg.gpio_trigger_pin)
 
-    # ── Step 5: Blocking service loop ─────────────────────────────────────────
+    # ── Step 5: Fortress loop — NEVER exits unless KeyboardInterrupt ──────────
+    #
+    #   Outer except KeyboardInterrupt  — graceful Ctrl+C exit
+    #   Inner except Exception          — any scan/hardware error → log & retry
+    #   Neither ever returns to main.py prematurely.
     try:
         while True:
-            # timeout=5000 wakes every 5 s to keep the GC cooperative;
-            # channel is None on timeout → continue waiting.
-            channel = GPIO.wait_for_edge(
-                cfg.gpio_trigger_pin,
-                GPIO.FALLING,
-                bouncetime=500,
-                timeout=5000,
-            )
-            if channel is None:
-                continue
-            logger.info("Button pressed! Starting analysis…")
-            _on_button_press(lcd, tm, GPIO, server_url)
+            try:
+                # timeout=5000 ms: wakes every 5 s so the GC stays cooperative.
+                # channel is None on timeout — no press, just loop again.
+                channel = GPIO.wait_for_edge(
+                    cfg.gpio_trigger_pin,
+                    GPIO.FALLING,
+                    bouncetime=500,
+                    timeout=5000,
+                )
+                if channel is None:
+                    continue
+
+                logger.info("Button pressed! Starting analysis…")
+                _on_button_press(lcd, tm, GPIO, server_url)
+
+            except KeyboardInterrupt:
+                raise   # let the outer handler catch it cleanly
+
+            except Exception as exc:
+                # Any OSError, RuntimeError, I2C [Errno 121], network failure, etc.
+                # Log it and stay in the loop — never crash out to main.py.
+                logger.error("Scan error (will retry on next press): {}", exc)
+                try:
+                    _relay(GPIO, "error")
+                except Exception:
+                    pass
 
     except KeyboardInterrupt:
         logger.info("Client stopping…")
