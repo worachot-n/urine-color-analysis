@@ -30,9 +30,13 @@ Slot ID: A{group_num}{slot_num}_{level_idx}
 
 import cv2
 import json
+import logging
+import os
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from configs.config import (
     GRID_CONFIG_FILE,
@@ -188,11 +192,17 @@ def capture_multi_snapshot(locked_controls=None, n=3, delay_ms=200,
 
             tmp = f"/tmp/snapshot_{i}.jpg"
             cam.capture_file(tmp)
+            if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+                logger.error("[WORKER] snapshot_%d failed: file missing or 0 bytes at %s", i, tmp)
+                continue
+            logger.debug("[WORKER] snapshot_%d saved: %.1f KB", i, os.path.getsize(tmp) / 1024)
             frame = cv2.imread(tmp)
-            if frame is not None and CAMERA_ROTATE_180:
+            if frame is None:
+                logger.error("[WORKER] cv2.imread returned None for %s", tmp)
+                continue
+            if CAMERA_ROTATE_180:
                 frame = cv2.rotate(frame, cv2.ROTATE_180)
-            if frame is not None:
-                frames.append(frame)
+            frames.append(frame)
 
             if i < n - 1:
                 time.sleep(delay_ms / 1000.0)
@@ -202,7 +212,7 @@ def capture_multi_snapshot(locked_controls=None, n=3, delay_ms=200,
         return frames
 
     except Exception as e:
-        print(f"capture_multi_snapshot error: {e}")
+        logger.error("capture_multi_snapshot error: %s", e)
         return []
 
 

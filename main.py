@@ -343,16 +343,27 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
         # Runs in a subprocess — if ultralytics/OpenVINO calls os._exit() or
         # sys.exit(), only this subprocess dies; the parent (web server) survives.
         try:
+            logger.info("[WORKER] subprocess started — capturing frames")
             frames = capture_multi_snapshot(
                 _camera_controls,
                 n=config.YOLO_SNAPSHOTS,
                 delay_ms=config.YOLO_SNAPSHOT_DELAY_MS,
                 exposure_variation=config.YOLO_EXPOSURE_VARIATION,
             )
+            logger.info("[WORKER] camera closed — %d frame(s) captured", len(frames))
             if not frames:
-                result_q.put({"error": "Camera capture failed"})
+                result_q.put({"error": "Camera capture returned no frames"})
                 return
-            result = analyze_frame_yolo(frames, grid_cfg)
+
+            logger.info("[WORKER] starting AI detection (OpenVINO)...")
+            try:
+                result = analyze_frame_yolo(frames, grid_cfg)
+            except BaseException as ai_exc:
+                result_q.put({"error": f"AI inference failed: {ai_exc}"})
+                logger.exception("[WORKER] AI inference error")
+                return
+            logger.info("[WORKER] AI done — result is %s", "OK" if result else "None (no baseline)")
+
             if result is not None:
                 log_path = save_annotated_image(
                     frames[0], result["slot_assignments"], grid_cfg,
@@ -364,11 +375,12 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
                     result["slot_assignments"], result["counts"], ts
                 )
                 result["log_path"] = str(log_path) if log_path else None
-                logger.info("Log image + JSON saved: %s", log_path)
+                logger.info("[WORKER] log image + JSON saved: %s", log_path)
             result_q.put({"result": result})
+            logger.info("[WORKER] result queued — subprocess done")
         except BaseException as exc:
             result_q.put({"error": str(exc)})
-            logger.exception("Error in YOLO analysis subprocess")
+            logger.exception("[WORKER] uncaught error in subprocess")
 
     worker = multiprocessing.Process(target=_do_work_proc, daemon=True)
     worker.start()

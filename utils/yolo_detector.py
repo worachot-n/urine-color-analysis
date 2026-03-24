@@ -19,12 +19,15 @@ Public API:
 """
 
 import json
+import logging
 from collections import Counter
 from pathlib import Path
 from datetime import datetime
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from configs.config import (
     YOLO_IMGSZ, YOLO_CONF_THRESHOLD, YOLO_IOU_THRESHOLD, YOLO_AUGMENT,
@@ -98,6 +101,9 @@ class YoloBottleDetector:
             rx1, ry1, rx2, ry2 = roi
             frame = frame[ry1:ry2, rx1:rx2]
             x_off, y_off = rx1, ry1
+
+        logger.info("[YOLO] inference start — crop %dx%d (offset x=%d y=%d)",
+                    frame.shape[1], frame.shape[0], x_off, y_off)
 
         # Pre-pad with white fill to match Roboflow Fit training preprocessing (no CLAHE —
         # training pipeline was raw → Fit white edges → 640×640 only, no CLAHE applied)
@@ -405,10 +411,16 @@ class YoloBottleDetector:
                 # Priority 3: fallback to hardcoded config.toml margins
                 roi = self._fixed_sample_roi(fshape)
 
+        logger.info("[YOLO] detect_multi: ROI = %s, frames = %d", roi, len(frames))
         detections_list = [self.detect_once(f, roi=roi) for f in frames]
+        raw_total = sum(len(d) for d in detections_list)
         confirmed = self.consensus_filter(detections_list)
+        logger.info("[YOLO] detect_multi: %d raw detections → %d confirmed after consensus",
+                    raw_total, len(confirmed))
         ref_positions = self.geometric_validate_ref(confirmed, grid_cfg)
         sample_hits, duplicate_slots = self.geometric_validate(confirmed, grid_cfg)
+        logger.info("[YOLO] detect_multi: %d ref bottles, %d sample hits, %d duplicates",
+                    sum(len(v) for v in ref_positions.values()), len(sample_hits), len(duplicate_slots))
         return ref_positions, sample_hits, duplicate_slots
 
     # ------------------------------------------------------------------

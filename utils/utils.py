@@ -202,4 +202,10 @@ def save_annotated_image(frame, slot_assignments, grid_cfg,
     out_path = log_dir / filename
     cv2.imwrite(str(out_path), vis)
 
+    logger = logging.getLogger(__name__)
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        logger.error("save_annotated_image: file missing or 0 bytes at %s", out_path)
+    else:
+        logger.info("Saved annotated image: %s (%.1f KB)", out_path, out_path.stat().st_size / 1024)
+
     return out_path
