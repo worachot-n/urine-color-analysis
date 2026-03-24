@@ -342,6 +342,8 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
     def _do_work_proc():
         # Runs in a subprocess — if ultralytics/OpenVINO calls os._exit() or
         # sys.exit(), only this subprocess dies; the parent (web server) survives.
+        import gc as _gc
+        import time as _time
         try:
             logger.info("[WORKER] subprocess started — capturing frames")
             frames = capture_multi_snapshot(
@@ -355,13 +357,21 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
                 result_q.put({"error": "Camera capture returned no frames"})
                 return
 
-            logger.info("[WORKER] starting AI detection (OpenVINO)...")
+            fh, fw = frames[0].shape[:2]
+            logger.debug("[DEBUG] Frame captured, original size: (%d, %d)", fw, fh)
+            if grid_cfg.sample_roi:
+                rx1, ry1, rx2, ry2 = grid_cfg.sample_roi
+                logger.debug("[DEBUG] Image ROI for AI: (%d, %d)", rx2 - rx1, ry2 - ry1)
+
+            logger.info("[DEBUG] Starting OpenVINO inference compute...")
+            _t_ai = _time.time()
             try:
                 result = analyze_frame_yolo(frames, grid_cfg)
             except BaseException as ai_exc:
                 result_q.put({"error": f"AI inference failed: {ai_exc}"})
                 logger.exception("[WORKER] AI inference error")
                 return
+            logger.info("[DEBUG] Inference compute finished in %.2fs", _time.time() - _t_ai)
             logger.info("[WORKER] AI done — result is %s", "OK" if result else "None (no baseline)")
 
             if result is not None:
@@ -376,6 +386,12 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
                 )
                 result["log_path"] = str(log_path) if log_path else None
                 logger.info("[WORKER] log image + JSON saved: %s", log_path)
+
+            # Free full-resolution frames — no longer needed after AI + save
+            del frames
+            _gc.collect()
+            logger.debug("[DEBUG] Full-res frames freed from RAM")
+
             result_q.put({"result": result})
             logger.info("[WORKER] result queued — subprocess done")
         except BaseException as exc:
@@ -622,6 +638,26 @@ def main():
         except Exception as e:
             logger.error("Cannot load grid after calibration: %s", e)
             sys.exit(1)
+
+    # ---- Pre-load YOLO model (populates OpenVINO disk cache on first run) ----
+    # With fork (Linux/Pi default), the forked subprocess inherits the loaded
+    # _yolo_detector object — no model reload per scan after this point.
+    logger.info("Pre-loading YOLO model (first load triggers OpenVINO JIT, ~60s)...")
+    try:
+        lcd_clear()
+        lcd_message("Loading AI...", 1)
+        lcd_message("Please wait...", 2)
+        _get_yolo()
+        logger.info("YOLO model ready")
+        lcd_clear()
+        lcd_message("AI model ready!", 1)
+        time.sleep(1)
+    except Exception as e:
+        logger.error("YOLO pre-load failed: %s — will retry on first scan", e)
+        lcd_clear()
+        lcd_message("AI load failed", 1)
+        lcd_message("Will retry scan", 2)
+        time.sleep(2)
 
     # ---- Wait for first button press then enter main loop ----
     # Show WiFi status on LCD so user can confirm connectivity before scanning

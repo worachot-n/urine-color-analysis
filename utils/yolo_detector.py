@@ -20,6 +20,7 @@ Public API:
 
 import json
 import logging
+import time
 from collections import Counter
 from pathlib import Path
 from datetime import datetime
@@ -45,8 +46,53 @@ class YoloBottleDetector:
     """
 
     def __init__(self, model_path: str):
+        # ------------------------------------------------------------------
+        # Inject OpenVINO CACHE_DIR + LATENCY into every ov.Core() created
+        # from this point — including the instance ultralytics creates internally.
+        # Restoring the original __init__ afterwards prevents side-effects.
+        # ------------------------------------------------------------------
+        _orig_core_init = None
+        try:
+            import openvino as ov
+            _orig_core_init = ov.Core.__init__
+            _cache_dir = str(Path(model_path).resolve().parent.parent / "model_cache")
+            Path(_cache_dir).mkdir(parents=True, exist_ok=True)
+
+            def _patched_core_init(self_core, *a, **kw):
+                _orig_core_init(self_core, *a, **kw)
+                try:
+                    self_core.set_property("CPU", {
+                        "CACHE_DIR": _cache_dir,
+                        "PERFORMANCE_HINT": "LATENCY",
+                    })
+                except Exception:
+                    pass
+
+            ov.Core.__init__ = _patched_core_init
+            logger.info("OpenVINO: CACHE_DIR=%s, LATENCY hint injected", _cache_dir)
+        except ImportError:
+            pass
+
         from ultralytics import YOLO
         self.model = YOLO(model_path, task="detect")
+
+        # Restore ov.Core.__init__ so other code isn't affected
+        if _orig_core_init is not None:
+            try:
+                import openvino as ov
+                ov.Core.__init__ = _orig_core_init
+            except ImportError:
+                pass
+
+        # Warmup: force OpenVINO JIT compilation now so it is cached to disk.
+        # Subsequent loads (every scan subprocess) read from cache — fast (~2-5s).
+        try:
+            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+            self.model(dummy, imgsz=YOLO_IMGSZ, verbose=False)
+            logger.info("YOLO warmup done — OpenVINO model compiled and cached")
+        except Exception as e:
+            logger.warning("YOLO warmup failed: %s", e)
+
         self._clahe = cv2.createCLAHE(
             clipLimit=YOLO_CLAHE_CLIP,
             tileGridSize=(YOLO_CLAHE_TILE, YOLO_CLAHE_TILE),
@@ -82,33 +128,38 @@ class YoloBottleDetector:
         padded[pad_y:pad_y + nh, pad_x:pad_x + nw] = resized
         return padded, scale, pad_x, pad_y
 
-    def detect_once(self, frame: np.ndarray, roi: tuple = None) -> list:
+    def detect_once(self, frame: np.ndarray, roi: tuple = None,
+                    crop_offset: tuple = (0, 0)) -> list:
         """
         Run YOLO26s on one frame.
 
         Args:
-            frame: full-resolution BGR frame
-            roi:   optional (x1, y1, x2, y2) crop region in pixel coords.
-                   If provided, the frame is cropped before inference and all
-                   returned box coordinates are offset back to full-frame space.
+            frame:        BGR frame (full-resolution or pre-cropped ROI)
+            roi:          optional (x1, y1, x2, y2) to crop before inference.
+                          Offsets are added to crop_offset for the final mapping.
+            crop_offset:  (x_off, y_off) already applied to frame before this call
+                          (e.g. when detect_multi pre-extracts the ROI as a view).
 
         Returns:
             list of [cx, cy, w, h, conf, cls] in original (full-frame) pixel coords
             cls: always 0 (single-class model — "bottle")
         """
-        x_off, y_off = 0, 0
+        x_off, y_off = crop_offset
         if roi is not None:
             rx1, ry1, rx2, ry2 = roi
             frame = frame[ry1:ry2, rx1:rx2]
-            x_off, y_off = rx1, ry1
+            x_off += rx1
+            y_off += ry1
 
-        logger.info("[YOLO] inference start — crop %dx%d (offset x=%d y=%d)",
-                    frame.shape[1], frame.shape[0], x_off, y_off)
+        logger.debug("[DEBUG] Image downscaled to 640x640 for AI — crop %dx%d (offset %d,%d)",
+                     frame.shape[1], frame.shape[0], x_off, y_off)
 
         # Pre-pad with white fill to match Roboflow Fit training preprocessing (no CLAHE —
         # training pipeline was raw → Fit white edges → 640×640 only, no CLAHE applied)
         padded, lb_scale, lb_pad_x, lb_pad_y = self._white_letterbox(frame, YOLO_IMGSZ)
 
+        logger.info("[DEBUG] Starting OpenVINO inference compute...")
+        _t0 = time.time()
         results = self.model(
             padded,
             imgsz=YOLO_IMGSZ,
@@ -117,6 +168,7 @@ class YoloBottleDetector:
             augment=YOLO_AUGMENT,
             verbose=False,
         )
+        logger.info("[DEBUG] Inference compute finished in %.2fs", time.time() - _t0)
 
         boxes = []
         for r in results:
@@ -131,7 +183,8 @@ class YoloBottleDetector:
                 if not (YOLO_BOX_MIN_PX < bw < YOLO_BOX_MAX_PX and
                         YOLO_BOX_MIN_PX < bh < YOLO_BOX_MAX_PX):
                     continue
-                # Inverse-transform: padded-640 space → original frame space
+                # Inverse-transform: padded-640 space → original (full-frame) pixel coords
+                logger.debug("[DEBUG] Mapping coordinates back to original scale")
                 cx   = ((x1 + x2) / 2 - lb_pad_x) / lb_scale + x_off
                 cy   = ((y1 + y2) / 2 - lb_pad_y) / lb_scale + y_off
                 w    = bw / lb_scale
@@ -412,7 +465,19 @@ class YoloBottleDetector:
                 roi = self._fixed_sample_roi(fshape)
 
         logger.info("[YOLO] detect_multi: ROI = %s, frames = %d", roi, len(frames))
-        detections_list = [self.detect_once(f, roi=roi) for f in frames]
+
+        if roi is not None:
+            rx1, ry1, rx2, ry2 = roi
+            # Pre-extract ROI as numpy views (no memory copy) — reduces the region
+            # the letterbox step needs to resize from full 4608×2592 to ~2949×2308.
+            roi_views = [f[ry1:ry2, rx1:rx2] for f in frames]
+            detections_list = [
+                self.detect_once(f, roi=None, crop_offset=(rx1, ry1)) for f in roi_views
+            ]
+            del roi_views   # free view list; underlying frame data stays intact
+        else:
+            detections_list = [self.detect_once(f) for f in frames]
+
         raw_total = sum(len(d) for d in detections_list)
         confirmed = self.consensus_filter(detections_list)
         logger.info("[YOLO] detect_multi: %d raw detections → %d confirmed after consensus",
