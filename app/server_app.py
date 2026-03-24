@@ -116,8 +116,8 @@ class _YoloInference:
 
         # Warmup — triggers OpenVINO JIT compilation and writes blob to cache
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        self._model(dummy, imgsz=self._input_size, verbose=False)
-        logger.success("YOLO model ready — warmup complete")
+        self._model(dummy, imgsz=self._input_size, device="cpu", verbose=False)
+        logger.success("YOLO model ready — warmup complete (device=cpu)")
 
     # ------------------------------------------------------------------
 
@@ -142,6 +142,7 @@ class _YoloInference:
             imgsz=self._input_size,
             conf=cfg.model_conf,
             iou=cfg.model_iou,
+            device="cpu",
             verbose=False,
         )
 
