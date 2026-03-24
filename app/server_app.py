@@ -913,6 +913,74 @@ async def settings_colors(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+# ─── Test page ───────────────────────────────────────────────────────────────
+
+@app.get("/test", response_class=HTMLResponse)
+async def test_page(request: Request):
+    return templates.TemplateResponse(request=request, name="test.html", context={})
+
+
+@app.post("/api/test-upload")
+async def api_test_upload(file: UploadFile = File(...)):
+    """
+    Manual test endpoint — runs the full analysis pipeline on an uploaded image
+    and returns JSON + a URL to the annotated visual-log image.
+
+    Differences from /analyze:
+      • No X-Auth-Token required (browser upload)
+      • Result is NOT persisted to the database
+      • Telegram report is NOT sent
+      • Annotated image saved to app/web/static/test/ (served via /static/test/<uuid>.jpg)
+    """
+    img_bytes = await file.read()
+    if not img_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # Annotated result lives inside the existing /static mount so the browser
+    # can load it directly:  app/web/static/test/{uuid}.jpg → /static/test/{uuid}.jpg
+    test_dir = Path(cfg.captures_dir).parent / "test"
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    image_id = str(uuid.uuid4())
+    log_path  = test_dir / f"{image_id}.jpg"
+
+    try:
+        count, color_summary, _annotated, errors, validation_results = app.state.yolo.detect(
+            img_bytes, log_path=log_path
+        )
+    except Exception as exc:
+        logger.exception("Test inference failed")
+        raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
+
+    image_url = f"/static/test/{image_id}.jpg"
+    logger.info(
+        "Test upload — count={}, dups={}, wc={}, image={}",
+        count,
+        len(errors.get("duplicate_slots",   [])),
+        len(errors.get("wrong_color_slots", [])),
+        image_id,
+    )
+
+    # Strip pixel coords (cx/cy/radius) from per-slot detail — not needed in browser response
+    detail_slots = {
+        sid: {k: v for k, v in info.items() if k not in ("cx", "cy", "radius")}
+        for sid, info in validation_results.get("slots", {}).items()
+    }
+
+    return {
+        "status":    "success",
+        "count":     count,
+        "summary":   color_summary,
+        "errors":    errors,
+        "image_url": image_url,
+        "detailed_results": {
+            "slots":             detail_slots,
+            "duplicate_slots":   validation_results.get("duplicate_slots",   []),
+            "wrong_color_slots": validation_results.get("wrong_color_slots", []),
+        },
+    }
+
+
 # ─── Runner (called from main.py) ────────────────────────────────────────────
 
 def run_server():

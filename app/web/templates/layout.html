@@ -209,6 +209,11 @@
          {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>
         การตั้งค่า
       </a>
+      <a href="/test"
+         class="{% if request.url.path == '/test' %}active{% endif %}"
+         {% if request.url.path == '/test' %}aria-current="page"{% endif %}>
+        ทดสอบระบบ
+      </a>
     </div>
 
     <button class="hamburger" id="hamburger"

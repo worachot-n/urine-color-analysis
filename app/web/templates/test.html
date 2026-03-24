@@ -1,0 +1,568 @@
+{% extends "layout.html" %}
+
+{% block title %}ทดสอบระบบ — การตรวจวัดสีปัสสาวะ{% endblock %}
+
+{% block head %}
+<style>
+  /* ── Two-column test grid ───────────────────────────────────────── */
+  .test-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 20px 40px;
+  }
+  @media (max-width: 900px) {
+    .test-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── Generic panel ──────────────────────────────────────────────── */
+  .panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .panel-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--gold);
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ── Drop zone ──────────────────────────────────────────────────── */
+  .drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 36px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    user-select: none;
+  }
+  .drop-zone:hover,
+  .drop-zone.dragover {
+    border-color: var(--gold);
+    background: rgba(200,168,75,.06);
+  }
+  .drop-icon { font-size: 2.6rem; margin-bottom: 10px; }
+  .drop-label { color: var(--muted); font-size: .95rem; line-height: 1.6; }
+  .drop-label strong { color: var(--gold); }
+
+  /* ── Original preview ───────────────────────────────────────────── */
+  .preview-box {
+    border-radius: 10px;
+    overflow: hidden;
+    background: #0a180a;
+    border: 1px solid var(--border);
+    min-height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .preview-box img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+    max-height: 320px;
+  }
+  .preview-placeholder {
+    color: var(--muted);
+    font-size: .9rem;
+    padding: 32px;
+    text-align: center;
+  }
+
+  /* ── Upload button ──────────────────────────────────────────────── */
+  #uploadBtn {
+    background: var(--blue);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 13px;
+    font-family: 'Sarabun', sans-serif;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    width: 100%;
+    transition: background .15s, transform .1s;
+  }
+  #uploadBtn:hover:not(:disabled) { background: var(--blue-h); }
+  #uploadBtn:active:not(:disabled) { transform: scale(.97); }
+  #uploadBtn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ── Right panel states ─────────────────────────────────────────── */
+  .result-placeholder {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--muted);
+    font-size: .95rem;
+    padding: 40px 20px;
+    text-align: center;
+  }
+  .result-placeholder .big-icon { font-size: 3rem; opacity: .4; }
+
+  /* Loading spinner */
+  .loading-state {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 40px 20px;
+    color: var(--gold);
+    font-size: 1rem;
+    font-weight: 700;
+  }
+  .spinner {
+    width: 48px; height: 48px;
+    border: 4px solid rgba(200,168,75,.2);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Result content (hidden until success) */
+  .result-content { display: none; flex-direction: column; gap: 16px; }
+
+  /* Labeled image */
+  .result-image-box {
+    border-radius: 10px;
+    overflow: hidden;
+    background: #0a180a;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+  }
+  .result-image-box img {
+    width: 100%; height: auto;
+    object-fit: contain;
+    max-height: 380px;
+    display: block;
+  }
+
+  /* Count + summary */
+  .summary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .count-badge {
+    background: var(--green);
+    color: #000;
+    font-weight: 800;
+    font-size: 1.4rem;
+    border-radius: 10px;
+    padding: 8px 24px;
+  }
+  .count-badge.has-errors { background: var(--red-h); color: #fff; }
+
+  /* Level bars */
+  .level-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+  }
+  .level-card {
+    background: #006064;
+    border-radius: 10px;
+    padding: 10px 4px;
+    text-align: center;
+    transition: background .15s;
+  }
+  .level-card:hover { background: #00737a; }
+  .level-card .lc-num {
+    font-size: 1.8rem;
+    font-weight: 800;
+    line-height: 1;
+    display: block;
+  }
+  .level-card .lc-label {
+    font-size: .78rem;
+    color: rgba(255,255,255,.75);
+    margin-top: 4px;
+    display: block;
+  }
+
+  /* Error table */
+  .error-box h3 {
+    font-size: .95rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    color: var(--gold);
+  }
+  .error-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .875rem;
+  }
+  .error-table thead tr { background: #00838f; }
+  .error-table th {
+    padding: 7px 10px;
+    font-weight: 700;
+    text-align: center;
+  }
+  .error-table tbody tr:nth-child(odd)  { background: #0f2a0f; }
+  .error-table tbody tr:nth-child(even) { background: #142e14; }
+  .error-table td {
+    padding: 6px 10px;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .badge-wrong { color: #ffa726; font-weight: 700; }
+  .badge-dup   { color: #ef5350; font-weight: 700; }
+  .no-errors   { color: var(--muted); font-size: .85rem; text-align: center; padding: 10px 0; }
+
+  /* Error overlay */
+  .error-toast {
+    display: none;
+    background: #7f0000;
+    border: 1px solid var(--red-h);
+    border-radius: 10px;
+    padding: 14px 18px;
+    font-size: .9rem;
+    color: #ffd;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>ทดสอบระบบ AI วิเคราะห์สี</h1>
+  <p style="color:var(--muted);font-size:.9rem;margin-top:6px">
+    อัปโหลดภาพเพื่อทดสอบ Pipeline แบบ Real-time — ผลลัพธ์จะไม่ถูกบันทึกลงฐานข้อมูล
+  </p>
+</div>
+
+<div class="test-grid">
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       LEFT COLUMN — upload + original preview
+  ══════════════════════════════════════════════════════════════════ -->
+  <div class="panel">
+
+    <div class="panel-title">
+      <span>📁</span> อัปโหลดภาพทดสอบ
+    </div>
+
+    <!-- Drag & Drop zone -->
+    <div class="drop-zone" id="dropZone" role="button" tabindex="0"
+         aria-label="พื้นที่ลากวางไฟล์ภาพ">
+      <div class="drop-icon">🖼️</div>
+      <div class="drop-label">
+        <strong>ลากและวางภาพที่นี่</strong><br>
+        หรือคลิกเพื่อเลือกไฟล์<br>
+        <span style="font-size:.82rem">.jpg · .jpeg · .png</span>
+      </div>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,image/jpeg,image/png"
+           style="display:none" aria-hidden="true">
+
+    <!-- Original image preview -->
+    <div class="preview-box" id="originalBox">
+      <div class="preview-placeholder" id="previewPlaceholder">
+        ยังไม่มีภาพต้นฉบับ
+      </div>
+      <img id="originalImg" alt="ภาพต้นฉบับ" style="display:none">
+    </div>
+
+    <!-- Upload button -->
+    <button id="uploadBtn" disabled>
+      อัปโหลดภาพทดสอบ
+    </button>
+
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════
+       RIGHT COLUMN — result display
+  ══════════════════════════════════════════════════════════════════ -->
+  <div class="panel" id="rightPanel">
+
+    <div class="panel-title">
+      <span>🔬</span> ผลการวิเคราะห์ AI
+    </div>
+
+    <!-- Default state -->
+    <div class="result-placeholder" id="resultPlaceholder">
+      <div class="big-icon">⚗️</div>
+      <div>รอการอัปโหลดภาพ<br>ผลลัพธ์จะแสดงที่นี่</div>
+    </div>
+
+    <!-- Loading state -->
+    <div class="loading-state" id="loadingState">
+      <div class="spinner"></div>
+      <div>กำลังประมวลผล...<br>
+        <span style="font-weight:400;font-size:.88rem;color:var(--muted)">
+          YOLO → Slot Mapping → K-means Color
+        </span>
+      </div>
+    </div>
+
+    <!-- Error toast -->
+    <div class="error-toast" id="errorToast"></div>
+
+    <!-- Result content -->
+    <div class="result-content" id="resultContent">
+
+      <!-- Labeled image -->
+      <div class="result-image-box">
+        <img id="resultImg" src="" alt="ภาพผลการวิเคราะห์">
+      </div>
+
+      <!-- Count badge + level cards -->
+      <div class="summary-header">
+        <div>
+          <div style="font-size:.85rem;color:var(--muted);margin-bottom:4px">จำนวนขวดทั้งหมด</div>
+          <div class="count-badge" id="countBadge">—</div>
+        </div>
+        <div style="font-size:.85rem;color:var(--muted);text-align:right;line-height:1.6">
+          สถานะ: <span id="statusLabel" style="font-weight:700">—</span>
+        </div>
+      </div>
+
+      <div class="level-grid" id="levelGrid">
+        {% for i in range(5) %}
+        <div class="level-card">
+          <span class="lc-num" id="lc{{ i }}">—</span>
+          <span class="lc-label">สี {{ i }}</span>
+        </div>
+        {% endfor %}
+      </div>
+
+      <!-- Error table -->
+      <div class="error-box">
+        <h3>ข้อผิดพลาดที่ตรวจพบ</h3>
+        <div id="errorContent">
+          <div class="no-errors">ยังไม่มีข้อมูล</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  /* ── Element references ───────────────────────────────────────── */
+  var dropZone         = document.getElementById('dropZone');
+  var fileInput        = document.getElementById('fileInput');
+  var originalImg      = document.getElementById('originalImg');
+  var previewPlaceholder = document.getElementById('previewPlaceholder');
+  var uploadBtn        = document.getElementById('uploadBtn');
+  var resultPlaceholder = document.getElementById('resultPlaceholder');
+  var loadingState     = document.getElementById('loadingState');
+  var errorToast       = document.getElementById('errorToast');
+  var resultContent    = document.getElementById('resultContent');
+  var resultImg        = document.getElementById('resultImg');
+  var countBadge       = document.getElementById('countBadge');
+  var statusLabel      = document.getElementById('statusLabel');
+  var errorContent     = document.getElementById('errorContent');
+
+  var selectedFile = null;
+
+  /* ── Drag & drop ──────────────────────────────────────────────── */
+  dropZone.addEventListener('dragover', function (e) {
+    e.preventDefault();
+    dropZone.classList.add('dragover');
+  });
+  dropZone.addEventListener('dragleave', function () {
+    dropZone.classList.remove('dragover');
+  });
+  dropZone.addEventListener('drop', function (e) {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    var f = e.dataTransfer.files[0];
+    if (f) selectFile(f);
+  });
+
+  /* Click on drop zone → open file picker */
+  dropZone.addEventListener('click', function () { fileInput.click(); });
+  dropZone.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+  });
+
+  /* File input change */
+  fileInput.addEventListener('change', function () {
+    if (fileInput.files[0]) selectFile(fileInput.files[0]);
+  });
+
+  /* ── File selection ───────────────────────────────────────────── */
+  function selectFile(f) {
+    if (!f.type.match(/^image\/(jpeg|png)$/)) {
+      showError('รองรับเฉพาะไฟล์ .jpg และ .png เท่านั้น');
+      return;
+    }
+    selectedFile = f;
+    uploadBtn.disabled = false;
+
+    /* Show original preview */
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+      originalImg.src = ev.target.result;
+      originalImg.style.display = 'block';
+      previewPlaceholder.style.display = 'none';
+    };
+    reader.readAsDataURL(f);
+
+    /* Reset right panel to placeholder */
+    setRightState('placeholder');
+    hideError();
+  }
+
+  /* ── Upload button ────────────────────────────────────────────── */
+  uploadBtn.addEventListener('click', function () {
+    if (!selectedFile) return;
+    doUpload(selectedFile);
+  });
+
+  /* ── Async upload ─────────────────────────────────────────────── */
+  function doUpload(f) {
+    uploadBtn.disabled = true;
+    setRightState('loading');
+    hideError();
+
+    var fd = new FormData();
+    fd.append('file', f);
+
+    fetch('/api/test-upload', { method: 'POST', body: fd })
+      .then(function (res) {
+        if (!res.ok) {
+          return res.json().then(function (d) {
+            throw new Error(d.detail || 'HTTP ' + res.status);
+          });
+        }
+        return res.json();
+      })
+      .then(function (data) {
+        uploadBtn.disabled = false;
+        if (data.status !== 'success') {
+          throw new Error(data.message || 'Server returned non-success status');
+        }
+        renderResult(data);
+      })
+      .catch(function (err) {
+        uploadBtn.disabled = false;
+        setRightState('placeholder');
+        showError('เกิดข้อผิดพลาด: ' + err.message);
+      });
+  }
+
+  /* ── Render result ────────────────────────────────────────────── */
+  function renderResult(data) {
+    /* Labeled image */
+    resultImg.src = data.image_url + '?t=' + Date.now(); /* cache-bust */
+
+    /* Count badge */
+    var count = data.count || 0;
+    countBadge.textContent = count + ' ขวด';
+
+    /* Status */
+    var dups = (data.errors && data.errors.duplicate_slots)   ? data.errors.duplicate_slots   : [];
+    var wcs  = (data.errors && data.errors.wrong_color_slots) ? data.errors.wrong_color_slots : [];
+    var hasErrors = dups.length > 0 || wcs.length > 0;
+
+    if (hasErrors) {
+      countBadge.className = 'count-badge has-errors';
+      statusLabel.textContent = '⚠️ พบข้อผิดพลาด';
+      statusLabel.style.color = '#ef5350';
+    } else {
+      countBadge.className = 'count-badge';
+      statusLabel.textContent = '✓ ผ่าน';
+      statusLabel.style.color = 'var(--green)';
+    }
+
+    /* Level cards */
+    var summary = data.summary || {};
+    for (var i = 0; i < 5; i++) {
+      var el = document.getElementById('lc' + i);
+      if (el) el.textContent = (summary['L' + i] || 0);
+    }
+
+    /* Error table */
+    renderErrors(dups, wcs);
+
+    setRightState('result');
+  }
+
+  function renderErrors(dups, wcs) {
+    if (dups.length === 0 && wcs.length === 0) {
+      errorContent.innerHTML = '<div class="no-errors">&#10003; ไม่พบข้อผิดพลาด</div>';
+      return;
+    }
+
+    var rows = '';
+    wcs.forEach(function (e) {
+      rows += '<tr>' +
+        '<td>' + esc(e.slot_id)  + '</td>' +
+        '<td>' + esc(e.expected) + '</td>' +
+        '<td>' + esc(e.actual)   + '</td>' +
+        '<td class="badge-wrong">สีผิด</td>' +
+        '</tr>';
+    });
+    dups.forEach(function (d) {
+      rows += '<tr>' +
+        '<td>' + esc(d.base) + '</td>' +
+        '<td colspan="2">' + esc((d.slots || []).join(', ')) + '</td>' +
+        '<td class="badge-dup">วางซ้ำ</td>' +
+        '</tr>';
+    });
+
+    errorContent.innerHTML =
+      '<table class="error-table">' +
+      '<thead><tr>' +
+        '<th>ช่อง</th><th>สีคาดหวัง</th><th>สีตรวจพบ</th><th>หมายเหตุ</th>' +
+      '</tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+      '</table>';
+  }
+
+  /* ── UI state helpers ─────────────────────────────────────────── */
+  function setRightState(state) {
+    resultPlaceholder.style.display = state === 'placeholder' ? 'flex' : 'none';
+    loadingState.style.display      = state === 'loading'     ? 'flex' : 'none';
+    resultContent.style.display     = state === 'result'      ? 'flex' : 'none';
+  }
+
+  function showError(msg) {
+    errorToast.textContent = '❌ ' + msg;
+    errorToast.style.display = 'block';
+  }
+  function hideError() {
+    errorToast.style.display = 'none';
+  }
+
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+}());
+</script>
+{% endblock %}
