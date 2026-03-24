@@ -91,18 +91,15 @@ def run_client(server_url: str) -> None:
     except KeyboardInterrupt:
         logger.info("Shutdown requested — exiting client loop")
     finally:
-        # Turn all relays off before GPIO cleanup
+        # Turn relays off and drop TM1637 ref before caller does GPIO.cleanup()
         _relay_all_off(GPIO)
-        # Drop TM1637 reference now so its __del__ → GPIO.cleanup(clk) runs
-        # while BCM mode is still active (avoids "Please set pin numbering mode" error)
         try:
             import gc
-            tm = None  # noqa: F841
+            tm = None  # noqa: F841 — triggers TM1637.__del__ while BCM mode still live
             gc.collect()
         except Exception:
             pass
-        GPIO.cleanup()
-        logger.info("GPIO cleanup complete")
+        # GPIO.cleanup() is called by main.py after this returns — not here
 
 
 # ─── Button handler ───────────────────────────────────────────────────────────
