@@ -290,9 +290,8 @@
             class="{% if request.url.path == '/trend' %}active{% endif %}"
             {%
             if
-            request.url.path=""
-            ="/trend"
-            %}aria-current="page"
+            request.url.path == "/trend"
+            %}aria-current = "page"
             {%
             endif
             %}
@@ -304,9 +303,8 @@
             class="{% if request.url.path == '/settings' %}active{% endif %}"
             {%
             if
-            request.url.path=""
-            ="/settings"
-            %}aria-current="page"
+            request.url.path == "/settings"
+            %}aria-current = "page"
             {%
             endif
             %}
@@ -318,9 +316,8 @@
             class="{% if request.url.path == '/test' %}active{% endif %}"
             {%
             if
-            request.url.path=""
-            ="/test"
-            %}aria-current="page"
+            request.url.path == "/test"
+            %}aria-current = "page"
             {%
             endif
             %}
