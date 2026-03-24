@@ -1,252 +1,369 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="th">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}การตรวจวัดสีปัสสาวะ{% endblock %}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    /* ── CSS Variables ─────────────────────────────────────────────── */
-    :root {
-      --bg:       #0d1a0d;
-      --nav-bg:   #071007;
-      --panel-bg: #112211;
-      --border:   #1e3a1e;
-      --gold:     #c8a84b;
-      --gold-l:   #e5c97a;
-      --green:    #00c853;
-      --green-h:  #00e676;
-      --blue:     #1565c0;
-      --blue-h:   #1976d2;
-      --red:      #c62828;
-      --red-h:    #e53935;
-      --text:     #e8f5e9;
-      --muted:    #81a881;
-    }
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}การตรวจวัดสีปัสสาวะ{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ── CSS Variables ─────────────────────────────────────────────── */
+      :root {
+        --bg: #0d1a0d;
+        --nav-bg: #071007;
+        --panel-bg: #112211;
+        --border: #1e3a1e;
+        --gold: #c8a84b;
+        --gold-l: #e5c97a;
+        --green: #00c853;
+        --green-h: #00e676;
+        --blue: #1565c0;
+        --blue-h: #1976d2;
+        --red: #c62828;
+        --red-h: #e53935;
+        --text: #e8f5e9;
+        --muted: #81a881;
+      }
 
-    /* ── Reset & base ───────────────────────────────────────────────── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Sarabun', sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-    }
+      /* ── Reset & base ───────────────────────────────────────────────── */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: "Sarabun", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+      }
 
-    /* ── Navbar ─────────────────────────────────────────────────────── */
-    nav {
-      position: sticky;
-      top: 0;
-      z-index: 200;
-      background: var(--nav-bg);
-      border-bottom: 2px solid var(--border);
-    }
-    .nav-inner {
-      display: flex;
-      align-items: center;
-      padding: 0 24px;
-      height: 64px;
-      max-width: 1400px;
-      margin: 0 auto;
-    }
-    .nav-brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      text-decoration: none;
-      flex-shrink: 0;
-      margin-right: 32px;
-    }
-    .nav-emblem {
-      width: 44px; height: 44px;
-      border-radius: 50%;
-      background: var(--gold);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 22px;
-      flex-shrink: 0;
-    }
-    .nav-links {
-      display: flex;
-      gap: 4px;
-      flex: 1;
-    }
-    .nav-links a {
-      color: var(--gold);
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 1rem;
-      padding: 6px 18px;
-      border-radius: 6px;
-      position: relative;
-      transition: background .15s, color .15s;
-    }
-    .nav-links a:hover {
-      background: rgba(200,168,75,.15);
-      color: var(--gold-l);
-    }
-    .nav-links a.active {
-      color: var(--gold-l);
-      font-weight: 700;
-    }
-    /* Gold underline on active link */
-    .nav-links a.active::after {
-      content: '';
-      position: absolute;
-      bottom: -3px; left: 18px; right: 18px;
-      height: 2px;
-      background: var(--gold-l);
-      border-radius: 1px;
-    }
+      /* ── Navbar ─────────────────────────────────────────────────────── */
+      nav {
+        position: sticky;
+        top: 0;
+        z-index: 200;
+        background: var(--nav-bg);
+        border-bottom: 2px solid var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        padding: 0 24px;
+        height: 64px;
+        max-width: 1400px;
+        margin: 0 auto;
+      }
+      .nav-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        text-decoration: none;
+        flex-shrink: 0;
+        margin-right: 32px;
+      }
+      .nav-emblem {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: var(--gold);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 22px;
+        flex-shrink: 0;
+      }
+      .nav-links {
+        display: flex;
+        gap: 4px;
+        flex: 1;
+      }
+      .nav-links a {
+        color: var(--gold);
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 1rem;
+        padding: 6px 18px;
+        border-radius: 6px;
+        position: relative;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      .nav-links a:hover {
+        background: rgba(200, 168, 75, 0.15);
+        color: var(--gold-l);
+      }
+      .nav-links a.active {
+        color: var(--gold-l);
+        font-weight: 700;
+      }
+      /* Gold underline on active link */
+      .nav-links a.active::after {
+        content: "";
+        position: absolute;
+        bottom: -3px;
+        left: 18px;
+        right: 18px;
+        height: 2px;
+        background: var(--gold-l);
+        border-radius: 1px;
+      }
 
-    /* ── Hamburger button ────────────────────────────────────────────── */
-    .hamburger {
-      display: none;
-      flex-direction: column;
-      justify-content: center;
-      gap: 5px;
-      width: 38px; height: 38px;
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 6px;
-      margin-left: auto;
-      border-radius: 6px;
-      transition: background .15s;
-    }
-    .hamburger:hover { background: rgba(255,255,255,.08); }
-    .hamburger span {
-      display: block;
-      width: 100%;
-      height: 2px;
-      background: var(--gold);
-      border-radius: 2px;
-      transition: transform .25s, opacity .25s;
-    }
-    /* Morph into X when open */
-    .hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
-    .hamburger.open span:nth-child(2) { opacity: 0; transform: scaleX(0); }
-    .hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
-
-    /* ── Mobile: collapse nav links ──────────────────────────────────── */
-    @media (max-width: 640px) {
-      .hamburger { display: flex; }
-      .nav-inner  { flex-wrap: wrap; height: auto; padding: 10px 16px; gap: 0; }
-      .nav-brand  { margin-right: auto; }
-      .nav-links  {
+      /* ── Hamburger button ────────────────────────────────────────────── */
+      .hamburger {
+        display: none;
         flex-direction: column;
+        justify-content: center;
+        gap: 5px;
+        width: 38px;
+        height: 38px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 6px;
+        margin-left: auto;
+        border-radius: 6px;
+        transition: background 0.15s;
+      }
+      .hamburger:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .hamburger span {
+        display: block;
         width: 100%;
-        gap: 2px;
-        max-height: 0;
-        overflow: hidden;
-        transition: max-height .35s ease, padding .35s ease;
-        padding: 0 0;
+        height: 2px;
+        background: var(--gold);
+        border-radius: 2px;
+        transition:
+          transform 0.25s,
+          opacity 0.25s;
       }
-      .nav-links.open {
-        max-height: 260px;
-        padding: 8px 0 14px;
+      /* Morph into X when open */
+      .hamburger.open span:nth-child(1) {
+        transform: translateY(7px) rotate(45deg);
       }
-      .nav-links a { padding: 10px 14px; border-radius: 8px; }
-      /* Hide underline on mobile — background highlight is enough */
-      .nav-links a.active::after { display: none; }
-    }
+      .hamburger.open span:nth-child(2) {
+        opacity: 0;
+        transform: scaleX(0);
+      }
+      .hamburger.open span:nth-child(3) {
+        transform: translateY(-7px) rotate(-45deg);
+      }
 
-    /* ── Page header (shared by all pages) ───────────────────────────── */
-    .page-header {
-      text-align: center;
-      padding: 24px 16px 14px;
-    }
-    .page-header h1 { font-size: 1.9rem; font-weight: 800; }
+      /* ── Mobile: collapse nav links ──────────────────────────────────── */
+      @media (max-width: 640px) {
+        .hamburger {
+          display: flex;
+        }
+        .nav-inner {
+          flex-wrap: wrap;
+          height: auto;
+          padding: 10px 16px;
+          gap: 0;
+        }
+        .nav-brand {
+          margin-right: auto;
+        }
+        .nav-links {
+          flex-direction: column;
+          width: 100%;
+          gap: 2px;
+          max-height: 0;
+          overflow: hidden;
+          transition:
+            max-height 0.35s ease,
+            padding 0.35s ease;
+          padding: 0 0;
+        }
+        .nav-links.open {
+          max-height: 260px;
+          padding: 8px 0 14px;
+        }
+        .nav-links a {
+          padding: 10px 14px;
+          border-radius: 8px;
+        }
+        /* Hide underline on mobile — background highlight is enough */
+        .nav-links a.active::after {
+          display: none;
+        }
+      }
 
-    /* ── Shared button base styles ───────────────────────────────────── */
-    .btn {
-      width: 100%;
-      border: none;
-      border-radius: 10px;
-      padding: 13px;
-      font-family: 'Sarabun', sans-serif;
-      font-size: 1rem;
-      font-weight: 700;
-      cursor: pointer;
-      transition: background .15s, transform .1s;
-    }
-    .btn:active { transform: scale(.97); }
-    .btn-blue  { background: var(--blue);  color: #fff; }
-    .btn-blue:hover  { background: var(--blue-h); }
-    .btn-green { background: var(--green); color: #000; }
-    .btn-green:hover { background: var(--green-h); }
-    .btn-red   { background: var(--red);   color: #fff; }
-    .btn-red:hover   { background: var(--red-h); }
-    .btn-row { display: flex; gap: 8px; }
-    .btn-row .btn { flex: 1; padding: 12px 6px; font-size: .9rem; }
-  </style>
-  {% block head %}{% endblock %}
-</head>
-<body>
+      /* ── Page header (shared by all pages) ───────────────────────────── */
+      .page-header {
+        text-align: center;
+        padding: 24px 16px 14px;
+      }
+      .page-header h1 {
+        font-size: 1.9rem;
+        font-weight: 800;
+      }
 
-<!-- ── Navbar ─────────────────────────────────────────────────────────── -->
-<nav>
-  <div class="nav-inner">
+      /* ── Shared button base styles ───────────────────────────────────── */
+      .btn {
+        width: 100%;
+        border: none;
+        border-radius: 10px;
+        padding: 13px;
+        font-family: "Sarabun", sans-serif;
+        font-size: 1rem;
+        font-weight: 700;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          transform 0.1s;
+      }
+      .btn:active {
+        transform: scale(0.97);
+      }
+      .btn-blue {
+        background: var(--blue);
+        color: #fff;
+      }
+      .btn-blue:hover {
+        background: var(--blue-h);
+      }
+      .btn-green {
+        background: var(--green);
+        color: #000;
+      }
+      .btn-green:hover {
+        background: var(--green-h);
+      }
+      .btn-red {
+        background: var(--red);
+        color: #fff;
+      }
+      .btn-red:hover {
+        background: var(--red-h);
+      }
+      .btn-row {
+        display: flex;
+        gap: 8px;
+      }
+      .btn-row .btn {
+        flex: 1;
+        padding: 12px 6px;
+        font-size: 0.9rem;
+      }
+    </style>
+    {% block head %}{% endblock %}
+  </head>
+  <body>
+    <!-- ── Navbar ─────────────────────────────────────────────────────────── -->
+    <nav>
+      <div class="nav-inner">
+        <a href="/dashboard" class="nav-brand" aria-label="หน้าแรก">
+          <img src="../../../assets/logo.svg" alt="logo" class="nav-emblem" />
+        </a>
 
-    <a href="/dashboard" class="nav-brand" aria-label="หน้าแรก">
-      <div class="nav-emblem" aria-hidden="true">⚜</div>
-    </a>
+        <div
+          class="nav-links"
+          id="navLinks"
+          role="navigation"
+          aria-label="เมนูหลัก"
+        >
+          <a
+            href="/dashboard"
+            class="{% if request.url.path in ['/', '/dashboard'] %}active{% endif %}"
+            {%
+            if
+            request.url.path
+            in
+            ['/', '/dashboard']
+            %}aria-current="page"
+            {%
+            endif
+            %}
+          >
+            ผลการตรวจ
+          </a>
+          <a
+            href="/trend"
+            class="{% if request.url.path == '/trend' %}active{% endif %}"
+            {%
+            if
+            request.url.path=""
+            ="/trend"
+            %}aria-current="page"
+            {%
+            endif
+            %}
+          >
+            การวิเคราะห์
+          </a>
+          <a
+            href="/settings"
+            class="{% if request.url.path == '/settings' %}active{% endif %}"
+            {%
+            if
+            request.url.path=""
+            ="/settings"
+            %}aria-current="page"
+            {%
+            endif
+            %}
+          >
+            การตั้งค่า
+          </a>
+          <a
+            href="/test"
+            class="{% if request.url.path == '/test' %}active{% endif %}"
+            {%
+            if
+            request.url.path=""
+            ="/test"
+            %}aria-current="page"
+            {%
+            endif
+            %}
+          >
+            ทดสอบระบบ
+          </a>
+        </div>
 
-    <div class="nav-links" id="navLinks" role="navigation" aria-label="เมนูหลัก">
-      <a href="/dashboard"
-         class="{% if request.url.path in ['/', '/dashboard'] %}active{% endif %}"
-         {% if request.url.path in ['/', '/dashboard'] %}aria-current="page"{% endif %}>
-        ผลการตรวจ
-      </a>
-      <a href="/trend"
-         class="{% if request.url.path == '/trend' %}active{% endif %}"
-         {% if request.url.path == '/trend' %}aria-current="page"{% endif %}>
-        การวิเคราะห์
-      </a>
-      <a href="/settings"
-         class="{% if request.url.path == '/settings' %}active{% endif %}"
-         {% if request.url.path == '/settings' %}aria-current="page"{% endif %}>
-        การตั้งค่า
-      </a>
-      <a href="/test"
-         class="{% if request.url.path == '/test' %}active{% endif %}"
-         {% if request.url.path == '/test' %}aria-current="page"{% endif %}>
-        ทดสอบระบบ
-      </a>
-    </div>
+        <button
+          class="hamburger"
+          id="hamburger"
+          aria-label="เปิดเมนู"
+          aria-expanded="false"
+          aria-controls="navLinks"
+        >
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </nav>
 
-    <button class="hamburger" id="hamburger"
-            aria-label="เปิดเมนู" aria-expanded="false" aria-controls="navLinks">
-      <span></span><span></span><span></span>
-    </button>
+    <!-- ── Page body ──────────────────────────────────────────────────────── -->
+    {% block content %}{% endblock %}
 
-  </div>
-</nav>
-
-<!-- ── Page body ──────────────────────────────────────────────────────── -->
-{% block content %}{% endblock %}
-
-<!-- ── Hamburger script (runs on all pages) ───────────────────────────── -->
-<script>
-(function () {
-  var btn   = document.getElementById('hamburger');
-  var links = document.getElementById('navLinks');
-  btn.addEventListener('click', function () {
-    var open = links.classList.toggle('open');
-    btn.classList.toggle('open', open);
-    btn.setAttribute('aria-expanded', String(open));
-    btn.setAttribute('aria-label', open ? 'ปิดเมนู' : 'เปิดเมนู');
-  });
-  links.querySelectorAll('a').forEach(function (a) {
-    a.addEventListener('click', function () {
-      links.classList.remove('open');
-      btn.classList.remove('open');
-      btn.setAttribute('aria-expanded', 'false');
-    });
-  });
-}());
-</script>
-{% block scripts %}{% endblock %}
-</body>
+    <!-- ── Hamburger script (runs on all pages) ───────────────────────────── -->
+    <script>
+      (function () {
+        var btn = document.getElementById("hamburger");
+        var links = document.getElementById("navLinks");
+        btn.addEventListener("click", function () {
+          var open = links.classList.toggle("open");
+          btn.classList.toggle("open", open);
+          btn.setAttribute("aria-expanded", String(open));
+          btn.setAttribute("aria-label", open ? "ปิดเมนู" : "เปิดเมนู");
+        });
+        links.querySelectorAll("a").forEach(function (a) {
+          a.addEventListener("click", function () {
+            links.classList.remove("open");
+            btn.classList.remove("open");
+            btn.setAttribute("aria-expanded", "false");
+          });
+        });
+      })();
+    </script>
+    {% block scripts %}{% endblock %}
+  </body>
 </html>
