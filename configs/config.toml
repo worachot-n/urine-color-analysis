@@ -135,7 +135,7 @@ chat_id = "-1003801438507"
 # YOLO DETECTION
 # =============================================================================
 [yolo]
-model_path          = "models/bottle_yolo26s_openvino_model/best.xml"
+model_path          = "models/bottle_yolo26s_openvino_model/best_model"
 imgsz               = 640
 conf_threshold      = 0.40
 iou_threshold       = 0.45       # NMS IoU threshold
