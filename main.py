@@ -17,6 +17,7 @@ Grid calibration is done through the web dashboard at /calibrate —
 no CLI flags or SSH required.
 """
 
+import multiprocessing
 import sys
 import threading
 import time
@@ -335,12 +336,12 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
         pass
     logger.info("Scan cycle started")
 
-    result_box = [None]
-    error_box = [None]
-    log_path_box = [None]
     ts = datetime.now()
+    result_q: multiprocessing.Queue = multiprocessing.Queue()
 
-    def _do_work():
+    def _do_work_proc():
+        # Runs in a subprocess — if ultralytics/OpenVINO calls os._exit() or
+        # sys.exit(), only this subprocess dies; the parent (web server) survives.
         try:
             frames = capture_multi_snapshot(
                 _camera_controls,
@@ -349,10 +350,9 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
                 exposure_variation=config.YOLO_EXPOSURE_VARIATION,
             )
             if not frames:
-                error_box[0] = "Camera capture failed"
+                result_q.put({"error": "Camera capture failed"})
                 return
             result = analyze_frame_yolo(frames, grid_cfg)
-            result_box[0] = result
             if result is not None:
                 log_path = save_annotated_image(
                     frames[0], result["slot_assignments"], grid_cfg,
@@ -360,41 +360,48 @@ def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
                     rejected_slots=result["rejected_slots"],
                     timestamp=ts,
                 )
-                log_path_box[0] = log_path
                 YoloBottleDetector.write_result_json(
                     result["slot_assignments"], result["counts"], ts
                 )
+                result["log_path"] = str(log_path) if log_path else None
                 logger.info("Log image + JSON saved: %s", log_path)
-        except Exception as exc:
-            error_box[0] = str(exc)
-            logger.exception("Error in YOLO analysis worker")
+            result_q.put({"result": result})
+        except BaseException as exc:
+            result_q.put({"error": str(exc)})
+            logger.exception("Error in YOLO analysis subprocess")
 
-    worker = threading.Thread(target=_do_work, daemon=True)
+    worker = multiprocessing.Process(target=_do_work_proc, daemon=True)
     worker.start()
     worker.join(timeout=config.WATCHDOG_TIMEOUT_SEC)
 
     if worker.is_alive():
+        worker.terminate()
+        worker.join(2)
         logger.error("Watchdog: scan timed out")
         lcd_clear()
         lcd_message("ERROR:Timeout", 1)
         led_red()
         return False
 
-    if error_box[0]:
-        logger.error("Scan error: %s", error_box[0])
+    payload = result_q.get_nowait() if not result_q.empty() else {}
+    error = payload.get("error")
+    result = payload.get("result")
+
+    if error:
+        logger.error("Scan error: %s", error)
         lcd_clear()
         lcd_message("ERROR:See log", 1)
         led_red()
         return False
 
-    result = result_box[0]
     if result is None:
         led_red()
         return False
 
+    log_path_str = result.pop("log_path", None)
+    log_path = Path(log_path_str) if log_path_str else None
     counts = result["counts"]
     errors = result["errors"]
-    log_path = log_path_box[0]
 
     try:
         tm1637_show_all(counts)
@@ -603,19 +610,6 @@ def main():
         except Exception as e:
             logger.error("Cannot load grid after calibration: %s", e)
             sys.exit(1)
-
-    # ---- Pre-load YOLO model so first scan doesn't hit the watchdog ----
-    logger.info("Pre-loading YOLO model...")
-    lcd_clear()
-    lcd_message("Loading model...", 1)
-    try:
-        _get_yolo()
-        logger.info("YOLO model ready")
-        lcd_message("Model ready", 1)
-    except Exception as e:
-        logger.error("YOLO model load failed: %s", e)
-        lcd_message("Model FAILED", 1)
-    time.sleep(1)
 
     # ---- Wait for first button press then enter main loop ----
     # Show WiFi status on LCD so user can confirm connectivity before scanning
