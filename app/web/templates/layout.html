@@ -288,42 +288,21 @@
           <a
             href="/trend"
             class="{% if request.url.path == '/trend' %}active{% endif %}"
-            {%
-            if
-            request.url.path=""
-            ="/trend"
-            %}aria-current="page"
-            {%
-            endif
-            %}
+            {% if request.url.path == '/trend' %}aria-current="page"{% endif %}
           >
             การวิเคราะห์
           </a>
           <a
             href="/settings"
             class="{% if request.url.path == '/settings' %}active{% endif %}"
-            {%
-            if
-            request.url.path=""
-            ="/settings"
-            %}aria-current="page"
-            {%
-            endif
-            %}
+            {% if request.url.path == '/settings' %}aria-current="page"{% endif %}
           >
             การตั้งค่า
           </a>
           <a
             href="/test"
             class="{% if request.url.path == '/test' %}active{% endif %}"
-            {%
-            if
-            request.url.path=""
-            ="/test"
-            %}aria-current="page"
-            {%
-            endif
-            %}
+            {% if request.url.path == '/test' %}aria-current="page"{% endif %}
           >
             ทดสอบระบบ
           </a>
