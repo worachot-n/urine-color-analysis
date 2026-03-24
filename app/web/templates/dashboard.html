@@ -27,7 +27,10 @@
 <nav class="navbar navbar-dark bg-dark px-4 py-2">
   <span class="navbar-brand mb-0 h5">Urine Color Analysis</span>
   <span class="text-secondary refresh-badge">Auto-refresh 30 s &bull; {{ last_updated }}</span>
-  <a href="/health" class="btn btn-sm btn-outline-success ms-3">Health</a>
+  <div class="d-flex gap-2 ms-3">
+    <a href="/settings" class="btn btn-sm btn-outline-light">Settings</a>
+    <a href="/health"   class="btn btn-sm btn-outline-success">Health</a>
+  </div>
 </nav>
 
 <div class="container-fluid px-4 py-4">
@@ -88,6 +91,7 @@
                   <th>Timestamp</th>
                   <th>Count</th>
                   <th>Color Summary</th>
+                  <th>Errors</th>
                   <th>Image</th>
                 </tr>
               </thead>
@@ -108,6 +112,20 @@
                   {% endfor %}
                 </td>
                 <td>
+                  {% set errs = r.errors_json | fromjson if r.errors_json else {} %}
+                  {% set ndups = errs.get("duplicate_slots", []) | length %}
+                  {% set nwc   = errs.get("wrong_color_slots", []) | length %}
+                  {% if ndups > 0 %}
+                    <span class="badge bg-danger me-1">Dup: {{ ndups }}</span>
+                  {% endif %}
+                  {% if nwc > 0 %}
+                    <span class="badge bg-warning text-dark me-1">WC: {{ nwc }}</span>
+                  {% endif %}
+                  {% if ndups == 0 and nwc == 0 %}
+                    <span class="text-success">&#10003;</span>
+                  {% endif %}
+                </td>
+                <td>
                   {% if r.image_path %}
                   <a href="{{ r.image_path }}" target="_blank" class="btn btn-sm btn-outline-secondary py-0">View</a>
                   {% else %}—{% endif %}
@@ -115,7 +133,7 @@
               </tr>
               {% else %}
               <tr>
-                <td colspan="5" class="text-center text-muted py-4">No results yet — press the button on the Pi to run a scan.</td>
+                <td colspan="6" class="text-center text-muted py-4">No results yet — press the button on the Pi to run a scan.</td>
               </tr>
               {% endfor %}
               </tbody>

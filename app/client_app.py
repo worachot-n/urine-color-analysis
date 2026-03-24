@@ -133,11 +133,29 @@ def _on_button_press(lcd, tm, server_url: str) -> None:
 
     count        = data.get("count", 0)
     color_summary: dict = data.get("color_summary", {})
-    color_str    = "  ".join(f"{k}:{v}" for k, v in color_summary.items())
+    errors:       dict = data.get("errors", {})
+    dup_n  = len(errors.get("duplicate_slots",  []))
+    wc_n   = len(errors.get("wrong_color_slots", []))
 
-    logger.success("Result received — count={}, colors={}", count, color_summary)
-    _lcd(lcd, f"Count: {count}", color_str[:16] or "No color data")
+    logger.success(
+        "Result received — count={}, colors={}, dups={}, wrong_color={}",
+        count, color_summary, dup_n, wc_n,
+    )
+
     _tm(tm, count)
+
+    if dup_n > 0 or wc_n > 0:
+        # Errors present — show count on line 1, error summary on line 2
+        parts = []
+        if dup_n > 0:
+            parts.append(f"Dup:{dup_n}")
+        if wc_n > 0:
+            parts.append(f"WC:{wc_n}")
+        logger.warning("Scan errors: {}", " ".join(parts))
+        _lcd(lcd, f"Count: {count}", (" ".join(parts))[:16])
+    else:
+        color_str = "  ".join(f"{k}:{v}" for k, v in color_summary.items())
+        _lcd(lcd, f"Count: {count}", color_str[:16] or "No color data")
 
 
 # ─── Camera capture ───────────────────────────────────────────────────────────
