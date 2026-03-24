@@ -77,14 +77,29 @@ class _YoloInference:
     def __init__(self):
         from ultralytics import YOLO
 
-        model_path = cfg.model_path
+        # Resolve the .xml file — ultralytics requires a direct path to best.xml,
+        # not a plain directory name.  Accept three forms from settings.yaml:
+        #   "models/.../best.xml"          → used as-is
+        #   "models/.../"                  → first *.xml found inside
+        #   "models/.../best_model"        → first *.xml found inside that dir
+        p = Path(cfg.model_path)
+        if p.suffix == ".xml":
+            model_path = str(p)
+        elif p.is_dir():
+            xml_files = sorted(p.glob("*.xml"))
+            if not xml_files:
+                raise FileNotFoundError(f"No .xml file found in {p}")
+            model_path = str(xml_files[0])
+        else:
+            model_path = cfg.model_path   # let ultralytics report the error
+        logger.info("Resolved OpenVINO model: {}", model_path)
 
         # Inject OpenVINO CACHE_DIR + LATENCY so compilation is cached to disk.
         _orig_core_init = None
         try:
             import openvino as ov
             _orig_core_init = ov.Core.__init__
-            _cache = str(Path(model_path).resolve().parent.parent / "model_cache")
+            _cache = str(Path(model_path).resolve().parent / "model_cache")
             Path(_cache).mkdir(parents=True, exist_ok=True)
 
             def _patched(self_core, *a, **kw):
