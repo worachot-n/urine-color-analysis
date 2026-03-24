@@ -595,6 +595,8 @@ async function showSlotOverlay() {
   } catch(_) {
     setStatus('✓ บันทึกสำเร็จ', 'ok');
   }
+  document.getElementById('color-section').style.display = 'block';
+  checkSaveReady();
 }
 
 function setStatus(msg, type = '') {
@@ -781,12 +783,6 @@ canvas.addEventListener('click', (e) => {
   updateSwatchCell(level, bottle, pick);
 }, true); // capture phase so this runs before the corner-click handler
 
-// Show color section after successful save
-const _origShowSlotOverlay = showSlotOverlay;
-async function showSlotOverlay() {
-  await _origShowSlotOverlay();
-  document.getElementById('color-section').style.display = 'block';
-  checkSaveReady();
-}
+
 </script>
 {% endblock %}
