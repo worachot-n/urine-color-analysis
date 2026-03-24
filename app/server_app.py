@@ -38,6 +38,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.shared.config import cfg
 from app.shared.processor import (
+    crop_sample_roi,
     letterbox_white_padding,
     scale_coordinates,
     find_slot_conflicts,
@@ -138,8 +139,25 @@ class _YoloInference:
         if img is None:
             raise ValueError("cv2.imdecode returned None — invalid image data")
 
-        padded, scale, pad_x, pad_y = letterbox_white_padding(img, self._input_size)
+        # ── Step 1: crop sample ROI (excludes reference row + dead-zone col) ──
+        roi, roi_x1, roi_y1 = crop_sample_roi(
+            img,
+            top=cfg.sample_roi_top,
+            bottom=cfg.sample_roi_bottom,
+            left=cfg.sample_roi_left,
+            right=cfg.sample_roi_right,
+        )
+        logger.debug(
+            "ROI crop {}×{} → {}×{} (origin x={} y={})",
+            img.shape[1], img.shape[0],
+            roi.shape[1], roi.shape[0],
+            roi_x1, roi_y1,
+        )
 
+        # ── Step 2: letterbox the ROI to 640×640 with white padding ──────────
+        padded, scale, pad_x, pad_y = letterbox_white_padding(roi, self._input_size)
+
+        # ── Step 3: YOLO inference on the ROI-only 640×640 frame ─────────────
         results = self._model.predict(
             source=padded,
             imgsz=self._input_size,
@@ -155,7 +173,8 @@ class _YoloInference:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 boxes_640.append([x1, y1, x2, y2, float(box.conf[0]), int(box.cls[0])])
 
-        boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y)
+        # ── Step 4: map back to full-image coords (remove padding → scale → add ROI offset) ──
+        boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y, roi_x1, roi_y1)
 
         # ── Slot-based color analysis (requires grid_config.json) ─────────
         color_summary:     dict[str, int] = {f"L{i}": 0 for i in range(5)}

@@ -31,6 +31,42 @@ import numpy as np
 from pathlib import Path
 
 
+def crop_sample_roi(
+    img: np.ndarray,
+    top: int = 0,
+    bottom: int = 0,
+    left: int = 0,
+    right: int = 0,
+) -> tuple[np.ndarray, int, int]:
+    """
+    Crop a fixed-margin region of interest from the full frame.
+
+    Called before letterbox_white_padding() so YOLO sees only sample bottles —
+    not the reference row (top margin) or the dead-zone column (left margin).
+
+    Args:
+        img:    Full-resolution BGR image (H × W × 3).
+        top:    Pixels to trim from the top edge (skips reference row).
+        bottom: Pixels to trim from the bottom edge.
+        left:   Pixels to trim from the left edge (skips dead-zone column ZZ).
+        right:  Pixels to trim from the right edge.
+                If (width − right) ≤ left the right crop is ignored (safe fallback).
+
+    Returns:
+        roi  — Cropped BGR sub-image.
+        x1   — Left origin in full-image pixel coordinates.
+        y1   — Top origin in full-image pixel coordinates.
+    """
+    h, w = img.shape[:2]
+    y1 = max(0, top)
+    y2 = (h - bottom) if bottom > 0 else h
+    y2 = max(y1 + 1, y2)
+    x1 = max(0, left)
+    x2 = (w - right) if right > 0 else w
+    x2 = x2 if x2 > x1 else w   # safe fallback if right margin is too large
+    return img[y1:y2, x1:x2], x1, y1
+
+
 def letterbox_white_padding(
     img: np.ndarray,
     target_size: int = 640,
@@ -69,27 +105,35 @@ def scale_coordinates(
     scale: float,
     pad_x: int,
     pad_y: int,
+    roi_x1: int = 0,
+    roi_y1: int = 0,
 ) -> list[list[float]]:
     """
-    Map bounding boxes from 640 × 640 padded space back to the original image space.
+    Map bounding boxes from 640 × 640 padded space back to full-image space.
+
+    When an ROI crop was applied before letterboxing, pass roi_x1/roi_y1 (the
+    top-left corner of the crop in full-image pixels) to translate the result
+    back into the global coordinate system used by grid_config.json.
 
     Args:
-        boxes:  List of [x1, y1, x2, y2, conf, cls, ...] in letterboxed coordinates.
-        scale:  The *scale* value returned by letterbox_white_padding().
-        pad_x:  The *pad_x* value returned by letterbox_white_padding().
-        pad_y:  The *pad_y* value returned by letterbox_white_padding().
+        boxes:   List of [x1, y1, x2, y2, conf, cls, ...] in letterboxed coords.
+        scale:   The *scale* value returned by letterbox_white_padding().
+        pad_x:   The *pad_x* value returned by letterbox_white_padding().
+        pad_y:   The *pad_y* value returned by letterbox_white_padding().
+        roi_x1:  Left origin of the ROI crop in full-image pixels (default 0).
+        roi_y1:  Top origin of the ROI crop in full-image pixels (default 0).
 
     Returns:
-        Same list structure with x1/y1/x2/y2 in original image coordinates.
+        Same list structure with x1/y1/x2/y2 in full-image coordinates.
         conf, cls, and any extra fields are passed through unchanged.
     """
     out = []
     for box in boxes:
         x1, y1, x2, y2 = box[:4]
-        ox1 = (x1 - pad_x) / scale
-        oy1 = (y1 - pad_y) / scale
-        ox2 = (x2 - pad_x) / scale
-        oy2 = (y2 - pad_y) / scale
+        ox1 = (x1 - pad_x) / scale + roi_x1
+        oy1 = (y1 - pad_y) / scale + roi_y1
+        ox2 = (x2 - pad_x) / scale + roi_x1
+        oy2 = (y2 - pad_y) / scale + roi_y1
         out.append([ox1, oy1, ox2, oy2, *box[4:]])
     return out
 
