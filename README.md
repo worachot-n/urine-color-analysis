@@ -1,27 +1,33 @@
 # Urine Color Analysis System v2
 
-A distributed vision system for automated urine sample analysis.
-A **Raspberry Pi 4B** captures images; a **remote Ubuntu server** runs AI inference and hosts the web dashboard.
-Communication is secured via HTTPS (Cloudflare Tunnel) and a shared API key.
+A distributed vision system for automated urine sample analysis using AI.
+A **Raspberry Pi 4B** captures images and controls status hardware; a **remote Ubuntu server** runs YOLO inference, performs CIE Lab color classification, and hosts the web dashboard.
+Communication is secured via HTTPS (Cloudflare Tunnel) with a shared API key.
 
 ---
 
 ## Architecture
 
 ```
-Raspberry Pi 4B                          Ubuntu Server
-────────────────                         ─────────────────────────────────────
-Button press (GPIO 24)                   POST /analyze
-  → picamera2 capture                      → YOLO26s / OpenVINO inference
-  → HTTPS POST + X-Auth-Token ──────────►  → CIE Lab color analysis
-  → parse JSON response                    → save to SQLite + static/captures/
-  → update LCD + TM1637           ◄──────  → return {count, color_summary}
+Raspberry Pi 4B                            Ubuntu Server
+────────────────────────────────           ─────────────────────────────────────────
+Button press (GPIO 24)                     POST /analyze
+  → Relay Yellow ON (processing)             → YOLO (PyTorch / ultralytics) inference
+  → picamera2 capture (4608 × 2592)          → Slot-based bottle counting
+  → HTTPS POST + X-Auth-Token  ─────────►   → K-means CIE Lab color classification
+  → TM1637 spinner animation               → Duplicate / wrong-color validation
+  → LCD "Analyzing..."                       → Visual log saved to logs/img/
+  → parse JSON response        ◄─────────   → Telegram report (Thai) sent
+  → update LCD + TM1637 count              → SQLite + static/captures/
+  → Relay Green (ok) / Red (error)         → return JSON {count, summary, errors}
 ```
 
-- Pi sends a raw 4608 × 2592 JPEG; **no inference runs on the Pi**
-- Server letterboxes to 640 × 640 (white padding), runs YOLO, maps coordinates back
-- Dashboard at `http://<server>:8000/dashboard` — history, latest image, stats
-- Tunnel via Cloudflare (or any reverse proxy) for public HTTPS access
+- Pi sends a raw 4608 × 2592 JPEG — **no inference runs on the Pi**
+- Server letterboxes to 640 × 640 (white padding), runs YOLO, maps boxes back to original coords
+- Slot-based count = unique physical slots occupied (not raw YOLO box count)
+- Color classification uses K-means nearest-centroid in CIE Lab space (`color.json`)
+- Dashboard at `http://<server>:8000/dashboard` — history, annotated images, error badges
+- Tunnel via Cloudflare for public HTTPS access from the Pi
 
 ---
 
@@ -30,52 +36,54 @@ Button press (GPIO 24)                   POST /analyze
 ```
 urine-color-analysis/
 │
-├── main.py                        # Entry point — --role client | server
+├── main.py                         # Entry point — --role client | server
 │
 ├── app/
-│   ├── server_app.py              # FastAPI app — YOLO, SQLite, Dashboard
-│   ├── client_app.py              # Pi loop — GPIO, camera, HTTP POST, displays
+│   ├── server_app.py               # FastAPI — YOLO, color analysis, SQLite, dashboard
+│   ├── client_app.py               # Pi loop — GPIO, camera, relay, LCD, TM1637, HTTP POST
 │   ├── shared/
-│   │   ├── config.py              # pydantic-settings (settings.yaml + .env)
-│   │   └── processor.py           # letterbox_white_padding(), scale_coordinates()
+│   │   ├── config.py               # pydantic-settings (config.toml + settings.yaml + .env)
+│   │   └── processor.py            # letterbox_white_padding(), scale_coordinates()
+│   │                               # save_visual_log(), generate_visual_report()
+│   │                               # find_slot_conflicts(), validate_color_zones()
 │   └── web/
 │       ├── templates/
-│       │   └── dashboard.html     # Bootstrap 5 dashboard (auto-refresh 30 s)
-│       └── static/captures/       # Annotated JPEGs served at /static/
+│       │   ├── layout.html         # Bootstrap 5 base template (nav + hamburger)
+│       │   ├── dashboard.html      # Scan history + error badges + annotated images
+│       │   └── settings.html       # Grid calibration + color reference UI
+│       └── static/
+│           ├── settings.js         # Canvas corner-picker for grid calibration
+│           └── captures/           # Annotated JPEGs served at /static/captures/
 │
-├── utils/                         # Server-side analysis pipeline
-│   ├── yolo_detector.py           # YoloBottleDetector — ROI crop, consensus, slot validation
-│   ├── color_analysis.py          # CIE Lab extraction, Delta E, baseline builder, classifier
-│   ├── grid.py                    # GridConfig — slot polygons, reference rows, ROI
-│   ├── calibration.py             # AWB lock, multi-snapshot capture
-│   ├── db.py                      # SQLite helpers
-│   ├── hardware.py                # Relay, TM1637, LCD, button drivers (graceful no-op off-Pi)
-│   ├── image_processing.py        # CLAHE, red-mask, morphology (legacy fallback)
-│   ├── network.py                 # WiFi detection, hotspot, captive portal
-│   ├── utils.py                   # Logger, annotated image saving
-│   └── web_server.py              # Legacy Flask dashboard (Pi-local, port 5000)
+├── utils/
+│   ├── yolo_detector.py            # YoloBottleDetector — ROI crop, slot assignment
+│   ├── color_analysis.py           # CIE Lab, Delta E, build_kmeans_centroids(), classifier
+│   ├── grid.py                     # GridConfig — slot polygons, reference rows, ROI
+│   └── calibration.py              # Grid calibration helpers
 │
 ├── bot/
-│   └── telegram_bot.py            # Telegram summary + annotated image sender
+│   └── telegram_bot.py             # (legacy) Telegram helpers
 │
 ├── configs/
-│   ├── config.toml                # GPIO, camera, YOLO, color-analysis thresholds
-│   └── config.py                  # TOML loader — exposes flat constants to utils/
+│   ├── config.toml                 # PRIMARY hardware config — GPIO, camera, relay, YOLO thresholds
+│   └── config.py                   # TOML loader (used by utils/ directly)
 │
-├── settings.yaml                  # FastAPI server + client runtime config
-├── .env.template                  # Copy to .env — API_KEY, SERVER_URL
-├── pyproject.toml                 # uv project — extras: common / pi / server
-│
-├── scripts/
-│   └── export_model.py            # yolo26s → OpenVINO export
+├── settings.yaml                   # FastAPI server + model fallback config
+├── color.json                      # 5 color levels × 3 reference bottles (Lab values)
+├── grid_config.json                # 195 slot polygons + corner coords (generated by /settings)
+├── .env                            # Secrets — API_KEY, SERVER_URL (never commit)
+├── .env.template                   # Copy to .env
+├── pyproject.toml                  # uv project — extras: common / pi / server
 │
 ├── models/
-│   └── bottle_yolo26s_openvino_model/   # XML + BIN + metadata.yaml (git-ignored)
+│   └── best.pt                     # YOLO PyTorch weights (git-ignored)
 │
-├── templates/                     # Legacy Pi-local Flask templates
-├── tests/                         # pytest suite + local test server (port 5001)
-├── grid_config.json               # Generated by /calibrate — 195 slot polygons
-└── data/                          # Local test images (Windows dev)
+├── logs/
+│   ├── img/                        # Annotated scan images (URINE_SCAN_*.jpg)
+│   └── app_*.log                   # Rotating text logs
+│
+└── data/
+    └── results.db                  # SQLite database (git-ignored)
 ```
 
 ---
@@ -116,26 +124,59 @@ uv run main.py --role server
 
 ```bash
 uv sync --extra pi --extra common
-uv run main.py --role client --server-url https://your-tunnel.trycloudflare.com
+uv run main.py --role client
+# SERVER_URL is read from .env — no CLI flag needed
 ```
-
-`--server-url` can be omitted if `SERVER_URL` is set in `.env`.
 
 ---
 
-## Dependencies (pyproject.toml extras)
+## Dependencies
 
-| Extra | Packages |
-|-------|----------|
+| Extra | Key packages |
+|-------|-------------|
 | `common` | `requests`, `pydantic-settings`, `loguru`, `numpy`, `pyyaml`, `python-dotenv` |
-| `server` | `fastapi`, `uvicorn[standard]`, `openvino`, `opencv-python`, `sqlalchemy`, `jinja2`, `python-multipart`, `ultralytics`, `psutil` |
-| `pi` | `picamera2`, `RPi.GPIO`, `raspberrypi-tm1637`, `rpi-lcd`, `psutil` |
+| `server` | `fastapi`, `uvicorn[standard]`, `ultralytics`, `opencv-python`, `sqlalchemy`, `jinja2`, `python-multipart`, `Pillow`, `psutil` |
+| `pi` | `picamera2`, `RPi.GPIO`, `raspberrypi-tm1637`, `rpi-lcd`, `smbus2`, `psutil` |
 
 ---
 
 ## Configuration
 
-### `settings.yaml` — runtime config (both roles)
+### `configs/config.toml` — hardware (primary source for GPIO / camera)
+
+```toml
+[gpio.button]
+pin         = 24    # BCM GPIO24 — active LOW, internal pull-up
+debounce_ms = 50
+
+[gpio.relay]
+led_red    = 21     # Relay 1 → Red LED   (Error)
+led_yellow = 20     # Relay 2 → Yellow LED (Processing)
+led_green  = 12     # Relay 3 → Green LED  (Ready / OK)
+active_low = true   # GPIO LOW = relay energised
+
+[gpio.tm1637]
+H0 = { CLK = 4,  DIO = 17 }   # Level 0 — Well Hydrated
+H1 = { CLK = 27, DIO = 22 }   # Level 1
+H2 = { CLK = 5,  DIO = 6  }   # Level 2 (main display used by client)
+H3 = { CLK = 13, DIO = 19 }   # Level 3
+H4 = { CLK = 26, DIO = 16 }   # Level 4 — Dehydrated
+
+[gpio.lcd]
+i2c_address = 0x27
+i2c_bus     = 1
+
+[camera]
+capture_resolution = [4608, 2592]
+rotate_180         = true
+
+[yolo]
+model_path     = "models/best.pt"
+conf_threshold = 0.40
+iou_threshold  = 0.45
+```
+
+### `settings.yaml` — server / model fallbacks
 
 ```yaml
 server:
@@ -143,8 +184,7 @@ server:
   port: 8000
 
 model:
-  path: "models/bottle_yolo26s_openvino_model"
-  input_size: 640
+  path: "models/best.pt"
   confidence_threshold: 0.25
   iou_threshold: 0.45
 
@@ -152,19 +192,8 @@ database:
   path: "data/results.db"
 
 storage:
-  captures_dir: "app/web/static/captures"
-
-camera:
-  width: 4608
-  height: 2592
-
-gpio:
-  trigger_pin: 24
-
-display:
-  lcd_address: 0x27
-  tm1637_clk: 5
-  tm1637_dio: 6
+  captures_dir:   "app/web/static/captures"
+  visual_log_dir: "logs/img"
 ```
 
 ### `.env` — secrets (never commit)
@@ -172,22 +201,12 @@ display:
 ```env
 API_KEY=your-long-random-secret
 SERVER_URL=https://your-tunnel.trycloudflare.com
+TELEGRAM_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
 ```
 
-### `configs/config.toml` — analysis pipeline constants (server-side utils)
-
-All YOLO thresholds, color-analysis parameters, GPIO pin assignments, and camera settings for the analysis pipeline. Edit this file to tune detection behavior.
-
-| Section | Key | Default | Description |
-|---------|-----|---------|-------------|
-| `[yolo]` | `conf_threshold` | `0.25` | YOLO confidence cutoff |
-| `[yolo]` | `snapshots` | `3` | Captures per scan |
-| `[yolo]` | `consensus_min_votes` | `2` | Snapshots a box must appear in |
-| `[yolo]` | `box_min_px` | `15` | Minimum detection box size (px, 640-space) |
-| `[color_analysis]` | `ghost_de_threshold` | `8.0` | Min ΔE vs white to accept detection |
-| `[color_analysis]` | `confidence_margin` | `3.0` | Best–second-best ΔE gap for "confident" |
-| `[color_analysis]` | `inner_crop_px` | `15` | Inner crop for sample bottle color sampling |
-| `[debug]` | `img_dir` | `logs/img/` | Annotated scan image output |
+**Config load order (highest priority last):**
+`settings.yaml` → `configs/config.toml` → `.env` / environment variables
 
 ---
 
@@ -196,7 +215,6 @@ All YOLO thresholds, color-analysis parameters, GPIO pin assignments, and camera
 ### `POST /analyze`
 
 **Auth:** `X-Auth-Token: <API_KEY>` header required.
-
 **Request:** `multipart/form-data`, field `file` — JPEG image.
 
 **Response:**
@@ -205,7 +223,14 @@ All YOLO thresholds, color-analysis parameters, GPIO pin assignments, and camera
 {
   "status": "success",
   "count": 12,
-  "color_summary": { "L0": 3, "L1": 4, "L2": 3, "L3": 2 },
+  "total_physical_count": 12,
+  "summary": { "L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0 },
+  "color_summary": { "L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0 },
+  "errors": {
+    "duplicate_slots": [],
+    "wrong_color_slots": []
+  },
+  "detailed_results": { "A11_0": { "level": 0, "ok": true }, "..." : "..." },
   "timestamp": "2026-03-24T10:30:00.000000",
   "image_id": "uuid-string"
 }
@@ -214,18 +239,28 @@ All YOLO thresholds, color-analysis parameters, GPIO pin assignments, and camera
 **Error response:**
 
 ```json
-{ "status": "error", "detail": "Model inference failed: <reason>" }
+{ "status": "error", "message": "Model inference failed: <reason>" }
 ```
 
-### `GET /health`
+### `GET /`
+Redirects to `/dashboard`.
 
+### `GET /health`
 ```json
 { "status": "ok", "timestamp": "2026-03-24T10:30:00" }
 ```
 
 ### `GET /dashboard`
+Jinja2 HTML — last 50 results, annotated images, error badges (Dup / WC).
 
-Jinja2 HTML — shows last 50 results, latest annotated image, total/latest/average counts.
+### `GET /settings`
+Two-tab settings page: **Grid Calibration** (canvas corner-picker) and **Color Reference** (swatch extractor).
+
+### `POST /settings/grid`
+Upload calibration image + 4 corner coordinates → recomputes `grid_config.json`.
+
+### `POST /settings/colors`
+Upload reference image → extracts Lab values → saves `color.json`.
 
 ---
 
@@ -237,25 +272,34 @@ Pi: 4608 × 2592 JPEG
         ▼  POST /analyze
 Server: cv2.imdecode()
         │
-        ▼  letterbox_white_padding()   (app/shared/processor.py)
-        640 × 640, white fill (255,255,255) — matches Roboflow "Fit" training pre-processing
+        ▼  letterbox_white_padding()       (app/shared/processor.py)
+        640 × 640, white fill (255,255,255) — matches training pre-processing
         │
-        ▼  YOLO inference (OpenVINO)
+        ▼  YOLO inference (PyTorch / ultralytics)
         [[x1,y1,x2,y2,conf,cls], ...]  in 640-space
         │
-        ▼  scale_coordinates()         (app/shared/processor.py)
+        ▼  scale_coordinates()             (app/shared/processor.py)
         Boxes mapped back to 4608 × 2592 original space
         │
-        ▼  Color analysis (optional — requires grid_config.json)
-        build_reference_baseline() → classify_sample() → {level: count}
+        ▼  GridConfig.find_slot_for_circle()    (utils/grid.py)
+        Each box → slot_id (e.g. "A25_3") via majority-overlap rule
         │
-        ▼  Annotate + save JPEG → static/captures/<uuid>.jpg
+        ▼  build_kmeans_centroids() → classify_sample()  (utils/color_analysis.py)
+        K-means nearest-centroid in CIE Lab space → level 0-4 per slot
+        │
+        ▼  find_slot_conflicts() + validate_color_zones()
+        duplicate_slots, wrong_color_slots  →  errors dict
+        │
+        ▼  _render_annotated_canvas()      (app/shared/processor.py)
+        Green box per bottle + red/green ring + Thai slot label
+        │
+        ▼  save_visual_log() → logs/img/URINE_SCAN_<timestamp>.jpg
+        generate_visual_report() → JPEG bytes → Telegram
         │
         ▼  Persist to SQLite → return JSON
 ```
 
-> **Why white padding?**  Bottle labels and liquid colors are dark/coloured on white
-> backgrounds.  Black padding creates false-contrast edges that confuse the model.
+> **Why white padding?** Bottle labels and liquid are dark/coloured on white backgrounds. Black padding creates false-contrast edges that confuse the model.
 
 ---
 
@@ -266,146 +310,105 @@ Col:  0    1    2    3  …  15
      [ZZ] [── REF_L0 ──] … [── REF_L4 ──]   ← Row 0  (reference bottles, never moved)
      ──────────────────────────────────────
      [ZZ] [A11_0][A12_0] … [A13_4]           ← Row 1  ┐
-     [ZZ] [A14_0][A15_0] … [A16_4]           ← Row 2  │ Group A1
+     [ZZ] [A14_0][A15_0] … [A16_4]           ← Row 2  │ Group A1 (9 slots × 5 levels)
      [ZZ] [A17_0][A18_0] … [A19_4]           ← Row 3  ┘
-     …                                          Rows 4–6   Group A2
-     …                                          Rows 7–9   Group A3
+     …                                                   Rows 4–6   Group A2
+     …                                                   Rows 7–9   Group A3
      [ZZ] [A47_0] …       … [A49_4]           ← Row 12 ┘ Group A4
 ```
 
 - **Col 0 (`ZZ`)** — exclusion zone, never processed
-- **Row 0** — 15 reference bottles (3 per level L0–L4)
+- **Row 0** — 15 reference bottles (3 per level L0–L4), used to build `color.json`
 - **Rows 1–12** — 180 sample slots: 4 groups × 9 slots × 5 levels
-- **Slot ID format:** `A{group}{slot}_{level}` — e.g. `A25_3` = Group A2, Slot 5, expected Level 3
+- **Slot ID:** `A{group}{slot}_{level}` — e.g. `A25_3` = Group A2, Slot 5, expected Level 3
 
 ---
 
-## Hardware
+## Validation Errors
 
-| Component | Interface |
-|-----------|-----------|
-| Raspberry Pi 4B | — |
-| Camera Module 3 | CSI (`picamera2`) |
-| Push Button | GPIO 24, BCM, active LOW, internal pull-up |
-| 3-Channel Relay (LED Tower) | Red=GPIO 21, Yellow=GPIO 20, Green=GPIO 12, active LOW |
-| 5× TM1637 7-Segment | CLK/DIO pairs — `configs/config.toml` `[gpio.tm1637]` |
-| LCD 16×4 I2C | SDA=GPIO 2, SCL=GPIO 3, addr `0x27`, bus 1 |
+| Error type | Meaning | Response key |
+|-----------|---------|-------------|
+| `duplicate_slots` | Same physical slot assigned in >1 color level zone | `errors.duplicate_slots` |
+| `wrong_color_slots` | Bottle's actual color level ≠ its slot's expected level | `errors.wrong_color_slots` |
+
+Errors are stored in `errors_json` (DB), shown as badges on the dashboard, trigger the Red relay on the Pi, and are included in the Telegram report.
 
 ---
 
-## LCD Display States (Pi client)
+## Hardware (Raspberry Pi 4B)
+
+| Component | Interface | Config key |
+|-----------|-----------|-----------|
+| Camera Module 3 | CSI (`picamera2`) | `[camera]` |
+| Push Button | GPIO 24, BCM, active LOW, pull-up | `[gpio.button].pin` |
+| Relay 1 — Red LED | GPIO 21, active LOW | `[gpio.relay].led_red` |
+| Relay 2 — Yellow LED | GPIO 20, active LOW | `[gpio.relay].led_yellow` |
+| Relay 3 — Green LED | GPIO 12, active LOW | `[gpio.relay].led_green` |
+| TM1637 H0–H4 | 5 × CLK/DIO pairs | `[gpio.tm1637]` |
+| LCD 16×4 | I2C addr 0x27, bus 1, SDA=GPIO2, SCL=GPIO3 | `[gpio.lcd]` |
+
+---
+
+## Pi Client State Machine
+
+### Relay (LED Tower)
+
+| State | Trigger | Relay |
+|-------|---------|-------|
+| Idle / Ready | Boot + clean scan result | **Green** ON |
+| Processing | Button press → throughout capture + upload + wait | **Yellow** ON |
+| Error | Camera fail / network error / timeout / validation errors | **Red** ON (until next scan) |
+
+### LCD + TM1637
 
 | State | LCD Line 1 | LCD Line 2 | TM1637 |
 |-------|-----------|-----------|--------|
-| Startup | `Urine Analyzer` | `Ready` | `----` |
-| Button pressed | `Capturing...` | — | `----` |
-| Uploading | `Uploading...` | `Please wait` | `----` |
-| Result OK | `Count: 12` | `L0:3 L1:4` | `0012` |
-| Server offline | `ERR: SRV OFF` | `Check network` | `Err` |
-| HTTP error | `ERR: HTTP 401` | — | `Err` |
-| Inference failed | `ERR: AI FAIL` | — | `Err` |
-| Timeout | `ERR: TIMEOUT` | `Server slow` | `Err` |
-
----
-
-## Model Setup
-
-### Train (GPU machine)
-
-```bash
-yolo train \
-    model=yolo26s.pt \
-    data=dataset/data.yaml \
-    epochs=100 imgsz=640 batch=16 \
-    mosaic=1.0 blur_p=0.3 hsv_v=0.4 hsv_s=0.5 \
-    flipud=0.0 fliplr=0.5 \
-    project=runs/urine_detector name=v1
-```
-
-`data.yaml` must declare a single class:
-
-```yaml
-nc: 1
-names: ['bottle']
-```
-
-Reference vs sample classification is done at inference time by **grid position**, not YOLO class.
-
-### Export to OpenVINO
-
-```bash
-python scripts/export_model.py
-```
-
-Copy the output directory to `models/bottle_yolo26s_openvino_model/` on the server.
-The directory name **must** end with `_openvino_model` (ultralytics requirement).
+| Startup | `Urine Analyzer` | `Ready` | `0000` |
+| Capturing | `Capturing...` | — | `8888` |
+| Uploading | `Uploading...` | `Please wait` | spinning `-   ` |
+| Analyzing | `Analyzing...` | `AI running` | spinning (continued) |
+| Result OK | `Count: 12` | `L0:3 L1:4 ...` | `0012` |
+| Errors present | `Count: 12` | `Dup:1 WC:2` | `0012` |
+| Server offline | `ERR: SRV OFF` | `Check network` | `----` |
+| Timeout (60 s) | `ERR: TIMEOUT` | `Server slow` | `----` |
+| HTTP error | `ERR: HTTP 401` | — | `----` |
+| Inference failed | `ERR: AI FAIL` | — | `----` |
+| Camera failed | `ERR: CAMERA` | `Capture failed` | `----` |
 
 ---
 
 ## Grid Calibration
 
-Calibration maps the physical grid onto image coordinates and is required for color analysis.
+Calibration maps the physical bottle grid onto image pixel coordinates. Required before color analysis.
 
-1. Open `http://<server>:8000/dashboard` (or the legacy Pi dashboard at `http://<pi>:5000/calibrate`)
-2. Capture or upload a photo of the grid
-3. Click the 4 corners: TL → TR → BR → BL
-4. Grid polygons are computed by bilinear interpolation across 16 × 14 lines
-5. Fine-tune by dragging any grid line
-6. Save → writes `grid_config.json` (195 slot polygons + corner coordinates)
+1. Navigate to `http://<server>:8000/settings`
+2. Upload a photo of the physical grid (**Grid Calibration** tab)
+3. Click the 4 outer corners: **TL → TR → BR → BL**
+4. Click **Compute Grid** — server computes 195 slot polygons via bilinear interpolation
+5. Save → writes `grid_config.json` on the server
 
-`grid_config.json` must be present on the **server** for color analysis.
-Without it the server still returns `count` but `color_summary` will be empty.
-
----
-
-## Local Development
-
-Run the test lab on Windows (no Pi hardware required):
-
-```bash
-python tests/test_web.py
-# Open http://localhost:5001
-```
-
-| Tab | Tests |
-|-----|-------|
-| ① Calibrate | Click 4 corners → computes `grid_config.json` → grid overlay |
-| ② Detect | YOLO `detect_once()` on `data/` images |
-| ③ Classify | Full pipeline — detection → consensus → baseline → ΔE classification |
-
-### YOLO detection visual log
-
-```bash
-python tests/test_yolo_detect.py              # all images in data/
-python tests/test_yolo_detect.py data/img.jpg # single image
-python tests/test_yolo_detect.py --conf 0.35  # override threshold
-```
-
-Annotated output → `logs/img/detect_test/`
+`grid_config.json` must be present on the server for color analysis and validation.
+Without it, the server still returns `count` but `summary` will be empty.
 
 ---
 
-## Running Tests
+## Color Reference Calibration
 
-```bash
-uv run pytest
-uv run pytest -v    # verbose
-```
+1. Navigate to `http://<server>:8000/settings` → **Color Reference** tab
+2. Upload a photo with all 5 reference levels present in the reference row
+3. Server extracts Lab values from each reference position → displays 15 colour swatches
+4. Click **Save** → writes `color.json`
+
+`color.json` stores per-bottle Lab + hex values and pre-computed class means used by the K-means classifier.
 
 ---
 
-## Cloudflare Tunnel (HTTPS)
+## Telegram Reports
 
-```bash
-# Install cloudflared on the Ubuntu server
-# https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
-
-cloudflared tunnel --url http://localhost:8000
-# Prints a public URL like: https://xxxx.trycloudflare.com
-```
-
-Set that URL as `SERVER_URL` in `.env` on the Pi.
-SSL certificates are handled by Cloudflare — no manual cert management needed.
+Credentials come from `configs/config.toml` `[telegram]` section (or `.env` overrides).
+Each successful scan sends:
+- Annotated JPEG (from `logs/img/`)
+- Thai-language caption with Buddhist year, bottle count per level, error summary, dashboard URL
 
 ---
 
@@ -414,33 +417,55 @@ SSL certificates are handled by Cloudflare — no manual cert management needed.
 ```python
 class AnalysisResult(Base):
     __tablename__ = "results"
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp  = Column(DateTime, default=datetime.utcnow)
-    count      = Column(Integer)
-    color_json = Column(String)   # JSON: {"L0": 3, "L1": 4, ...}
-    image_path = Column(String)   # Relative URL: /static/captures/<uuid>.jpg
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp        = Column(DateTime, default=datetime.utcnow)
+    count            = Column(Integer)
+    color_json       = Column(String)   # JSON: {"L0": 3, "L1": 4, ...}
+    image_path       = Column(String)   # /static/captures/<uuid>.jpg
+    errors_json      = Column(String)   # JSON: {duplicate_slots, wrong_color_slots}
+    log_image_filename = Column(String) # URINE_SCAN_<timestamp>.jpg
+    detailed_results = Column(String)   # JSON: per-slot {level, ok, wrong_color, duplicate}
 ```
 
-Database location: `data/results.db` (configurable in `settings.yaml`).
+Columns are added automatically via `_migrate_db()` on server startup (safe to run on existing DBs).
 
 ---
 
-## Telegram Reports
+## Local Development
 
-Add credentials to `.env`:
+Run the analysis pipeline without Pi hardware:
 
-```env
-TELEGRAM_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
+```bash
+# Test server on Windows / Linux
+uv run main.py --role server
+# Upload a JPEG via the dashboard or curl:
+curl -X POST http://localhost:8000/analyze \
+     -H "X-Auth-Token: changeme" \
+     -F "file=@data/test.jpg"
 ```
 
-Each scan sends a text summary + annotated JPEG:
+---
 
+## Cloudflare Tunnel (HTTPS)
+
+```bash
+# On Ubuntu server — quick tunnel (no account required for testing)
+cloudflared tunnel --url http://localhost:8000
+# Prints: https://xxxx.trycloudflare.com
+
+# Set in .env on Pi:
+SERVER_URL=https://xxxx.trycloudflare.com
 ```
-Scan Result — 2026-03-24 10:32
-L0:5 | L1:3 | L2:7 | L3:2 | L4:1
-Errors: A11_0 Dup, A25_2 Mismatch (L3)
-Status: ❌
+
+SSL certificates are handled automatically by Cloudflare.
+
+---
+
+## Running Tests
+
+```bash
+uv run pytest
+uv run pytest -v
 ```
 
 ---
@@ -449,12 +474,13 @@ Status: ❌
 
 ```gitignore
 .env
-data/results.db
+data/
 models/
 logs/
 app/web/static/captures/
+color.json
+grid_config.json
 *.pyc
 __pycache__/
 .venv/
-model_cache/
 ```

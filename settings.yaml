@@ -22,6 +22,12 @@ camera:
 gpio:
   trigger_pin: 24 # BCM GPIO24 / physical pin 18
 
+relay:
+  red_pin:    21  # BCM GPIO21 / physical pin 40 — Error state
+  yellow_pin: 20  # BCM GPIO20 / physical pin 38 — Processing state
+  green_pin:  12  # BCM GPIO12 / physical pin 32 — Ready / OK state
+  active_low: true  # true = LOW triggers relay (most common modules); false = HIGH triggers
+
 display:
   lcd_address: 0x27 # I2C address of the LCD backpack
   tm1637_clk: 5

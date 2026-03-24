@@ -5,14 +5,26 @@ Hardware:
   GPIO24 (BCM)  — push-button trigger (active LOW, internal pull-up)
   I2C LCD       — 16 × 4 character display at address 0x27
   TM1637        — 4-digit 7-segment display (shows integer bottle count)
+  Relay module  — 3-channel status lights (pins in configs/config.toml → [gpio.relay])
+    Relay 1 (Red)    GPIO21 — Error state
+    Relay 2 (Yellow) GPIO20 — Processing / waiting state
+    Relay 3 (Green)  GPIO12 — Ready / OK state
 
 Flow on each button press:
-  1. LCD: "Capturing..."
+  1. Relay → Yellow  /  LCD: "Capturing..."  /  TM1637: 8888
   2. Capture 4608 × 2592 JPEG via picamera2
-  3. LCD: "Uploading..."
-  4. POST to SERVER_URL/analyze with X-Auth-Token header
-  5. Parse JSON response → update LCD + TM1637
-  6. Handle server-offline / inference-error gracefully
+  3. LCD: "Uploading..."  /  TM1637: spinning animation
+  4. POST to SERVER_URL/analyze with X-Auth-Token header (60 s timeout)
+  5. LCD: "Analyzing..."  (switches after ~4 s upload phase)
+  6. Parse JSON response:
+       no errors  → Relay Green  /  LCD: "Count: N" + colour summary
+       any errors → Relay Red    /  LCD: "Count: N" + error badges
+  7. All system/network errors → Relay Red
+
+Relay logic notes:
+  • active_low = true  (default):  GPIO.LOW  = relay ON
+  • active_low = false:            GPIO.HIGH = relay ON
+  • A 50 ms gap is inserted before switching a relay ON to avoid inrush spikes.
 
 Install on Pi:
     uv sync --extra pi --extra common
@@ -24,10 +36,16 @@ Run:
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from loguru import logger
 
 from app.shared.config import cfg
+
+
+# ─── Spinner frames for TM1637 ────────────────────────────────────────────────
+
+_SPIN_FRAMES = ["-   ", " -  ", "  - ", "   -"]
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
@@ -42,93 +60,131 @@ def run_client(server_url: str) -> None:
     tm  = _init_tm1637()
 
     GPIO.setmode(GPIO.BCM)
+
+    # Trigger button — input with pull-up (active LOW)
     GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
+    # Relay outputs — initialise to OFF before setting direction
+    _relay_setup(GPIO)
+
     _lcd(lcd, "Urine Analyzer", "Ready")
-    _tm(tm, None)  # show "----"
+    _tm(tm, 0)           # 0000 on boot
+    _relay(GPIO, "idle") # Green ON
 
     logger.info(
-        "Client ready — waiting for button on GPIO{} | server: {}",
+        "Client ready — GPIO{} button | relay pins R={} Y={} G={} | server: {}",
         cfg.gpio_trigger_pin,
+        cfg.relay_red_pin, cfg.relay_yellow_pin, cfg.relay_green_pin,
         server_url,
     )
 
     try:
         while True:
-            # wait_for_edge blocks until pin goes LOW (button press)
             GPIO.wait_for_edge(
                 cfg.gpio_trigger_pin,
                 GPIO.FALLING,
-                bouncetime=200,
+                bouncetime=cfg.button_debounce_ms,
             )
             time.sleep(0.05)  # debounce settle
-            _on_button_press(lcd, tm, server_url)
+            _on_button_press(lcd, tm, GPIO, server_url)
     except KeyboardInterrupt:
         logger.info("Shutdown requested — exiting client loop")
     finally:
+        # Turn all relays off before GPIO cleanup
+        _relay_all_off(GPIO)
         GPIO.cleanup()
         logger.info("GPIO cleanup complete")
 
 
 # ─── Button handler ───────────────────────────────────────────────────────────
 
-def _on_button_press(lcd, tm, server_url: str) -> None:
+def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
     import requests
 
     logger.info("Button pressed — starting capture")
+    _relay(GPIO, "processing")   # Yellow ON — stays on through entire scan
     _lcd(lcd, "Capturing...", "")
-    _tm(tm, None)
+    _tm(tm, 8888)
 
     img_bytes = _capture_image()
     if img_bytes is None:
         logger.error("Camera capture failed")
+        _relay(GPIO, "error")
         _lcd(lcd, "ERR: CAMERA", "Capture failed")
-        _tm(tm, "Err")
+        _tm(tm, None)  # "----"
         return
 
-    logger.info("Image captured ({:.1f} KB) — uploading to {}", len(img_bytes) / 1024, server_url)
+    size_kb = len(img_bytes) / 1024
+    logger.info("Image captured ({:.1f} KB) — uploading to {}", size_kb, server_url)
     _lcd(lcd, "Uploading...", "Please wait")
 
+    # TM1637 spinner + delayed LCD "Analyzing..." while POST is in flight
+    stop_spin = threading.Event()
+    spin_thread = threading.Thread(target=_tm_spin,     args=(tm, stop_spin),                          daemon=True)
+    lcd_thread  = threading.Thread(target=_lcd_delayed, args=(lcd, stop_spin, "Analyzing...", "AI running", 4.0), daemon=True)
+    spin_thread.start()
+    lcd_thread.start()
+
+    t0 = time.perf_counter()
     try:
         resp = requests.post(
             f"{server_url}/analyze",
             files={"file": ("capture.jpg", img_bytes, "image/jpeg")},
             headers={"X-Auth-Token": cfg.api_key},
-            timeout=120,
+            timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
 
     except requests.exceptions.ConnectionError as exc:
-        logger.error("Server unreachable: {}", exc)
+        stop_spin.set()
+        elapsed = time.perf_counter() - t0
+        logger.error("Server unreachable after {:.1f}s: {}", elapsed, exc)
+        _relay(GPIO, "error")
         _lcd(lcd, "ERR: SRV OFF", "Check network")
-        _tm(tm, "Err")
+        _tm(tm, None)
         return
 
     except requests.exceptions.Timeout:
-        logger.error("Request timed out after 120 s")
+        stop_spin.set()
+        elapsed = time.perf_counter() - t0
+        logger.error("Request timed out after {:.1f}s (limit 60s)", elapsed)
+        _relay(GPIO, "error")
         _lcd(lcd, "ERR: TIMEOUT", "Server slow")
-        _tm(tm, "Err")
+        _tm(tm, None)
         return
 
     except requests.exceptions.HTTPError as exc:
+        stop_spin.set()
+        elapsed = time.perf_counter() - t0
         status = exc.response.status_code if exc.response is not None else "?"
-        logger.error("HTTP {} from server: {}", status, exc)
+        logger.error("HTTP {} from server after {:.1f}s: {}", status, elapsed, exc)
+        _relay(GPIO, "error")
         _lcd(lcd, f"ERR: HTTP {status}", "")
-        _tm(tm, "Err")
+        _tm(tm, None)
         return
 
     except Exception as exc:
-        logger.exception("Unexpected error during upload: {}", exc)
+        stop_spin.set()
+        elapsed = time.perf_counter() - t0
+        logger.exception("Unexpected error after {:.1f}s: {}", elapsed, exc)
+        _relay(GPIO, "error")
         _lcd(lcd, "ERR: AI FAIL", "")
-        _tm(tm, "Err")
+        _tm(tm, None)
         return
+
+    finally:
+        stop_spin.set()
+
+    elapsed = time.perf_counter() - t0
+    logger.info("Server responded in {:.2f}s", elapsed)
 
     if data.get("status") != "success":
         msg = data.get("message", "unknown error")
         logger.error("Server returned error: {}", msg)
+        _relay(GPIO, "error")
         _lcd(lcd, "ERR: AI FAIL", msg[:16])
-        _tm(tm, "Err")
+        _tm(tm, None)
         return
 
     count        = data.get("total_physical_count", data.get("count", 0))
@@ -137,24 +193,29 @@ def _on_button_press(lcd, tm, server_url: str) -> None:
     dup_n  = len(errors.get("duplicate_slots",  []))
     wc_n   = len(errors.get("wrong_color_slots", []))
 
-    logger.success(
-        "Result received — count={}, colors={}, dups={}, wrong_color={}",
-        count, color_summary, dup_n, wc_n,
-    )
-
     _tm(tm, count)
 
     if dup_n > 0 or wc_n > 0:
-        # Errors present — show count on line 1, error summary on line 2
+        # Validation errors → Red
         parts = []
         if dup_n > 0:
             parts.append(f"Dup:{dup_n}")
         if wc_n > 0:
             parts.append(f"WC:{wc_n}")
-        logger.warning("Scan errors: {}", " ".join(parts))
+        logger.warning(
+            "Scan errors — count={}, {} | latency={:.2f}s",
+            count, " ".join(parts), elapsed,
+        )
+        _relay(GPIO, "error")
         _lcd(lcd, f"Count: {count}", (" ".join(parts))[:16])
     else:
+        # Clean result → Green
         color_str = "  ".join(f"{k}:{v}" for k, v in color_summary.items())
+        logger.success(
+            "Result OK — count={}, colors={}, latency={:.2f}s",
+            count, color_summary, elapsed,
+        )
+        _relay(GPIO, "idle")
         _lcd(lcd, f"Count: {count}", color_str[:16] or "No color data")
 
 
@@ -163,9 +224,7 @@ def _on_button_press(lcd, tm, server_url: str) -> None:
 def _capture_image() -> bytes | None:
     """Capture a still image and return it as JPEG bytes, or None on failure."""
     try:
-        import io
         import cv2
-        import numpy as np
         from picamera2 import Picamera2
 
         picam2 = Picamera2()
@@ -180,7 +239,6 @@ def _capture_image() -> bytes | None:
         picam2.stop()
         picam2.close()
 
-        # picamera2 returns RGB — convert to BGR for OpenCV / JPEG encode
         bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
         if not ok:
@@ -194,14 +252,70 @@ def _capture_image() -> bytes | None:
         return None
 
 
+# ─── Relay helpers ────────────────────────────────────────────────────────────
+
+def _relay_setup(GPIO) -> None:
+    """Set relay pins as outputs and drive them all to the OFF level."""
+    off_level = GPIO.LOW if cfg.relay_active_low else GPIO.HIGH
+    for pin in (cfg.relay_red_pin, cfg.relay_yellow_pin, cfg.relay_green_pin):
+        GPIO.setup(pin, GPIO.OUT, initial=off_level)
+    logger.debug(
+        "Relay pins initialised — R={} Y={} G={} active_low={}",
+        cfg.relay_red_pin, cfg.relay_yellow_pin, cfg.relay_green_pin,
+        cfg.relay_active_low,
+    )
+
+
+def _relay(GPIO, state: str) -> None:
+    """
+    Switch exactly one relay ON and the other two OFF.
+
+    state:
+      "idle"       → Green ON   (ready / clean result)
+      "processing" → Yellow ON  (capturing / uploading / waiting)
+      "error"      → Red ON     (any error, validation or system)
+    """
+    on_level  = GPIO.LOW  if cfg.relay_active_low else GPIO.HIGH
+    off_level = GPIO.HIGH if cfg.relay_active_low else GPIO.LOW
+
+    state_map = {
+        "idle":       (cfg.relay_green_pin,  [cfg.relay_red_pin, cfg.relay_yellow_pin]),
+        "processing": (cfg.relay_yellow_pin, [cfg.relay_red_pin, cfg.relay_green_pin]),
+        "error":      (cfg.relay_red_pin,    [cfg.relay_yellow_pin, cfg.relay_green_pin]),
+    }
+
+    if state not in state_map:
+        logger.warning("Unknown relay state: {}", state)
+        return
+
+    on_pin, off_pins = state_map[state]
+
+    # Turn off the other two first, then pause, then turn the target on
+    for pin in off_pins:
+        GPIO.output(pin, off_level)
+    time.sleep(0.05)  # brief settle to avoid inrush
+    GPIO.output(on_pin, on_level)
+
+    logger.debug("Relay → {}", state)
+
+
+def _relay_all_off(GPIO) -> None:
+    """Drive all relay pins to OFF — called on shutdown."""
+    off_level = GPIO.HIGH if cfg.relay_active_low else GPIO.LOW
+    for pin in (cfg.relay_red_pin, cfg.relay_yellow_pin, cfg.relay_green_pin):
+        try:
+            GPIO.output(pin, off_level)
+        except Exception:
+            pass  # pin may not be set up if init failed early
+
+
 # ─── Display helpers ──────────────────────────────────────────────────────────
 
 def _init_lcd():
     """Return an LCD object or None if the hardware is not available."""
     try:
         from rpi_lcd import LCD
-        lcd = LCD()
-        return lcd
+        return LCD()
     except Exception as exc:
         logger.warning("LCD init failed ({}), display disabled", exc)
         return None
@@ -211,8 +325,7 @@ def _init_tm1637():
     """Return a TM1637 object or None if the hardware is not available."""
     try:
         import tm1637
-        tm = tm1637.TM1637(clk=cfg.tm1637_clk, dio=cfg.tm1637_dio)
-        return tm
+        return tm1637.TM1637(clk=cfg.tm1637_clk, dio=cfg.tm1637_dio)
     except Exception as exc:
         logger.warning("TM1637 init failed ({}), display disabled", exc)
         return None
@@ -230,13 +343,19 @@ def _lcd(lcd, line1: str, line2: str) -> None:
         logger.warning("LCD write failed: {}", exc)
 
 
+def _lcd_delayed(lcd, stop_event: threading.Event, line1: str, line2: str, delay: float) -> None:
+    """Switch LCD to line1/line2 after *delay* seconds unless stop_event fires first."""
+    if not stop_event.wait(delay):  # returns True if set, False on timeout
+        _lcd(lcd, line1, line2)
+
+
 def _tm(tm, value: int | str | None) -> None:
     """
     Update the TM1637 display.
 
-    value=None    → show "----"
-    value="Err"   → show "Err "
-    value=int     → show zero-padded integer (0000–9999)
+    value=None  → show "----"
+    value="Err" → show "Err "
+    value=int   → show zero-padded integer (0000–9999)
     """
     if tm is None:
         logger.debug("TM1637 | {}", value)
@@ -253,22 +372,31 @@ def _tm(tm, value: int | str | None) -> None:
         logger.warning("TM1637 write failed: {}", exc)
 
 
+def _tm_spin(tm, stop_event: threading.Event) -> None:
+    """Cycle through spinner frames on TM1637 until stop_event is set."""
+    i = 0
+    while not stop_event.is_set():
+        if tm is not None:
+            try:
+                tm.show(_SPIN_FRAMES[i % len(_SPIN_FRAMES)])
+            except Exception:
+                pass
+        i += 1
+        stop_event.wait(0.25)
+
+
 # ─── Import guard ─────────────────────────────────────────────────────────────
 
 def _check_imports() -> None:
     missing = []
-    for pkg in ("RPi.GPIO", "picamera2"):
-        try:
-            __import__(pkg.replace(".", "_") if pkg == "RPi.GPIO" else pkg)
-        except ImportError:
-            missing.append(pkg)
-
-    # RPi.GPIO ships as RPi package
     try:
         import RPi.GPIO  # noqa: F401
     except ImportError:
-        if "RPi.GPIO" not in missing:
-            missing.append("RPi.GPIO")
+        missing.append("RPi.GPIO")
+    try:
+        import picamera2  # noqa: F401
+    except ImportError:
+        missing.append("picamera2")
 
     if missing:
         logger.error(

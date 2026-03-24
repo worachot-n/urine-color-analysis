@@ -1,174 +1,223 @@
 # CLAUDE.md — Urine Analysis System v2
 
-This file provides context for AI Code Assistants (Cursor, Claude, Copilot) about the architecture, conventions, and constraints of this project. Read this before modifying any file.
+Codebase and developer context for AI Code Assistants (Claude, Cursor, Copilot).
+Read this file before modifying any file in this repository.
 
 ---
 
 ## Project Overview
 
-A distributed urine sample analysis system that detects and counts urine collection bottles using a YOLO object detection model.
+A distributed urine sample analysis system. Bottles of collected urine are placed on a physical grid. A camera captures the grid; a YOLO model detects and counts bottles; CIE Lab color analysis classifies each bottle's hydration level (L0–L4). Results are stored in SQLite, shown on a web dashboard, and reported via Telegram.
 
-| Role       | Hardware        | Responsibility                                                                             |
-| ---------- | --------------- | ------------------------------------------------------------------------------------------ |
-| **Client** | Raspberry Pi 4B | Capture image via PiCamera2, trigger via GPIO24, display results on LCD + TM1637           |
-| **Server** | Ubuntu PC       | Run FastAPI, perform YOLO inference via OpenVINO, store results in SQLite, serve Dashboard |
+| Role | Hardware | Responsibility |
+|------|----------|----------------|
+| **Client** | Raspberry Pi 4B | Capture image, trigger via GPIO, control relay + LCD + TM1637, POST to server |
+| **Server** | Ubuntu PC | FastAPI, YOLO inference (PyTorch), color classification, SQLite, web dashboard |
 
-Communication: Pi POSTs a raw JPEG to `https://www.<YOUR_DOMAIN>.com/analyze` → Server returns JSON.
-The server URL is a **public HTTPS domain via Cloudflare Tunnel** — not a local IP. No port number in the URL.
+Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 
 ---
 
 ## Tech Stack
 
-| Layer            | Library / Tool                                                              |
-| ---------------- | --------------------------------------------------------------------------- |
-| Package Manager  | `uv` (not pip, not poetry)                                                  |
-| Server Framework | FastAPI + Uvicorn                                                           |
-| AI Inference     | OpenVINO Runtime + YOLO (yolo26s)                                           |
-| Image Processing | OpenCV (`cv2`)                                                              |
-| Database         | SQLAlchemy + SQLite (`data/results.db`)                                     |
-| Web Templates    | Jinja2                                                                      |
-| Config           | `pydantic-settings` reading `settings.yaml`                                 |
-| Logging          | `loguru` — use throughout, never `print()`                                  |
-| Pi Camera        | `picamera2`                                                                 |
-| Pi GPIO          | `RPi.GPIO` (BCM mode, pin 24)                                               |
-| Pi Display       | `rpi-lcd` (I2C LCD) + `raspberrypi-tm1637` (7-segment)                      |
-| HTTP Client      | `requests`                                                                  |
-| Tunnel           | Cloudflare Tunnel (`cloudflared`) — exposes local FastAPI over public HTTPS |
+| Layer | Library / Tool |
+|-------|----------------|
+| Package manager | `uv` (never `pip install`) |
+| Server framework | FastAPI + Uvicorn |
+| AI inference | PyTorch / `ultralytics` YOLO — **not OpenVINO** |
+| Image processing | OpenCV (`cv2`) + Pillow (Thai text rendering) |
+| Database | SQLAlchemy + SQLite |
+| Web templates | Jinja2 (base: `layout.html`) |
+| Config | `pydantic-settings` loading `configs/config.toml` + `settings.yaml` + `.env` |
+| Logging | `loguru` — use throughout, **never `print()`** |
+| Pi camera | `picamera2` |
+| Pi GPIO | `RPi.GPIO` (BCM mode) |
+| Pi display | `rpi-lcd` (I2C LCD) + `raspberrypi-tm1637` (7-segment) |
+| Pi relay | `RPi.GPIO` outputs — 3-channel active-LOW relay module |
+| HTTP client | `requests` |
+| Tunnel | Cloudflare Tunnel (`cloudflared`) |
 
 ---
 
 ## Repository Layout
 
 ```
-urine-analysis-v2/
-├── .python-version          # Managed by uv (e.g. 3.11)
-├── pyproject.toml           # Single source of truth for all deps
-├── settings.yaml            # Runtime config (never hardcode IPs or pins here)
-├── main.py                  # CLI entry: --role client|server
+urine-color-analysis/
+├── main.py                       # CLI entry — --role client | server
 ├── app/
-│   ├── __init__.py
-│   ├── client_app.py        # Pi-only: camera, GPIO, LCD, TM1637, requests
-│   ├── server_app.py        # Ubuntu-only: FastAPI, OpenVINO, DB, Dashboard
+│   ├── server_app.py             # FastAPI app — YOLO, color, DB, dashboard, settings
+│   ├── client_app.py             # Pi loop — GPIO, relay, camera, LCD, TM1637, POST
 │   ├── shared/
-│   │   ├── __init__.py
-│   │   ├── config.py        # Pydantic-settings Config class
-│   │   └── processor.py     # letterbox_image() + scale_coords()
+│   │   ├── config.py             # Settings class (pydantic-settings)
+│   │   └── processor.py          # letterbox, scale_coords, visual log, slot validation
 │   └── web/
-│       ├── templates/       # Jinja2 HTML (dashboard.html, etc.)
-│       └── static/          # CSS, JS, and saved analysis images
+│       ├── templates/
+│       │   ├── layout.html       # Bootstrap 5 base (nav, hamburger, active state)
+│       │   ├── dashboard.html    # Extends layout.html
+│       │   └── settings.html     # Extends layout.html (two tabs)
+│       └── static/
+│           ├── settings.js       # Canvas corner-picker for grid calibration
+│           └── captures/         # Annotated JPEGs served at /static/captures/
+├── utils/
+│   ├── yolo_detector.py          # YoloBottleDetector
+│   ├── color_analysis.py         # CIE Lab, Delta E, build_kmeans_centroids()
+│   ├── grid.py                   # GridConfig — slot polygons, find_slot_for_circle()
+│   └── calibration.py            # Grid calibration helpers
+├── bot/
+│   └── telegram_bot.py           # Legacy helpers (Telegram logic now inline in server_app.py)
+├── configs/
+│   ├── config.toml               # PRIMARY hardware config — GPIO, camera, relay, YOLO
+│   └── config.py                 # TOML loader used by utils/ directly
+├── settings.yaml                 # Server / model / database fallback config
+├── color.json                    # 5 levels × 3 reference bottles (Lab + hex + baseline)
+├── grid_config.json              # 195 slot polygons (generated by /settings/grid)
+├── pyproject.toml                # uv project — extras: common / pi / server
 ├── models/
-│   └── yolo26s_openvino/    # model.xml + model.bin (gitignored, large files)
-└── data/
-    └── results.db           # SQLite — server-side only, gitignored
+│   └── best.pt                   # YOLO weights (git-ignored)
+└── logs/
+    ├── img/                      # URINE_SCAN_<timestamp>.jpg annotated images
+    └── app_*.log                 # Rotating text logs
 ```
+
+---
+
+## Configuration System
+
+**Load order (highest priority last wins):**
+1. `settings.yaml` — server / model / database defaults
+2. `configs/config.toml` — hardware (GPIO, camera, relay); overrides YAML for those sections
+3. `.env` / environment variables — secrets
+
+**All config is accessed via `cfg` from `app/shared/config.py`:**
+
+```python
+from app.shared.config import cfg
+cfg.relay_red_pin        # → 21 (from config.toml [gpio.relay].led_red)
+cfg.gpio_trigger_pin     # → 24 (from config.toml [gpio.button].pin)
+cfg.button_debounce_ms   # → 50 (from config.toml [gpio.button].debounce_ms)
+cfg.model_path           # → "models/best.pt"
+cfg.api_key              # → from .env API_KEY
+```
+
+**Never hardcode pin numbers, file paths, or thresholds in logic files.**
+
+### GPIO pins (from `configs/config.toml`)
+
+| Signal | BCM GPIO | Physical Pin |
+|--------|----------|-------------|
+| Button trigger | 24 | 18 |
+| Relay Red | 21 | 40 |
+| Relay Yellow | 20 | 38 |
+| Relay Green | 12 | 32 |
+| TM1637 H0 CLK/DIO | 4 / 17 | 7 / 11 |
+| TM1637 H1 CLK/DIO | 27 / 22 | 13 / 15 |
+| TM1637 H2 CLK/DIO | 5 / 6 | 29 / 31 |
+| TM1637 H3 CLK/DIO | 13 / 19 | 33 / 35 |
+| TM1637 H4 CLK/DIO | 26 / 16 | 37 / 36 |
+| LCD SDA / SCL | 2 / 3 | 3 / 5 |
 
 ---
 
 ## Dependency Management
 
-Always use `uv`. Never run bare `pip install`.
+Always use `uv`. Never run `pip install`.
 
 ```toml
-# pyproject.toml structure
-[project.optional-dependencies]
-common = ["requests", "pydantic-settings", "loguru", "numpy"]
-pi     = ["picamera2", "RPi.GPIO", "raspberrypi-tm1637", "rpi-lcd"]
-server = ["fastapi", "uvicorn[standard]", "openvino", "opencv-python",
-          "sqlalchemy", "jinja2", "python-multipart"]
+# pyproject.toml extras
+common = ["requests", "pydantic-settings", "loguru", "numpy", "pyyaml", "python-dotenv"]
+server = ["fastapi", "uvicorn[standard]", "ultralytics", "opencv-python",
+          "sqlalchemy", "jinja2", "python-multipart", "Pillow", "psutil"]
+pi     = ["picamera2", "RPi.GPIO", "raspberrypi-tm1637", "rpi-lcd", "smbus2", "psutil"]
 ```
 
-**Install commands:**
-
 ```bash
-# On Ubuntu Server
+# Server
 uv sync --extra server --extra common
 
-# On Raspberry Pi
+# Pi
 uv sync --extra pi --extra common
 ```
 
 ---
 
-## Running the System
+## Image Processing Pipeline
 
-### Ubuntu Server
-
-```bash
-# 1. Start FastAPI (listens on localhost:8000)
-uv run main.py --role server
-
-# 2. In a separate terminal — start Cloudflare Tunnel
-cloudflared tunnel run <TUNNEL_NAME>
-# This exposes https://www.<YOUR_DOMAIN>.com → localhost:8000
-# Dashboard available at https://www.<YOUR_DOMAIN>.com/dashboard
+```
+Pi JPEG (4608 × 2592)
+  │
+  ▼ letterbox_white_padding()          # white (255,255,255) — NOT black
+  640 × 640 padded image
+  │
+  ▼ YOLO (PyTorch / ultralytics)
+  boxes [[x1,y1,x2,y2,conf,cls]] in 640-space
+  │
+  ▼ scale_coordinates()
+  boxes in 4608 × 2592 original space
+  │
+  ▼ GridConfig.find_slot_for_circle(cx, cy, radius)
+  slot_id per box ("A25_3") — majority overlap rule (>50%)
+  │
+  ▼ build_kmeans_centroids(color.json) → classify_sample(lab, centroids)
+  level 0-4 per slot (K-means nearest centroid in CIE Lab / Delta E76)
+  │
+  ▼ find_slot_conflicts() + validate_color_zones()
+  errors: {duplicate_slots, wrong_color_slots}
+  │
+  ▼ _render_annotated_canvas()
+  green box + red/green ring + PIL Thai text
+  │
+  ▼ save_visual_log()   →  logs/img/URINE_SCAN_<ts>.jpg
+  generate_visual_report() → bytes → Telegram sendPhoto
+  │
+  ▼ SQLite + return JSON
 ```
 
-> **Tunnel must be running before the Pi sends any requests.**
-> FastAPI itself only binds to `127.0.0.1:8000` (or `0.0.0.0:8000`). Cloudflare handles TLS and the public domain.
+### Why white padding?
+Bottle labels and liquid colours are dark/coloured on white backgrounds. Black padding creates false-contrast edges that confuse the model.
 
-### Raspberry Pi (Client)
-
-```bash
-uv run main.py --role client --server-url https://www.<YOUR_DOMAIN>.com
-```
-
-No port number needed — Cloudflare Tunnel handles routing on standard HTTPS port 443.
+### Why slot-based count?
+Raw YOLO box count is unreliable when a bottle is detected multiple times across different zones. `count` = number of unique physical slots occupied.
 
 ---
 
-## Configuration (`settings.yaml`)
+## Slot ID Format
 
-```yaml
-server:
-  host: "127.0.0.1" # Bind to localhost only — Cloudflare Tunnel handles external access
-  port: 8000
+`A{group}{slot}_{level}` — e.g. `A25_3`
+- Group: A1–A4 (4 groups, rows 1–3 / 4–6 / 7–9 / 10–12)
+- Slot: 1–9 (within a group)
+- Level: 0–4 (expected hydration level for that grid position)
 
-tunnel:
-  public_url: "https://www.<YOUR_DOMAIN>.com" # Cloudflare Tunnel public URL (no trailing slash)
-
-model:
-  path: "models/yolo26s_openvino"
-  input_size: 640 # YOLO input: 640x640
-  confidence_threshold: 0.5
-  iou_threshold: 0.45
-
-camera:
-  width: 4608
-  height: 2592
-
-gpio:
-  trigger_pin: 24 # BCM numbering
-
-display:
-  lcd_address: 0x27 # I2C address
-  tm1637_clk: 5
-  tm1637_dio: 6
-```
-
-All values must be loaded via `app/shared/config.py` (Pydantic Settings). Never hardcode these values in logic files.
+Physical base slot = everything before `_` → used for duplicate detection.
 
 ---
 
-## Image Processing Pipeline (Critical)
+## Validation Rules
 
-The model expects **640×640 white-padded** images, but the camera produces **4608×2592**.
+| Rule | Function | Trigger |
+|------|----------|---------|
+| Duplicate slot | `find_slot_conflicts(sample_hits)` | Same base slot assigned in >1 zone |
+| Wrong color zone | `validate_color_zones(sample_hits, classified_levels)` | Bottle's classified level ≠ slot's expected level |
 
-### `processor.py` must implement:
+Both functions live in `app/shared/processor.py`. Results are stored in `errors_json` (DB column).
 
-**`letterbox_image(img, target_size=640, pad_color=(255,255,255))`**
+---
 
-- Compute scale = `target_size / max(original_w, original_h)`
-- Resize proportionally
-- Pad **with white** (not black) to reach 640×640
-- Return: `(padded_img, scale, pad_x, pad_y)`
+## Database Schema
 
-**`scale_coords(boxes, scale, pad_x, pad_y)`**
+```python
+class AnalysisResult(Base):
+    __tablename__ = "results"
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp        = Column(DateTime, default=datetime.utcnow)
+    count            = Column(Integer)
+    color_json       = Column(String)    # JSON: {"L0": 3, "L1": 4, ...}
+    image_path       = Column(String)    # /static/captures/<uuid>.jpg
+    errors_json      = Column(String)    # JSON: {duplicate_slots, wrong_color_slots}
+    log_image_filename = Column(String)  # URINE_SCAN_<timestamp>.jpg
+    detailed_results = Column(String)    # JSON: per-slot {level, ok, wrong_color, duplicate}
+```
 
-- Inverse transform: `x_orig = (x_padded - pad_x) / scale`
-- Return bounding boxes in original 4608×2592 coordinate space
-
-> **Why white padding?** Bottle labels and liquid colors are dark/colored on white backgrounds. Black padding creates false contrast edges that confuse the model. White padding keeps the visual context natural.
+New columns are added automatically by `_migrate_db()` at server startup using `ALTER TABLE` — safe on existing databases.
 
 ---
 
@@ -176,250 +225,216 @@ The model expects **640×640 white-padded** images, but the camera produces **46
 
 ### `POST /analyze`
 
-**Request:** `multipart/form-data` with field `file` (JPEG image)
+**Auth:** `X-Auth-Token: <API_KEY>` header.
+**Request:** `multipart/form-data`, field `file` (JPEG).
 
-**Response:**
-
+**Success response:**
 ```json
 {
   "status": "success",
   "count": 12,
-  "color_summary": {
-    "yellow": 8,
-    "amber": 4
+  "total_physical_count": 12,
+  "summary": {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
+  "color_summary": {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
+  "errors": {
+    "duplicate_slots": [],
+    "wrong_color_slots": []
   },
-  "timestamp": "2025-01-15T10:30:00",
+  "detailed_results": {"A11_0": {"level": 0, "ok": true}},
+  "timestamp": "2026-03-24T10:30:00.000000",
   "image_id": "uuid-string"
 }
 ```
 
 **Error response:**
-
 ```json
-{
-  "status": "error",
-  "message": "Model inference failed: <reason>"
-}
+{"status": "error", "message": "Model inference failed: <reason>"}
 ```
+
+The Pi client reads: `total_physical_count` (fallback: `count`), `summary` (fallback: `color_summary`), `errors`.
 
 ---
 
-## Database Schema (SQLAlchemy)
+## Pi Client State Machine
 
-```python
-class AnalysisResult(Base):
-    __tablename__ = "results"
-    id         = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp  = Column(DateTime, default=datetime.utcnow)
-    count      = Column(Integer)
-    color_json = Column(String)   # JSON string of color_summary dict
-    image_path = Column(String)   # Relative path under app/web/static/
+### Relay (3-channel LED tower)
+
 ```
+Boot              → Green ON  (idle)
+Button pressed    → Yellow ON (processing) — stays until result
+Clean result      → Green ON  (idle)
+Any error         → Red ON    — stays until next button press
+```
+
+`_relay(GPIO, "idle" | "processing" | "error")` — turns one relay ON, others OFF, with 50 ms gap.
+Active-LOW: `GPIO.LOW` = relay energised (configurable via `cfg.relay_active_low`).
+
+### LCD + TM1637
+
+| State | LCD Line 1 | LCD Line 2 | TM1637 |
+|-------|-----------|-----------|--------|
+| Boot | `Urine Analyzer` | `Ready` | `0000` |
+| Capturing | `Capturing...` | — | `8888` |
+| Uploading | `Uploading...` | `Please wait` | spinning `-   ` |
+| Analyzing (after ~4 s) | `Analyzing...` | `AI running` | spinning |
+| OK result | `Count: N` | colour summary | `000N` |
+| Validation errors | `Count: N` | `Dup:1 WC:2` | `000N` |
+| Network error | `ERR: SRV OFF` | `Check network` | `----` |
+| Timeout | `ERR: TIMEOUT` | `Server slow` | `----` |
+| HTTP error | `ERR: HTTP N` | — | `----` |
+| Camera fail | `ERR: CAMERA` | `Capture failed` | `----` |
+| AI error | `ERR: AI FAIL` | — | `----` |
+
+TM1637 spinner uses a daemon thread (`_tm_spin`) cycling `["-   ", " -  ", "  - ", "   -"]` at 250 ms/frame. A separate daemon thread (`_lcd_delayed`) switches LCD to "Analyzing..." after 4 s if the POST has not yet returned.
+
+Request timeout: **60 seconds**. Latency is logged at INFO/SUCCESS level using `time.perf_counter()`.
 
 ---
 
-## LCD & TM1637 Display Logic
+## Visual Logging
 
-| State                  | LCD Line 1       | LCD Line 2     | TM1637 |
-| ---------------------- | ---------------- | -------------- | ------ |
-| Startup                | `Urine Analyzer` | `Ready`        | `----` |
-| Button pressed         | `Capturing...`   | _(blank)_      | `----` |
-| Waiting for server     | `Processing...`  | `Please wait`  | `----` |
-| Result received        | `Count: 12`      | `Y:8 A:4`      | `12`   |
-| Server unreachable     | `ERR: SRV OFF`   | `Check tunnel` | `Err`  |
-| Cloudflare 524 timeout | `ERR: TIMEOUT`   | `Retry later`  | `Err`  |
-| Inference failed       | `ERR: AI FAIL`   | _(blank)_      | `Err`  |
-| SSL error              | `ERR: SSL`       | `Check domain` | `Err`  |
+Every scan generates `logs/img/URINE_SCAN_<YYYYMMDD_HHMMSS>.jpg` via `save_visual_log()` in `app/shared/processor.py`. The internal helper `_render_annotated_canvas()` draws:
 
----
+1. Grey polygon outlines for all sample slots
+2. Amber outlines for reference-row slots
+3. **Green bounding rectangle** per detected bottle
+4. **Green ring** (ok) or **Red ring** (wrong color / duplicate) outside the box
+5. Single PIL pass for Thai slot labels + error annotations (BGR→RGB→BGR once)
 
-## Logging Conventions
-
-Use `loguru` exclusively. Never use `print()` or the stdlib `logging` module.
-
-```python
-from loguru import logger
-
-logger.info("Server started on {host}:{port}", host=cfg.server.host, port=cfg.server.port)
-logger.debug("Inference input shape: {shape}", shape=input_tensor.shape)
-logger.warning("Low confidence detection ignored: {score:.3f}", score=conf)
-logger.error("Failed to connect to server: {err}", err=str(e))
-logger.success("Analysis complete. Count={count}", count=result["count"])
-```
-
-Log format in `main.py`:
-
-```python
-logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="DEBUG")
-```
+Files older than 30 days are cleaned up at server startup.
 
 ---
 
-## Startup Lifecycle (Server)
+## Telegram Reports
+
+`_build_thai_caption()` + `_send_telegram_report()` are inlined in `server_app.py` (the `bot/telegram_bot.py` file is legacy).
+
+Report includes:
+- Thai Buddhist calendar year (Gregorian + 543)
+- Bottle count per level (L0–L4)
+- Error summary (only shown when errors present)
+- Dashboard URL
+
+Credentials come from `configs/config.toml` `[telegram]` section; overrideable via `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` environment variables / `.env`.
+
+---
+
+## Settings UI
+
+`GET /settings` → two-tab page (extends `layout.html`):
+
+| Tab | Function | Endpoint |
+|-----|----------|---------|
+| Grid Calibration | Upload image, click 4 corners on canvas, compute 195 slot polygons | `POST /settings/grid` |
+| Color Reference | Upload image with reference row, extract 15 Lab swatches, save centroids | `POST /settings/colors` |
+
+`app/web/static/settings.js` handles canvas interaction — collects 4 `[x,y]` click points, draws crosshairs, serialises to hidden form field.
+
+---
+
+## Startup Lifecycle
+
+### Server
 
 ```
 main.py --role server
   └── server_app.py: create_app()
-        ├── @app.on_event("startup")
-        │     ├── Load OpenVINO model (once, store in app.state.model)
-        │     ├── Create DB tables if not exist
-        │     └── logger.success("Model loaded. Ready.")
-        ├── POST /analyze  → infer → save DB → return JSON
-        └── GET  /dashboard → render Jinja2 template with last 50 results
+        ├── _migrate_db()          — ALTER TABLE for new columns (safe, idempotent)
+        ├── _cleanup_old_logs()    — delete log images older than 30 days
+        ├── _YoloInference.load()  — load best.pt once into app.state.yolo
+        ├── POST /analyze          → detect → classify → validate → log → DB → JSON
+        ├── GET  /dashboard        → last 50 results
+        ├── GET  /settings         → calibration UI
+        └── GET  /health           → {"status": "ok"}
 ```
 
----
-
-## Startup Lifecycle (Client)
+### Client
 
 ```
 main.py --role client
-  └── client_app.py: run()
-        ├── GPIO.setup(24, IN, pull_up_down=PUD_DOWN)
+  └── client_app.py: run_client(server_url)
+        ├── GPIO.setmode(BCM)
+        ├── GPIO.setup(trigger_pin, IN, PUD_UP)
+        ├── _relay_setup()         — set relay pins as OUTPUT, all OFF
         ├── LCD: "Urine Analyzer / Ready"
-        ├── TM1637: "----"
-        └── loop:
-              wait for GPIO24 rising edge
-              └── capture() → POST to /analyze → parse JSON → update displays
+        ├── TM1637: 0000
+        ├── Relay: Green ON
+        └── while True:
+              GPIO.wait_for_edge(FALLING, bouncetime=cfg.button_debounce_ms)
+              └── _on_button_press()
 ```
 
 ---
 
 ## Error Handling Rules
 
-1. **All `requests.post` calls** must catch these exceptions:
-   ```python
-   except requests.exceptions.ConnectionError:
-       lcd.show("ERR: SRV OFF", "Check tunnel")
-   except requests.exceptions.Timeout:
-       lcd.show("ERR: TIMEOUT", "Retry later")
-   except requests.exceptions.SSLError:
-       lcd.show("ERR: SSL", "Check domain")
-   ```
-   Never let any of these crash the main loop.
-2. **Model inference errors** must be caught and logged; return HTTP 500 with `{"status": "error", ...}`.
-3. **GPIO cleanup** must always run in a `finally` block: `GPIO.cleanup()`.
-4. **Camera resource** must be released in `finally`: `picam2.close()`.
-5. **DB session** must use context manager (`with Session() as session:`).
+1. `requests.post` must catch `ConnectionError`, `Timeout`, `HTTPError`, and bare `Exception` — never crash the main loop.
+2. Model inference errors → HTTP 500 `{"status": "error", "message": "..."}`.
+3. `GPIO.cleanup()` **must** run in a `finally` block.
+4. `_relay_all_off(GPIO)` must be called before `GPIO.cleanup()`.
+5. Camera (`picam2`) must be closed in a `try/finally` inside `_capture_image()`.
+6. DB sessions must use context manager (`with Session() as session:`).
+7. `_migrate_db()` wraps every `ALTER TABLE` in `try/except` — safe on repeated startup.
+
+---
+
+## Logging Conventions
+
+Use `loguru` exclusively. Never use `print()` or stdlib `logging`.
+
+```python
+from loguru import logger
+logger.info("...")
+logger.debug("...")
+logger.warning("...")
+logger.error("...")
+logger.success("...")
+logger.exception("...")   # includes traceback
+```
+
+Log format in `main.py`:
+```python
+logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="DEBUG")
+```
 
 ---
 
 ## What NOT To Do
 
-- ❌ Do not use `pip install` — always `uv add` or edit `pyproject.toml` then `uv sync`
-- ❌ Do not import `picamera2` or `RPi.GPIO` in `server_app.py`
-- ❌ Do not import `openvino` or `cv2` in `client_app.py`
-- ❌ Do not hardcode IP addresses, pin numbers, or file paths — read from `settings.yaml` via config
-- ❌ Do not use black padding in `letterbox_image` — must be white `(255, 255, 255)`
-- ❌ Do not run inference on the Pi — the Pi only sends the image, never processes it
-- ❌ Do not block the GPIO event loop with long `time.sleep()` calls
-- ❌ Do not store images outside `app/web/static/` on the server
-- ❌ Do not bind FastAPI to `0.0.0.0` in production — bind to `127.0.0.1` and let Cloudflare Tunnel handle external traffic
-- ❌ Do not hardcode `http://` for the server URL on the Pi — the Cloudflare Tunnel URL is always `https://`
-- ❌ Do not include a port number in `--server-url` when using Cloudflare Tunnel (Tunnel uses standard port 443)
+- Do not use `pip install` — always `uv add` or edit `pyproject.toml` then `uv sync`
+- Do not import `picamera2` or `RPi.GPIO` in `server_app.py`
+- Do not import `openvino` — the project uses PyTorch / ultralytics
+- Do not hardcode pin numbers, thresholds, or file paths — read from `cfg`
+- Do not use black padding in `letterbox_white_padding` — must be white `(255, 255, 255)`
+- Do not run inference on the Pi — the Pi only sends the image
+- Do not block the GPIO event loop with long `time.sleep()` — use daemon threads
+- Do not store images outside `app/web/static/captures/` (captured) or `logs/img/` (visual logs)
+- Do not include a port in `SERVER_URL` when using Cloudflare Tunnel (uses port 443)
+- Do not commit `.env`, `data/`, `models/`, `logs/`, `color.json`, or `grid_config.json`
+- Do not add `_render_annotated_canvas()` drawing logic into `server_app.py` — it belongs in `processor.py`
+- Do not re-implement Telegram in `bot/telegram_bot.py` — the active implementation is inlined in `server_app.py`
 
 ---
 
-## Testing Connection Before First Run
+## Key Functions Reference
 
-Run this script on the Pi to verify the Cloudflare Tunnel is reachable and measure latency:
-
-```bash
-uv run python -c "
-import requests, time, sys
-url = sys.argv[1].rstrip('/') + '/health'
-print(f'Testing: {url}')
-for i in range(5):
-    t = time.time()
-    try:
-        r = requests.get(url, timeout=10)   # Tunnel may add ~50-200ms latency
-        ms = (time.time() - t) * 1000
-        print(f'[{i+1}] {ms:.1f}ms — HTTP {r.status_code}')
-    except requests.exceptions.SSLError as e:
-        print(f'[{i+1}] SSL ERROR: {e}')
-    except requests.exceptions.ConnectionError as e:
-        print(f'[{i+1}] CONNECTION FAIL: {e}')
-    time.sleep(1)
-" https://www.<YOUR_DOMAIN>.com
-```
-
-**Expected:** latency 50–250ms (Cloudflare adds overhead vs LAN). If SSL error occurs, verify the domain is correctly configured in Cloudflare dashboard.
-
-Server must expose `GET /health` returning `{"status": "ok", "tunnel": "cloudflare"}`.
+| Function | File | Purpose |
+|----------|------|---------|
+| `letterbox_white_padding(img, 640)` | `app/shared/processor.py` | Resize + white-pad to 640×640 |
+| `scale_coordinates(boxes, scale, px, py)` | `app/shared/processor.py` | Map 640-space boxes back to original |
+| `find_slot_conflicts(sample_hits)` | `app/shared/processor.py` | Detect duplicate physical slots |
+| `validate_color_zones(sample_hits, levels)` | `app/shared/processor.py` | Detect wrong-level bottles |
+| `_render_annotated_canvas(img, validation_results, grid_cfg)` | `app/shared/processor.py` | Draw overlays, return 50%-scaled canvas |
+| `save_visual_log(img, validation_results, grid_cfg, path)` | `app/shared/processor.py` | Save annotated JPEG to disk |
+| `generate_visual_report(img, validation_results, grid_cfg)` | `app/shared/processor.py` | Return annotated JPEG bytes |
+| `GridConfig.find_slot_for_circle(cx, cy, r)` | `utils/grid.py` | Map detected circle to slot_id |
+| `GridConfig.get_reference_positions()` | `utils/grid.py` | Reference-row slot centres |
+| `parse_slot_id(slot_id)` | `utils/grid.py` | Extract group, slot, expected level |
+| `build_kmeans_centroids(path)` | `utils/color_analysis.py` | Load color.json → Lab centroids per class |
+| `classify_sample(lab, centroids)` | `utils/color_analysis.py` | K-means nearest centroid → level 0-4 |
+| `extract_bottle_color(frame, cx, cy, r)` | `utils/color_analysis.py` | Crop + Lab mean from bottle region |
+| `build_reference_baseline(frame, ref_pos, grid_cfg)` | `utils/color_analysis.py` | Live fallback baseline from frame |
 
 ---
 
-## Cloudflare Tunnel Setup (One-time)
-
-Cloudflare Tunnel replaces the need for port forwarding or exposing a public IP. The Pi connects to the server via a secure public HTTPS domain.
-
-### On Ubuntu Server — install and configure:
-
-```bash
-# Install cloudflared
-curl -L https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg
-# (follow Cloudflare docs for your distro)
-
-# Authenticate
-cloudflared tunnel login
-
-# Create tunnel
-cloudflared tunnel create urine-analysis
-
-# Create config at ~/.cloudflared/config.yml:
-```
-
-```yaml
-# ~/.cloudflared/config.yml
-tunnel: <TUNNEL_ID>
-credentials-file: /home/<USER>/.cloudflared/<TUNNEL_ID>.json
-
-ingress:
-  - hostname: www.<YOUR_DOMAIN>.com
-    service: http://127.0.0.1:8000
-  - service: http_status:404
-```
-
-```bash
-# Run tunnel (or set up as systemd service)
-cloudflared tunnel run urine-analysis
-```
-
-### Important behaviors to handle in code:
-
-| Scenario                                 | Behavior                                                               |
-| ---------------------------------------- | ---------------------------------------------------------------------- |
-| Tunnel is down                           | `requests` raises `ConnectionError` — show `ERR: SRV OFF` on LCD       |
-| Large image upload (4608×2592 JPEG ~3MB) | Set `requests.post(..., timeout=30)` — Tunnel adds latency             |
-| Cloudflare 524 timeout                   | Server took >100s — log warning, show `ERR: TIMEOUT` on LCD            |
-| SSL certificate                          | Handled automatically by Cloudflare — no manual cert management needed |
-
-### Timeout settings for `client_app.py`:
-
-```python
-# Cloudflare Tunnel adds ~100-300ms overhead vs LAN
-# Large JPEG upload needs generous timeout
-response = requests.post(
-    f"{cfg.tunnel.public_url}/analyze",
-    files={"file": image_bytes},
-    timeout=30       # 30s for upload + inference
-)
-```
-
----
-
-## Git Ignore Recommendations
-
-```gitignore
-data/
-models/
-logs/
-app/web/static/images/
-*.pyc
-__pycache__/
-.venv/
-```
-
----
-
-_Last updated: auto-generated by Claude from project spec. Keep this file in sync when architecture changes._
+_Keep this file in sync when architecture, pin assignments, or API contracts change._
