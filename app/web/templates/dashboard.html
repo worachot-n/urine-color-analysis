@@ -53,26 +53,34 @@
   /* Color summary cards */
   .color-cards { display: flex; flex-direction: column; gap: 10px; }
   .color-card {
-    background: #006064;
+    background: #112211;
+    border: 1px solid var(--border);
     border-radius: 10px;
-    display: flex; align-items: center;
-    padding: 12px 18px; gap: 0;
-    transition: background .15s;
+    display: flex; align-items: stretch;
+    overflow: hidden;
+    transition: filter .15s;
   }
-  .color-card:hover { background: #00737a; }
-  .cc-label {
-    background: rgba(0,0,0,.25); border-radius: 6px;
-    padding: 4px 14px; font-weight: 700; font-size: .95rem;
-    min-width: 72px; text-align: center; flex-shrink: 0;
+  .color-card:hover { filter: brightness(1.12); }
+  .cc-swatch {
+    width: 88px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 1rem;
+    letter-spacing: .02em;
   }
+  .cc-s0 { background: #C1B7A9; color: #3d2a18; }
+  .cc-s1 { background: #A39371; color: #3d2a18; }
+  .cc-s2 { background: #978365; color: #3d2a18; }
+  .cc-s3 { background: #755429; color: #ffffff; }
+  .cc-s4 { background: #50311B; color: #ffffff; }
   .cc-count {
     flex: 1; text-align: center;
     font-size: 2.2rem; font-weight: 800; line-height: 1;
+    padding: 14px 0; align-self: center;
   }
   .cc-unit {
     font-size: 1rem; font-weight: 600;
-    color: rgba(255,255,255,.8); flex-shrink: 0;
-    min-width: 40px; text-align: right;
+    color: rgba(255,255,255,.75); flex-shrink: 0;
+    min-width: 48px; text-align: center; align-self: center;
   }
 
   /* Error table */
@@ -123,7 +131,7 @@
       {% for i in range(5) %}
         {% set cnt = latest_colors.get("L" ~ i, 0) %}
         <div class="color-card">
-          <div class="cc-label">สี {{ i }}</div>
+          <div class="cc-swatch cc-s{{ i }}">สี {{ i }}</div>
           <div class="cc-count">{{ cnt }}</div>
           <div class="cc-unit">นาย</div>
         </div>

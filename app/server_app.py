@@ -489,7 +489,7 @@ app = FastAPI(title="Urine Analysis API", version="0.3.0", lifespan=_lifespan)
 # Static files (captured annotated images)
 _static_dir = Path(cfg.captures_dir)
 _static_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(_static_dir.parent.parent)), name="static")
+app.mount("/static", StaticFiles(directory=str(_static_dir.parent)), name="static")
 
 # Project-level assets (logo, favicon)
 _assets_dir = Path(__file__).resolve().parent.parent / "assets"
@@ -810,27 +810,33 @@ async def api_latest_capture():
 
 @app.get("/api/settings/grid-corners")
 async def api_grid_corners():
-    """Return the 4 corner coordinates from the current grid_config.json."""
+    """Return corners, grid_pts, and calibration_date from grid_config.json."""
     try:
         d = json.loads(Path("grid_config.json").read_text())
-        corners = d.get("system_metadata", {}).get("corners", None)
-        calibration_date = d.get("system_metadata", {}).get("calibration_date", None)
-        return {"corners": corners, "calibration_date": calibration_date}
+        meta = d.get("system_metadata", {})
+        return {
+            "corners":          meta.get("corners", None),
+            "calibration_date": meta.get("calibration_date", None),
+            "grid_pts":         meta.get("grid_pts", None),
+        }
     except Exception:
-        return {"corners": None, "calibration_date": None}
+        return {"corners": None, "calibration_date": None, "grid_pts": None}
 
 
 @app.post("/settings/grid")
 async def settings_grid(
     file: UploadFile = File(...),
     corners: str = Form(...),
+    grid_pts: str = Form(None),
 ):
     """
     Receive a calibration image + 4 corner coordinates, compute grid polygons,
     save grid_config.json.
 
-    corners: JSON string of [[x,y], [x,y], [x,y], [x,y]] — TL, TR, BR, BL
-             in original image pixel coordinates.
+    corners:  JSON [[x,y]×4] TL, TR, BR, BL in original image pixel coords.
+    grid_pts: Optional JSON [14][17][2] — manually-adjusted intersection points
+              from the web line editor.  When supplied, polygons are computed
+              directly from these points instead of uniform bilinear spacing.
     """
     try:
         corner_list = json.loads(corners)
@@ -839,9 +845,14 @@ async def settings_grid(
 
         from utils.calibration import _corners_to_grid_pts, compute_slot_polygons_from_grid, compute_sample_roi
 
-        grid_pts = _corners_to_grid_pts(corner_list)
-        reference_slots, slot_data = compute_slot_polygons_from_grid(grid_pts)
-        sample_roi = compute_sample_roi(grid_pts)
+        if grid_pts:
+            # Use manually-adjusted grid from web line editor
+            gp_np = np.array(json.loads(grid_pts), dtype=np.float64)
+        else:
+            gp_np = _corners_to_grid_pts(corner_list)
+
+        reference_slots, slot_data = compute_slot_polygons_from_grid(gp_np)
+        sample_roi = compute_sample_roi(gp_np)
 
         # Convert numpy arrays to serializable lists
         def _to_list(obj):
@@ -860,7 +871,7 @@ async def settings_grid(
                 "grid_dimensions": "16x14 lines",
                 "calibration_date": calibration_date,
                 "corners":         corner_list,
-                "grid_pts":        _to_list(grid_pts),
+                "grid_pts":        _to_list(gp_np),
                 "sample_roi":      sample_roi,
             },
             "reference_row": {

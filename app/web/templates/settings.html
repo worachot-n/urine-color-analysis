@@ -152,11 +152,11 @@
     </div>
 
     <div class="instr-box">
-      <p>Step 1: Choose an image source above.</p>
-      <p>Step 2: Click the 4 outer corners of the grid in order:</p>
-      <p>&nbsp;&nbsp;&nbsp;&nbsp;Top-Left → Top-Right → Bottom-Right → Bottom-Left.</p>
-      <p>Step 3: Drag grid lines to fine-tune if needed.</p>
-      <p>Step 4: Click Save Calibration.</p>
+      <p><b>Step 1:</b> เลือกภาพจากแหล่งด้านบน</p>
+      <p><b>Step 2:</b> คลิก 4 มุมตามลำดับ: TL → TR → BR → BL</p>
+      <p><b>Step 3:</b> นำเมาส์วางบนเส้นเพื่อเปลี่ยนสี และลากเพื่อปรับตำแหน่งแนวตั้ง/แนวนอน</p>
+      <p><b>Step 4:</b> ลากมุม (TL/TR/BR/BL) เพื่อปรับรูปทรงตารางทั้งหมด</p>
+      <p><b>Step 5:</b> กด "บันทึกค่าตาราง"</p>
     </div>
 
     <div class="section-label">ตาราง</div>
@@ -176,15 +176,25 @@
 <script>
 'use strict';
 
-let corners = [], imgW = 0, imgH = 0, currentImgSrc = null;
-const overlay = document.getElementById('overlayCanvas');
-const oc      = overlay.getContext('2d');
-const wrap    = document.getElementById('canvasWrap');
-const statusEl = document.getElementById('statusMsg');
+/* ── State ─────────────────────────────────────────────────────────────── */
+let corners       = [];     // [[ox,oy]×4] TL TR BR BL in image coords
+let gridPtsArr    = null;   // [NH][NV][2] full grid, null until 4 corners set
+let hoveredLine   = null;   // {type:'hline'|'vline'|'corner', idx} | null
+let dragState     = null;   // {type, idx, lastDX, lastDY} | null
+let imgW = 0, imgH = 0, currentImgSrc = null;
+
+const overlay   = document.getElementById('overlayCanvas');
+const oc        = overlay.getContext('2d');
+const wrap      = document.getElementById('canvasWrap');
+const statusEl  = document.getElementById('statusMsg');
+
 const CORNER_COLORS = ['#2196f3','#4caf50','#ff9800','#f44336'];
 const CORNER_LABELS = ['TL','TR','BR','BL'];
 const NH = 14, NV = 17;
+const HOVER_THRESH   = 12;   // display-px hit distance for lines
+const CORNER_THRESH  = 18;   // display-px hit distance for corner handles
 
+/* ── Canvas sync ───────────────────────────────────────────────────────── */
 function syncOverlay() {
   const img = document.getElementById('bgImg');
   if (!img) return;
@@ -197,136 +207,342 @@ function syncOverlay() {
 }
 window.addEventListener('resize', () => { syncOverlay(); redraw(); });
 
-function loadImage(src) {
-  currentImgSrc = src; corners = [];
-  let img = document.getElementById('bgImg');
-  const ph = document.getElementById('placeholder');
-  if (ph) ph.remove();
-  if (!img) {
-    img = document.createElement('img');
-    img.id = 'bgImg'; img.style.width = '100%'; img.style.display = 'block';
-    wrap.insertBefore(img, overlay);
-  }
-  img.onload = () => { syncOverlay(); redraw(); };
-  img.src = src; status('');
-}
-
+/* ── Coordinate helpers ────────────────────────────────────────────────── */
+function toD([ox,oy]) { return [ox*(overlay.width/imgW),  oy*(overlay.height/imgH)]; }
+function toO(dx,dy)   { return [dx*(imgW/overlay.width),  dy*(imgH/overlay.height)]; }
 function lerp2([ax,ay],[bx,by],t) { return [ax+t*(bx-ax), ay+t*(by-ay)]; }
-function gridPts(c) {
-  const [tl,tr,br,bl] = c, pts = [];
-  for (let r=0;r<NH;r++) {
-    const row=[], tR=r/(NH-1);
-    for (let col=0;col<NV;col++) {
-      const tC=col/(NV-1);
+
+/* ── Grid initialisation ───────────────────────────────────────────────── */
+function initGrid() {
+  if (corners.length !== 4) { gridPtsArr = null; return; }
+  const [tl,tr,br,bl] = corners;
+  gridPtsArr = [];
+  for (let r = 0; r < NH; r++) {
+    const row = [], tR = r / (NH-1);
+    for (let c = 0; c < NV; c++) {
+      const tC = c / (NV-1);
       row.push(lerp2(lerp2(tl,tr,tC), lerp2(bl,br,tC), tR));
     }
-    pts.push(row);
+    gridPtsArr.push(row);
   }
-  return pts;
 }
-function toD([ox,oy]) { return [ox*(overlay.width/imgW), oy*(overlay.height/imgH)]; }
-function toO(dx,dy)   { return [dx*(imgW/overlay.width), dy*(imgH/overlay.height)]; }
 
+/* ── Geometry ──────────────────────────────────────────────────────────── */
+function segDist(px,py,x1,y1,x2,y2) {
+  const dx=x2-x1, dy=y2-y1, len2=dx*dx+dy*dy;
+  if (len2===0) return Math.hypot(px-x1,py-y1);
+  const t=Math.max(0,Math.min(1,((px-x1)*dx+(py-y1)*dy)/len2));
+  return Math.hypot(px-(x1+t*dx), py-(y1+t*dy));
+}
+
+function nearestLine(mx,my) {
+  let best={type:null,idx:-1,dist:Infinity};
+  if (!gridPtsArr) return best;
+  for (let r=0;r<NH;r++) {
+    for (let c=0;c<NV-1;c++) {
+      const [x1,y1]=toD(gridPtsArr[r][c]), [x2,y2]=toD(gridPtsArr[r][c+1]);
+      const d=segDist(mx,my,x1,y1,x2,y2);
+      if (d<best.dist) best={type:'hline',idx:r,dist:d};
+    }
+  }
+  for (let c=0;c<NV;c++) {
+    for (let r=0;r<NH-1;r++) {
+      const [x1,y1]=toD(gridPtsArr[r][c]), [x2,y2]=toD(gridPtsArr[r+1][c]);
+      const d=segDist(mx,my,x1,y1,x2,y2);
+      if (d<best.dist) best={type:'vline',idx:c,dist:d};
+    }
+  }
+  return best;
+}
+
+function nearestCorner(mx,my) {
+  let best={idx:-1,dist:Infinity};
+  corners.forEach(([ox,oy],i)=>{
+    const [cx,cy]=toD([ox,oy]), d=Math.hypot(mx-cx,my-cy);
+    if (d<best.dist) best={idx:i,dist:d};
+  });
+  return best;
+}
+
+function getCanvasPos(e) {
+  const r=overlay.getBoundingClientRect();
+  return [(e.clientX-r.left)*(overlay.width/r.width),
+          (e.clientY-r.top) *(overlay.height/r.height)];
+}
+
+/* ── Mouse events ──────────────────────────────────────────────────────── */
+overlay.addEventListener('mousedown', function(e) {
+  const [mx,my] = getCanvasPos(e);
+
+  // Priority 1 — corner handles (always draggable)
+  if (corners.length > 0) {
+    const cn = nearestCorner(mx,my);
+    if (cn.dist < CORNER_THRESH) {
+      dragState = {type:'corner', idx:cn.idx, lastDX:mx, lastDY:my};
+      return;
+    }
+  }
+
+  // Priority 2 — grid lines (only when grid exists)
+  if (gridPtsArr) {
+    const ln = nearestLine(mx,my);
+    if (ln.dist < HOVER_THRESH) {
+      dragState = {type:ln.type, idx:ln.idx, lastDX:mx, lastDY:my};
+      return;
+    }
+  }
+
+  // Priority 3 — add a new corner (only before 4)
+  if (!currentImgSrc || corners.length >= 4) return;
+  corners.push(toO(mx,my));
+  if (corners.length === 4) {
+    initGrid();
+    status('4 มุมครบแล้ว — ลากเส้นหรือมุมเพื่อปรับ แล้วกด "บันทึกค่าตาราง"');
+  } else {
+    status(`เลือกมุม ${corners.length}/4`);
+  }
+  redraw();
+});
+
+overlay.addEventListener('mousemove', function(e) {
+  const [mx,my] = getCanvasPos(e);
+
+  if (dragState) {
+    const ddx=mx-dragState.lastDX, ddy=my-dragState.lastDY;
+    dragState.lastDX=mx; dragState.lastDY=my;
+
+    if (dragState.type==='corner') {
+      corners[dragState.idx] = toO(mx,my);
+      initGrid();                           // recompute whole grid from 4 corners
+    } else if (dragState.type==='hline') {
+      const dyI=ddy*(imgH/overlay.height);
+      for (let c=0;c<NV;c++) gridPtsArr[dragState.idx][c][1]+=dyI;
+    } else {                                // vline
+      const dxI=ddx*(imgW/overlay.width);
+      for (let r=0;r<NH;r++) gridPtsArr[r][dragState.idx][0]+=dxI;
+    }
+    redraw(); return;
+  }
+
+  // Hover hit-test
+  const prev = JSON.stringify(hoveredLine);
+  const cn = nearestCorner(mx,my);
+  if (cn.dist < CORNER_THRESH) {
+    hoveredLine = {type:'corner', idx:cn.idx};
+    overlay.style.cursor = 'move';
+  } else if (gridPtsArr) {
+    const ln = nearestLine(mx,my);
+    if (ln.dist < HOVER_THRESH) {
+      hoveredLine = {type:ln.type, idx:ln.idx};
+      overlay.style.cursor = ln.type==='hline' ? 'ns-resize' : 'ew-resize';
+    } else {
+      hoveredLine = null;
+      overlay.style.cursor = corners.length >= 4 ? 'default' : 'crosshair';
+    }
+  } else {
+    hoveredLine = null;
+    overlay.style.cursor = 'crosshair';
+  }
+  if (JSON.stringify(hoveredLine) !== prev) redraw();
+});
+
+overlay.addEventListener('mouseup',    () => { dragState = null; });
+overlay.addEventListener('mouseleave', () => { dragState = null; });
+
+/* ── Redraw ────────────────────────────────────────────────────────────── */
 function redraw() {
   oc.clearRect(0,0,overlay.width,overlay.height);
   if (!overlay.width) return;
-  if (corners.length===4) {
-    const pts = gridPts(corners);
-    oc.strokeStyle='rgba(255,255,255,0.45)'; oc.lineWidth=0.8;
-    for (let r=0;r<NH;r++) { oc.beginPath(); pts[r].forEach(([ox,oy],c)=>{ const [x,y]=toD([ox,oy]); c?oc.lineTo(x,y):oc.moveTo(x,y); }); oc.stroke(); }
-    for (let c=0;c<NV;c++) { oc.beginPath(); pts.forEach((row,r)=>{ const [x,y]=toD(row[c]); r?oc.lineTo(x,y):oc.moveTo(x,y); }); oc.stroke(); }
+
+  if (gridPtsArr) {
+    // Horizontal lines
+    for (let r=0;r<NH;r++) {
+      const isHov  = hoveredLine?.type==='hline' && hoveredLine.idx===r;
+      const isDrag = dragState?.type ==='hline' && dragState.idx ===r;
+      oc.strokeStyle = isDrag ? '#00ffff' : isHov ? '#c8a84b' : 'rgba(255,255,255,0.4)';
+      oc.lineWidth   = (isHov||isDrag) ? 2.5 : 0.8;
+      oc.beginPath();
+      gridPtsArr[r].forEach(([ox,oy],c)=>{
+        const[x,y]=toD([ox,oy]); c?oc.lineTo(x,y):oc.moveTo(x,y);
+      });
+      oc.stroke();
+    }
+    // Vertical lines
+    for (let c=0;c<NV;c++) {
+      const isHov  = hoveredLine?.type==='vline' && hoveredLine.idx===c;
+      const isDrag = dragState?.type ==='vline' && dragState.idx ===c;
+      oc.strokeStyle = isDrag ? '#00ffff' : isHov ? '#c8a84b' : 'rgba(255,255,255,0.4)';
+      oc.lineWidth   = (isHov||isDrag) ? 2.5 : 0.8;
+      oc.beginPath();
+      gridPtsArr.forEach((row,r)=>{
+        const[x,y]=toD(row[c]); r?oc.lineTo(x,y):oc.moveTo(x,y);
+      });
+      oc.stroke();
+    }
+    // Dashed border outline
     oc.strokeStyle='#fff'; oc.lineWidth=1.5; oc.setLineDash([6,4]);
-    oc.beginPath(); corners.forEach(([ox,oy],i)=>{ const [x,y]=toD([ox,oy]); i?oc.lineTo(x,y):oc.moveTo(x,y); }); oc.closePath(); oc.stroke(); oc.setLineDash([]);
+    oc.beginPath();
+    corners.forEach(([ox,oy],i)=>{const[x,y]=toD([ox,oy]);i?oc.lineTo(x,y):oc.moveTo(x,y);});
+    oc.closePath(); oc.stroke(); oc.setLineDash([]);
   }
+
+  // Corner handles
   corners.forEach(([ox,oy],i)=>{
     const [dx,dy]=toD([ox,oy]), col=CORNER_COLORS[i];
-    oc.strokeStyle=col; oc.lineWidth=2;
-    oc.beginPath(); oc.moveTo(dx-16,dy); oc.lineTo(dx+16,dy); oc.moveTo(dx,dy-16); oc.lineTo(dx,dy+16); oc.stroke();
-    oc.fillStyle=col; oc.beginPath(); oc.arc(dx,dy,6,0,2*Math.PI); oc.fill();
-    oc.fillStyle='#fff'; oc.font='bold 12px Sarabun,sans-serif'; oc.fillText(CORNER_LABELS[i],dx+9,dy-6);
+    const isHov  = hoveredLine?.type==='corner' && hoveredLine.idx===i;
+    const isDrag = dragState?.type ==='corner' && dragState.idx ===i;
+    const radius = isDrag ? 9 : isHov ? 8 : 6;
+    oc.strokeStyle = isDrag ? '#00ffff' : isHov ? '#ffffff' : col;
+    oc.lineWidth   = (isHov||isDrag) ? 3 : 2;
+    oc.beginPath(); oc.moveTo(dx-18,dy); oc.lineTo(dx+18,dy);
+                    oc.moveTo(dx,dy-18); oc.lineTo(dx,dy+18); oc.stroke();
+    oc.fillStyle = isDrag ? '#00ffff' : col;
+    oc.beginPath(); oc.arc(dx,dy,radius,0,2*Math.PI); oc.fill();
+    oc.fillStyle='#fff'; oc.font='bold 12px Sarabun,sans-serif';
+    oc.fillText(CORNER_LABELS[i], dx+10, dy-8);
   });
-  if (corners.length>0 && corners.length<4) {
-    oc.fillStyle='rgba(255,255,255,.7)'; oc.font='13px Sarabun,sans-serif';
-    oc.fillText(`คลิกมุม ${CORNER_LABELS[corners.length]} (${corners.length+1}/4)`, 10, overlay.height-12);
+
+  // Prompt when still picking corners
+  if (corners.length > 0 && corners.length < 4) {
+    oc.fillStyle='rgba(255,255,255,.75)'; oc.font='13px Sarabun,sans-serif';
+    oc.fillText(`คลิกมุม ${CORNER_LABELS[corners.length]} (${corners.length+1}/4)`,
+                10, overlay.height-12);
   }
 }
 
-overlay.addEventListener('click', function(e) {
-  if (!currentImgSrc||corners.length>=4) return;
-  const r=overlay.getBoundingClientRect();
-  const sx=overlay.width/r.width, sy=overlay.height/r.height;
-  corners.push(toO((e.clientX-r.left)*sx, (e.clientY-r.top)*sy));
-  redraw();
-  status(corners.length===4 ? '4 มุมครบแล้ว — กด "บันทึกค่าตาราง"' : `เลือกมุม ${corners.length}/4`);
-});
+/* ── Image loading ─────────────────────────────────────────────────────── */
+function loadImage(src) {
+  currentImgSrc=src; corners=[]; gridPtsArr=null; hoveredLine=null; dragState=null;
+  let img=document.getElementById('bgImg');
+  const ph=document.getElementById('placeholder');
+  if (ph) ph.remove();
+  if (!img) {
+    img=document.createElement('img');
+    img.id='bgImg'; img.style.width='100%'; img.style.display='block';
+    wrap.insertBefore(img,overlay);
+  }
+  img.onload=()=>{ syncOverlay(); redraw(); };
+  img.src=src; status('');
+}
 
-document.getElementById('uploadBtn').addEventListener('click', ()=>document.getElementById('fileInput').click());
-document.getElementById('fileInput').addEventListener('change', function(){ if(this.files[0]){const r=new FileReader();r.onload=e=>loadImage(e.target.result);r.readAsDataURL(this.files[0]);} });
+/* ── Button handlers ───────────────────────────────────────────────────── */
+document.getElementById('uploadBtn').addEventListener('click',
+  ()=>document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', function(){
+  if(this.files[0]){const r=new FileReader();r.onload=e=>loadImage(e.target.result);r.readAsDataURL(this.files[0]);}
+});
 
 document.getElementById('captureBtn').addEventListener('click', async function(){
   this.disabled=true; status('กำลังโหลดภาพล่าสุด…');
-  try { const d=await (await fetch('/api/latest-capture')).json(); d.url?loadImage(d.url):status('ไม่พบภาพ'); } catch(e){status('ข้อผิดพลาด: '+e.message);}
+  try {
+    const d=await(await fetch('/api/latest-capture')).json();
+    d.url?loadImage(d.url):status('ไม่พบภาพ');
+  } catch(e){status('ข้อผิดพลาด: '+e.message);}
   this.disabled=false;
 });
 
 document.getElementById('restoreBtn').addEventListener('click', async function(){
   this.disabled=true; status('กำลังโหลดค่าตาราง…');
   try {
-    const d=await (await fetch('/api/settings/grid-corners')).json();
-    if(d.corners?.length===4){corners=d.corners.map(([x,y])=>[x,y]);syncOverlay();redraw();
-      if(d.calibration_date){const [y,m,dd]=d.calibration_date.split('-').map(Number);document.getElementById('gridTs').textContent=`ล่าสุด: ${dd}/${m}/${y+543}`;}
-      status('โหลดค่าตารางสำเร็จ');}else{status('ยังไม่มีค่าตารางที่บันทึกไว้');}
+    const d=await(await fetch('/api/settings/grid-corners')).json();
+    if (d.corners?.length===4) {
+      corners=d.corners.map(([x,y])=>[x,y]);
+      syncOverlay();
+      if (d.grid_pts) {
+        gridPtsArr = d.grid_pts;            // restore exact adjusted grid
+      } else {
+        initGrid();                         // fall back to uniform spacing
+      }
+      redraw();
+      if (d.calibration_date) {
+        const [y,m,dd]=d.calibration_date.split('-').map(Number);
+        document.getElementById('gridTs').textContent=`ล่าสุด: ${dd}/${m}/${y+543}`;
+      }
+      status('โหลดค่าตารางสำเร็จ');
+    } else {
+      status('ยังไม่มีค่าตารางที่บันทึกไว้');
+    }
   } catch(e){status('ข้อผิดพลาด: '+e.message);}
   this.disabled=false;
 });
 
-document.getElementById('resetGridBtn').addEventListener('click', ()=>{corners=[];redraw();status('รีเซ็ตแล้ว — คลิก 4 มุมอีกครั้ง');});
+document.getElementById('resetGridBtn').addEventListener('click', ()=>{
+  corners=[]; gridPtsArr=null; hoveredLine=null; dragState=null;
+  overlay.style.cursor='crosshair'; redraw();
+  status('รีเซ็ตแล้ว — คลิก 4 มุมอีกครั้ง');
+});
 
 document.getElementById('saveGridBtn').addEventListener('click', async function(){
   if(corners.length!==4){status('กรุณาเลือก 4 มุมก่อน');return;}
   this.disabled=true; status('กำลังบันทึก…');
   try {
-    const blob=await getBlob(); if(!blob){status('ไม่พบภาพ');this.disabled=false;return;}
-    const fd=new FormData(); fd.append('file',blob,'calibration.jpg'); fd.append('corners',JSON.stringify(corners));
-    const resp=await fetch('/settings/grid',{method:'POST',body:fd}); const d=await resp.json();
-    if(resp.ok){const [y,m,dd]=d.calibration_date.split('-').map(Number);document.getElementById('gridTs').textContent=`ล่าสุด: ${dd}/${m}/${y+543}`;status('บันทึกสำเร็จ ✓');}
-    else{status('เกิดข้อผิดพลาด: '+(d.detail||'?'));}
-  }catch(e){status('เกิดข้อผิดพลาด: '+e.message);}
+    const blob=await getBlob();
+    if(!blob){status('ไม่พบภาพ');this.disabled=false;return;}
+    const fd=new FormData();
+    fd.append('file',blob,'calibration.jpg');
+    fd.append('corners',JSON.stringify(corners));
+    if (gridPtsArr) fd.append('grid_pts',JSON.stringify(gridPtsArr));
+    const resp=await fetch('/settings/grid',{method:'POST',body:fd});
+    const d=await resp.json();
+    if(resp.ok){
+      const[y,m,dd]=d.calibration_date.split('-').map(Number);
+      document.getElementById('gridTs').textContent=`ล่าสุด: ${dd}/${m}/${y+543}`;
+      status('บันทึกสำเร็จ ✓');
+    } else {
+      status('เกิดข้อผิดพลาด: '+(d.detail||'?'));
+    }
+  } catch(e){status('เกิดข้อผิดพลาด: '+e.message);}
   this.disabled=false;
 });
 
-document.getElementById('resetColorBtn').addEventListener('click', ()=>status('รีเซ็ตค่าสี — กด "บันทึกค่าสี" เพื่อดึงใหม่'));
+document.getElementById('resetColorBtn').addEventListener('click',
+  ()=>status('รีเซ็ตค่าสี — กด "บันทึกค่าสี" เพื่อดึงใหม่'));
 
 document.getElementById('saveColorBtn').addEventListener('click', async function(){
   if(!currentImgSrc){status('กรุณาโหลดภาพก่อน');return;}
   this.disabled=true; status('กำลังดึงสีอ้างอิง…');
   try {
-    const blob=await getBlob(); if(!blob){status('ไม่พบภาพ');this.disabled=false;return;}
+    const blob=await getBlob();
+    if(!blob){status('ไม่พบภาพ');this.disabled=false;return;}
     const fd=new FormData(); fd.append('file',blob,'ref.jpg');
-    const resp=await fetch('/settings/colors',{method:'POST',body:fd}); const d=await resp.json();
-    if(resp.ok){updateColorTable(d.swatches||[]);status(`บันทึกค่าสีสำเร็จ ✓ (${d.swatches?.length||0} ระดับ)`);}
-    else{status('เกิดข้อผิดพลาด: '+(d.detail||'?'));}
-  }catch(e){status('เกิดข้อผิดพลาด: '+e.message);}
+    const resp=await fetch('/settings/colors',{method:'POST',body:fd});
+    const d=await resp.json();
+    if(resp.ok){
+      updateColorTable(d.swatches||[]);
+      status(`บันทึกค่าสีสำเร็จ ✓ (${d.swatches?.length||0} ระดับ)`);
+    } else {
+      status('เกิดข้อผิดพลาด: '+(d.detail||'?'));
+    }
+  } catch(e){status('เกิดข้อผิดพลาด: '+e.message);}
   this.disabled=false;
 });
 
+/* ── Utilities ─────────────────────────────────────────────────────────── */
 function updateColorTable(swatches) {
   const hCells=document.getElementById('colorHeaderRow').querySelectorAll('th');
-  swatches.forEach(s=>{ const lvl=parseInt(s.level); if(hCells[lvl]) hCells[lvl].innerHTML=`<span class="color-swatch" style="background:${s.hex}"></span>${s.hex}`; });
+  swatches.forEach(s=>{
+    const lvl=parseInt(s.level);
+    if(hCells[lvl]) hCells[lvl].innerHTML=
+      `<span class="color-swatch" style="background:${s.hex}"></span>${s.hex}`;
+  });
 }
 
 async function getBlob() {
   const fi=document.getElementById('fileInput');
   if(fi.files[0]) return fi.files[0];
   if(!currentImgSrc) return null;
-  try { return await (await fetch(currentImgSrc)).blob(); } catch { return null; }
+  try { return await(await fetch(currentImgSrc)).blob(); } catch { return null; }
 }
 
 function status(msg){ statusEl.textContent=msg; }
 
 window.addEventListener('load', function(){
   const img=document.getElementById('bgImg');
-  if(img){ if(img.complete){syncOverlay();redraw();}else{img.onload=()=>{syncOverlay();redraw();};} currentImgSrc=img.src; }
+  if(img){
+    if(img.complete){syncOverlay();redraw();}
+    else{img.onload=()=>{syncOverlay();redraw();};}
+    currentImgSrc=img.src;
+  }
 });
 </script>
 {% endblock %}
