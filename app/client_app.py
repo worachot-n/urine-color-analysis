@@ -86,7 +86,7 @@ def run_client(server_url: str) -> None:
 
     # ── Step 3: Clear any stale edge-detection from a previous crashed run ─
     # Without this, wait_for_edge with bouncetime raises "Error waiting for edge"
-    # because /sys/class/gpio/gpioN/edge is already exported from the old process.
+    # because /sys/class/gpio/gpioN/edge is still exported from the old process.
     try:
         GPIO.remove_event_detect(cfg.gpio_trigger_pin)
     except Exception:
@@ -95,9 +95,27 @@ def run_client(server_url: str) -> None:
     logger.info("WAITING for button press on GPIO{}…", cfg.gpio_trigger_pin)
 
     # ── Step 4: Blocking service loop ─────────────────────────────────────
-    while True:
-        GPIO.wait_for_edge(cfg.gpio_trigger_pin, GPIO.FALLING, bouncetime=500)
-        _on_button_press(lcd, tm, GPIO, server_url)
+    try:
+        while True:
+            channel = GPIO.wait_for_edge(
+                cfg.gpio_trigger_pin, GPIO.FALLING, bouncetime=500
+            )
+            if channel is None:
+                continue   # spurious wakeup / timeout — go back to waiting
+            _on_button_press(lcd, tm, GPIO, server_url)
+    except KeyboardInterrupt:
+        logger.info("Client stopping…")
+    finally:
+        # Relays off + drop TM1637 ref so TM1637.__del__ fires HERE (BCM mode still
+        # active) rather than later when main.py has already called GPIO.cleanup().
+        _relay_all_off(GPIO)
+        try:
+            import gc
+            tm = None  # noqa: F841
+            gc.collect()
+        except Exception:
+            pass
+        # NOTE: GPIO.cleanup() is NOT called here — main.py owns that.
 
 
 # ─── Button handler ───────────────────────────────────────────────────────────
