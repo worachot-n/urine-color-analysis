@@ -140,11 +140,13 @@ imgsz               = 640
 conf_threshold      = 0.40
 iou_threshold       = 0.45       # NMS IoU threshold
 augment             = false      # TTA disabled — lowers confidence scores on fixed-angle camera
-snapshots           = 3          # Number of consecutive snapshots per trigger
-snapshot_delay_ms   = 200        # Milliseconds between snapshots
-exposure_variation  = 0.15       # ±15% ExposureTime variation across snapshots
-consensus_min_votes = 2          # Min snapshots a box must appear in
+snapshots           = 1          # One snapshot is sufficient for YOLO bottle detection
+snapshot_delay_ms   = 200        # Milliseconds between snapshots (unused with snapshots=1)
+exposure_variation  = 0.15       # ±15% ExposureTime variation (unused with snapshots=1)
+consensus_min_votes = 1          # Must match snapshots value
 consensus_iou       = 0.50       # IoU threshold for matching boxes across snapshots
+box_min_px          = 140        # Min box width & height in 640px space (filters noise)
+box_max_px          = 200        # Max box width & height in 640px space (filters false positives)
 slot_max_dist_ratio = 0.60       # Max distance from slot center as fraction of slot radius
 clahe_clip_limit    = 2.0        # CLAHE clip for pre-inference enhancement
 clahe_tile_size     = 8          # CLAHE tile grid size (NxN)

@@ -62,8 +62,11 @@ logger = setup_logger()
 # Locked camera controls populated once during AWB lock step
 _camera_controls: dict = {}
 
-# Lazy-loaded YOLO detector (loads model on first scan)
+# Lazy-loaded YOLO detector (pre-loaded at startup — see main())
 _yolo_detector: "YoloBottleDetector | None" = None
+
+# Prevents overlapping scan cycles if a previous scan is still running
+_scan_in_progress = threading.Event()
 
 
 def _get_yolo() -> YoloBottleDetector:
@@ -313,6 +316,17 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
 
     Returns True on success, False on timeout or error.
     """
+    if _scan_in_progress.is_set():
+        logger.warning("Scan already in progress — ignoring button press")
+        return False
+    _scan_in_progress.set()
+    try:
+        return _run_scan_cycle_inner(grid_cfg, web_ip=web_ip)
+    finally:
+        _scan_in_progress.clear()
+
+
+def _run_scan_cycle_inner(grid_cfg, web_ip: str = ""):
     try:
         led_yellow()
         lcd_clear()
@@ -589,6 +603,19 @@ def main():
         except Exception as e:
             logger.error("Cannot load grid after calibration: %s", e)
             sys.exit(1)
+
+    # ---- Pre-load YOLO model so first scan doesn't hit the watchdog ----
+    logger.info("Pre-loading YOLO model...")
+    lcd_clear()
+    lcd_message("Loading model...", 1)
+    try:
+        _get_yolo()
+        logger.info("YOLO model ready")
+        lcd_message("Model ready", 1)
+    except Exception as e:
+        logger.error("YOLO model load failed: %s", e)
+        lcd_message("Model FAILED", 1)
+    time.sleep(1)
 
     # ---- Wait for first button press then enter main loop ----
     # Show WiFi status on LCD so user can confirm connectivity before scanning

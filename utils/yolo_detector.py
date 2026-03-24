@@ -30,6 +30,7 @@ from configs.config import (
     YOLO_IMGSZ, YOLO_CONF_THRESHOLD, YOLO_IOU_THRESHOLD, YOLO_AUGMENT,
     YOLO_CONSENSUS_MIN, YOLO_CONSENSUS_IOU, YOLO_SLOT_MAX_DIST,
     YOLO_CLAHE_CLIP, YOLO_CLAHE_TILE, YOLO_ROI_PADDING,
+    YOLO_BOX_MIN_PX, YOLO_BOX_MAX_PX,
     SAMPLE_ROI_TOP, SAMPLE_ROI_BOTTOM, SAMPLE_ROI_LEFT, SAMPLE_ROI_RIGHT,
     IMG_DIR,
 )
@@ -113,13 +114,22 @@ class YoloBottleDetector:
 
         boxes = []
         for r in results:
+            if not (hasattr(r, 'boxes') and r.boxes is not None):
+                continue
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
+                # Size filter in 640px padded space — same space as Roboflow training images
+                # Removes noise (too small) and false positives (too large)
+                bw = x2 - x1
+                bh = y2 - y1
+                if not (YOLO_BOX_MIN_PX < bw < YOLO_BOX_MAX_PX and
+                        YOLO_BOX_MIN_PX < bh < YOLO_BOX_MAX_PX):
+                    continue
                 # Inverse-transform: padded-640 space → original frame space
                 cx   = ((x1 + x2) / 2 - lb_pad_x) / lb_scale + x_off
                 cy   = ((y1 + y2) / 2 - lb_pad_y) / lb_scale + y_off
-                w    = (x2 - x1) / lb_scale
-                h    = (y2 - y1) / lb_scale
+                w    = bw / lb_scale
+                h    = bh / lb_scale
                 conf = float(box.conf[0])
                 cls  = int(box.cls[0])
                 boxes.append([cx, cy, w, h, conf, cls])
