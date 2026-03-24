@@ -491,6 +491,11 @@ _static_dir = Path(cfg.captures_dir)
 _static_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(_static_dir.parent.parent)), name="static")
 
+# Project-level assets (logo, favicon)
+_assets_dir = Path(__file__).resolve().parent.parent / "assets"
+if _assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+
 # Jinja2 templates
 _templates_dir = Path(__file__).parent / "web" / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
