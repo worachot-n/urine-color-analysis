@@ -302,9 +302,9 @@ async def dashboard(request: Request):
     latest_image = results[0].image_path if results else None
 
     return templates.TemplateResponse(
-        "dashboard.html",
-        {
-            "request": request,
+        request=request,
+        name="dashboard.html",
+        context={
             "results": results,
             "total_scans": total_scans,
             "latest_count": latest_count,
