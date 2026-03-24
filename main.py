@@ -62,7 +62,6 @@ def main() -> None:
         run_server()
 
     elif args.role == "client":
-        # Resolve server URL: CLI flag > .env/settings
         from app.shared.config import cfg
         server_url = args.server_url or cfg.server_url
         if not server_url or server_url == "http://localhost:8000":
@@ -74,17 +73,19 @@ def main() -> None:
 
         from app.client_app import run_client
         try:
-            run_client(server_url=server_url)   # blocks until Ctrl+C or fatal error
+            # run_client blocks here — it contains the infinite while True loop.
+            # This line does NOT return until the user presses Ctrl+C.
+            run_client(server_url=server_url)
         except KeyboardInterrupt:
-            logger.info("User stopped the program.")
+            logger.info("Exiting…")
         finally:
-            # Single cleanup point — runs only when the process truly exits
+            # ── Single GPIO cleanup point — runs ONLY when the process exits ──
             try:
                 import RPi.GPIO as GPIO  # noqa: N813
                 GPIO.cleanup()
-                logger.info("GPIO cleanup complete at the END of program.")
             except Exception:
                 pass
+            logger.info("GPIO cleanup complete.")
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ Run:
 
 from __future__ import annotations
 
+import gc
 import sys
 import threading
 import time
@@ -52,24 +53,42 @@ _SPIN_FRAMES = ["-   ", " -  ", "  - ", "   -"]
 
 def run_client(server_url: str) -> None:
     """
-    Initialise hardware and enter the blocking event loop.
+    Initialise hardware and enter the BLOCKING event loop.
 
-    This function does NOT return until the process is killed (Ctrl+C or fatal
-    error).  GPIO.cleanup() is intentionally NOT called here — it is the sole
-    responsibility of the caller (main.py finally block).
+    This function does NOT return until the process is killed (Ctrl+C).
+    GPIO.cleanup() is intentionally NOT called here — it is the sole
+    responsibility of main.py's finally block.
+
+    GPIO Lifecycle
+    --------------
+    main.py                         run_client()
+    ───────────────────────────────────────────────
+    try:
+      run_client(url)  ──────────►  GPIO.setmode(BCM)      ← step 1
+                                    init LCD, TM1637        ← step 2
+                                    GPIO.setup(pins)        ← step 3
+                                    remove_event_detect()   ← step 4 (stale-state guard)
+                                    while True:             ← step 5 (blocks here)
+                                      wait_for_edge(...)
+                                      _on_button_press(...)
+                       ◄──────────  KeyboardInterrupt propagates up
+    except KeyboardInterrupt: ...
+    finally:
+      GPIO.cleanup()                                        ← only here
     """
     _check_imports()
 
     import RPi.GPIO as GPIO  # noqa: N813
 
-    # ── Step 1: GPIO mode — must be first, before any GPIO call ──────────
+    # ── Step 1: GPIO mode — must be first, before any GPIO call ──────────────
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
-    # ── Step 2: Hardware init (safe now that BCM mode is set) ─────────────
+    # ── Step 2: Hardware init — safe now that BCM mode is confirmed ───────────
     lcd = _init_lcd()
-    tm  = _init_tm1637()
+    tm  = _init_tm1637()   # TM1637 lifetime is tied to this function
 
+    # ── Step 3: Pin setup ─────────────────────────────────────────────────────
     GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
     _relay_setup(GPIO)
 
@@ -78,44 +97,51 @@ def run_client(server_url: str) -> None:
     _relay(GPIO, "idle")  # Green ON
 
     logger.info(
-        "Client ready — GPIO{} trigger | relay R={} Y={} G={} | server: {}",
+        "System Ready — GPIO{} trigger | relay R={} Y={} G={} | server: {}",
         cfg.gpio_trigger_pin,
         cfg.relay_red_pin, cfg.relay_yellow_pin, cfg.relay_green_pin,
         server_url,
     )
 
-    # ── Step 3: Clear any stale edge-detection from a previous crashed run ─
-    # Without this, wait_for_edge with bouncetime raises "Error waiting for edge"
-    # because /sys/class/gpio/gpioN/edge is still exported from the old process.
+    # ── Step 4: Clear stale edge-detection from a previous crashed run ────────
+    # If the previous process crashed without GPIO.cleanup(), the sysfs
+    # /sys/class/gpio/gpio{N}/edge entry is still exported.  remove_event_detect
+    # clears RPi.GPIO's internal tracking so wait_for_edge can set it up fresh.
     try:
         GPIO.remove_event_detect(cfg.gpio_trigger_pin)
     except Exception:
         pass
 
-    logger.info("WAITING for button press on GPIO{}…", cfg.gpio_trigger_pin)
+    logger.info("Waiting for button press on GPIO{}…", cfg.gpio_trigger_pin)
 
-    # ── Step 4: Blocking service loop ─────────────────────────────────────
+    # ── Step 5: Blocking service loop ─────────────────────────────────────────
     try:
         while True:
             channel = GPIO.wait_for_edge(
-                cfg.gpio_trigger_pin, GPIO.FALLING, bouncetime=500
+                cfg.gpio_trigger_pin,
+                GPIO.FALLING,
+                bouncetime=500,
             )
             if channel is None:
-                continue   # spurious wakeup / timeout — go back to waiting
+                # Spurious wakeup (can happen on timeout= arg; defensive guard)
+                continue
+
+            logger.info("Button pressed! Starting analysis…")
             _on_button_press(lcd, tm, GPIO, server_url)
+
     except KeyboardInterrupt:
         logger.info("Client stopping…")
+
     finally:
-        # Relays off + drop TM1637 ref so TM1637.__del__ fires HERE (BCM mode still
-        # active) rather than later when main.py has already called GPIO.cleanup().
+        # Shut relays off and drop TM1637 reference so TM1637.__del__ fires
+        # HERE while BCM mode is still active — before main.py calls GPIO.cleanup().
         _relay_all_off(GPIO)
         try:
-            import gc
-            tm = None  # noqa: F841
+            tm = None   # noqa: F841 — triggers TM1637.__del__ while mode is live
             gc.collect()
         except Exception:
             pass
-        # NOTE: GPIO.cleanup() is NOT called here — main.py owns that.
+        # GPIO.cleanup() is NOT called here — main.py owns that single call.
 
 
 # ─── Button handler ───────────────────────────────────────────────────────────
@@ -123,7 +149,6 @@ def run_client(server_url: str) -> None:
 def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
     import requests
 
-    logger.info("Button pressed — starting capture")
     _relay(GPIO, "processing")   # Yellow ON — stays on through entire scan
     _lcd(lcd, "Capturing...", "")
     _tm(tm, 8888)
@@ -133,7 +158,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         logger.error("Camera capture failed")
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: CAMERA", "Capture failed")
-        _tm(tm, None)  # "----"
+        _tm(tm, None)
         return
 
     size_kb = len(img_bytes) / 1024
@@ -142,8 +167,13 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
 
     # TM1637 spinner + delayed LCD "Analyzing..." while POST is in flight
     stop_spin = threading.Event()
-    spin_thread = threading.Thread(target=_tm_spin,     args=(tm, stop_spin),                          daemon=True)
-    lcd_thread  = threading.Thread(target=_lcd_delayed, args=(lcd, stop_spin, "Analyzing...", "AI running", 4.0), daemon=True)
+    spin_thread = threading.Thread(
+        target=_tm_spin, args=(tm, stop_spin), daemon=True
+    )
+    lcd_thread = threading.Thread(
+        target=_lcd_delayed, args=(lcd, stop_spin, "Analyzing...", "AI running", 4.0),
+        daemon=True,
+    )
     spin_thread.start()
     lcd_thread.start()
 
@@ -160,8 +190,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
 
     except requests.exceptions.ConnectionError as exc:
         stop_spin.set()
-        elapsed = time.perf_counter() - t0
-        logger.error("Server unreachable after {:.1f}s: {}", elapsed, exc)
+        logger.error("Server unreachable after {:.1f}s: {}", time.perf_counter() - t0, exc)
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: SRV OFF", "Check network")
         _tm(tm, None)
@@ -169,8 +198,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
 
     except requests.exceptions.Timeout:
         stop_spin.set()
-        elapsed = time.perf_counter() - t0
-        logger.error("Request timed out after {:.1f}s (limit 60s)", elapsed)
+        logger.error("Request timed out after {:.1f}s (limit 60s)", time.perf_counter() - t0)
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: TIMEOUT", "Server slow")
         _tm(tm, None)
@@ -178,9 +206,8 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
 
     except requests.exceptions.HTTPError as exc:
         stop_spin.set()
-        elapsed = time.perf_counter() - t0
         status = exc.response.status_code if exc.response is not None else "?"
-        logger.error("HTTP {} from server after {:.1f}s: {}", status, elapsed, exc)
+        logger.error("HTTP {} after {:.1f}s: {}", status, time.perf_counter() - t0, exc)
         _relay(GPIO, "error")
         _lcd(lcd, f"ERR: HTTP {status}", "")
         _tm(tm, None)
@@ -188,8 +215,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
 
     except Exception as exc:
         stop_spin.set()
-        elapsed = time.perf_counter() - t0
-        logger.exception("Unexpected error after {:.1f}s: {}", elapsed, exc)
+        logger.exception("Unexpected error after {:.1f}s: {}", time.perf_counter() - t0, exc)
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: AI FAIL", "")
         _tm(tm, None)
@@ -209,7 +235,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         _tm(tm, None)
         return
 
-    count        = data.get("total_physical_count", data.get("count", 0))
+    count         = data.get("total_physical_count", data.get("count", 0))
     color_summary: dict = data.get("summary", data.get("color_summary", {}))
     errors:       dict = data.get("errors", {})
     dup_n  = len(errors.get("duplicate_slots",  []))
@@ -218,12 +244,9 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
     _tm(tm, count)
 
     if dup_n > 0 or wc_n > 0:
-        # Validation errors → Red
         parts = []
-        if dup_n > 0:
-            parts.append(f"Dup:{dup_n}")
-        if wc_n > 0:
-            parts.append(f"WC:{wc_n}")
+        if dup_n: parts.append(f"Dup:{dup_n}")
+        if wc_n:  parts.append(f"WC:{wc_n}")
         logger.warning(
             "Scan errors — count={}, {} | latency={:.2f}s",
             count, " ".join(parts), elapsed,
@@ -231,7 +254,6 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         _relay(GPIO, "error")
         _lcd(lcd, f"Count: {count}", (" ".join(parts))[:16])
     else:
-        # Clean result → Green
         color_str = "  ".join(f"{k}:{v}" for k, v in color_summary.items())
         logger.success(
             "Result OK — count={}, colors={}, latency={:.2f}s",
@@ -301,8 +323,8 @@ def _relay(GPIO, state: str) -> None:
     off_level = GPIO.HIGH if cfg.relay_active_low else GPIO.LOW
 
     state_map = {
-        "idle":       (cfg.relay_green_pin,  [cfg.relay_red_pin, cfg.relay_yellow_pin]),
-        "processing": (cfg.relay_yellow_pin, [cfg.relay_red_pin, cfg.relay_green_pin]),
+        "idle":       (cfg.relay_green_pin,  [cfg.relay_red_pin,    cfg.relay_yellow_pin]),
+        "processing": (cfg.relay_yellow_pin, [cfg.relay_red_pin,    cfg.relay_green_pin]),
         "error":      (cfg.relay_red_pin,    [cfg.relay_yellow_pin, cfg.relay_green_pin]),
     }
 
@@ -311,13 +333,10 @@ def _relay(GPIO, state: str) -> None:
         return
 
     on_pin, off_pins = state_map[state]
-
-    # Turn off the other two first, then pause, then turn the target on
     for pin in off_pins:
         GPIO.output(pin, off_level)
-    time.sleep(0.05)  # brief settle to avoid inrush
+    time.sleep(0.05)          # brief settle to avoid inrush
     GPIO.output(on_pin, on_level)
-
     logger.debug("Relay → {}", state)
 
 
@@ -328,7 +347,7 @@ def _relay_all_off(GPIO) -> None:
         try:
             GPIO.output(pin, off_level)
         except Exception:
-            pass  # pin may not be set up if init failed early
+            pass
 
 
 # ─── Display helpers ──────────────────────────────────────────────────────────
@@ -367,7 +386,7 @@ def _lcd(lcd, line1: str, line2: str) -> None:
 
 def _lcd_delayed(lcd, stop_event: threading.Event, line1: str, line2: str, delay: float) -> None:
     """Switch LCD to line1/line2 after *delay* seconds unless stop_event fires first."""
-    if not stop_event.wait(delay):  # returns True if set, False on timeout
+    if not stop_event.wait(delay):
         _lcd(lcd, line1, line2)
 
 
@@ -375,9 +394,8 @@ def _tm(tm, value: int | str | None) -> None:
     """
     Update the TM1637 display.
 
-    value=None  → show "----"
-    value="Err" → show "Err "
-    value=int   → show zero-padded integer (0000–9999)
+    value=None → show "----"
+    value=int  → show zero-padded integer (0000–9999)
     """
     if tm is None:
         logger.debug("TM1637 | {}", value)
