@@ -34,7 +34,7 @@ active_low = true # GPIO LOW = relay energized
 # Push Button
 [gpio.button]
 pin         = 24   # GPIO24 / Pin 18 — active LOW, internal pull-up
-debounce_ms = 50
+debounce_ms = 300
 
 # Power supply pins (physical pin numbers — documentation only)
 [gpio.power]

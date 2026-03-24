@@ -56,10 +56,11 @@ def run_client(server_url: str) -> None:
 
     import RPi.GPIO as GPIO  # noqa: N813
 
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+
     lcd = _init_lcd()
     tm  = _init_tm1637()
-
-    GPIO.setmode(GPIO.BCM)
 
     # Trigger button — input with pull-up (active LOW)
     GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -92,6 +93,14 @@ def run_client(server_url: str) -> None:
     finally:
         # Turn all relays off before GPIO cleanup
         _relay_all_off(GPIO)
+        # Drop TM1637 reference now so its __del__ → GPIO.cleanup(clk) runs
+        # while BCM mode is still active (avoids "Please set pin numbering mode" error)
+        try:
+            import gc
+            tm = None  # noqa: F841
+            gc.collect()
+        except Exception:
+            pass
         GPIO.cleanup()
         logger.info("GPIO cleanup complete")
 
