@@ -16,10 +16,13 @@ common = [
     "pyyaml",
 ]
 pi = [
-    "picamera2>=0.3.12",
-    "RPi.GPIO>=0.7.1",
-    "raspberrypi-tm1637",
-    "rpi-lcd",
+    # Hardware packages only available on Raspberry Pi (ARM Linux).
+    # Platform markers prevent uv from resolving these on x86_64 / macOS.
+    "picamera2>=0.3.12       ; sys_platform == 'linux' and platform_machine in ('aarch64', 'armv7l')",
+    "RPi.GPIO>=0.7.1         ; sys_platform == 'linux' and platform_machine in ('aarch64', 'armv7l')",
+    "raspberrypi-tm1637      ; sys_platform == 'linux' and platform_machine in ('aarch64', 'armv7l')",
+    "rpi-lcd                 ; sys_platform == 'linux' and platform_machine in ('aarch64', 'armv7l')",
+    "smbus2>=0.4.3           ; sys_platform == 'linux' and platform_machine in ('aarch64', 'armv7l')",
     "psutil>=5.9",
 ]
 server = [
@@ -32,7 +35,6 @@ server = [
     "python-multipart",
     "ultralytics>=8.4.24",
     "psutil>=5.9",
-    "smbus2>=0.4.3",
 ]
 
 [dependency-groups]
