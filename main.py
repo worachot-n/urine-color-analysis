@@ -386,7 +386,10 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
         tm1637_show_all(counts)
     except Exception:
         pass
-    web_server.update_scan_result(counts, errors, log_path, result["slot_assignments"])
+    try:
+        web_server.update_scan_result(counts, errors, log_path, result["slot_assignments"])
+    except Exception:
+        logger.warning("web_server.update_scan_result failed — continuing")
     try:
         telegram_bot.send_scan_report(counts, errors, log_path, ts)
     except Exception:
@@ -444,49 +447,59 @@ def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
 
     try:
         while True:
-            # --- WiFi loss detection & automatic fallback ---
-            if not is_wifi_connected():
-                logger.warning("WiFi connection lost — falling back to network setup")
-                lcd_clear()
-                lcd_message("WiFi Lost!", 1)
-                lcd_message("Restarting net", 2)
-                led_off()
-                try:
-                    new_ssid, new_ip = run_network_setup(lcd_lines=lcd_lines)
-                    web_ip = new_ip or ""
-                    logger.info("Network restored: ssid=%s ip=%s", new_ssid, new_ip)
-                except Exception as e:
-                    logger.error("Network setup failed: %s", e)
-                _show_ready()
-
-            # --- Grid reload (web calibration save OR dashboard Reload button) ---
-            if web_server.consume_grid_saved() or web_server.consume_grid_reload():
-                try:
-                    grid_cfg = GridConfig()
-                    logger.info("GridConfig reloaded")
-                    lcd_clear()
-                    lcd_message("Grid reloaded!", 1)
-                    lcd_message("Press button", 2)
-                    if web_ip:
-                        lcd_message(f"{web_ip}:5000", 4)
-                except Exception as e:
-                    logger.error("GridConfig reload failed: %s", e)
-
-            button_wait_press()
-            logger.info("Button pressed — starting scan")
             try:
-                run_scan_cycle(grid_cfg, web_ip=web_ip)
+                # --- WiFi loss detection & automatic fallback ---
+                if not is_wifi_connected():
+                    logger.warning("WiFi connection lost — falling back to network setup")
+                    lcd_clear()
+                    lcd_message("WiFi Lost!", 1)
+                    lcd_message("Restarting net", 2)
+                    led_off()
+                    try:
+                        new_ssid, new_ip = run_network_setup(lcd_lines=lcd_lines)
+                        web_ip = new_ip or ""
+                        logger.info("Network restored: ssid=%s ip=%s", new_ssid, new_ip)
+                    except Exception as e:
+                        logger.error("Network setup failed: %s", e)
+                    _show_ready()
+
+                # --- Grid reload (web calibration save OR dashboard Reload button) ---
+                if web_server.consume_grid_saved() or web_server.consume_grid_reload():
+                    try:
+                        grid_cfg = GridConfig()
+                        logger.info("GridConfig reloaded")
+                        lcd_clear()
+                        lcd_message("Grid reloaded!", 1)
+                        lcd_message("Press button", 2)
+                        if web_ip:
+                            lcd_message(f"{web_ip}:5000", 4)
+                    except Exception as e:
+                        logger.error("GridConfig reload failed: %s", e)
+
+                button_wait_press()
+                logger.info("Button pressed — starting scan")
+                try:
+                    run_scan_cycle(grid_cfg, web_ip=web_ip)
+                except Exception as exc:
+                    logger.exception("run_scan_cycle crashed: %s", exc)
+                    try:
+                        led_red()
+                    except Exception:
+                        pass
+                try:
+                    lcd_message("Press button", 2)
+                    lcd_message("to re-scan", 3)
+                except Exception:
+                    pass
+
+            except KeyboardInterrupt:
+                raise   # let outer handler catch it
             except Exception as exc:
-                logger.exception("run_scan_cycle crashed: %s", exc)
+                logger.exception("Unexpected error in main loop — continuing: %s", exc)
                 try:
                     led_red()
                 except Exception:
                     pass
-            try:
-                lcd_message("Press button", 2)
-                lcd_message("to re-scan", 3)
-            except Exception:
-                pass
 
     except KeyboardInterrupt:
         logger.info("Live mode stopped")
