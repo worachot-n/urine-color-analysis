@@ -1,128 +1,130 @@
 """
-Telegram notification module.
+Telegram notification module — server-side.
 
-Sends a text summary and annotated JPG image to a Telegram group after
-every scan cycle.
+Sends a text summary and the annotated JPEG to a Telegram chat after
+every successful /analyze call.
 
-Credentials are loaded from the .env file:
+Credentials come from .env (or environment variables):
     TELEGRAM_TOKEN   — Bot API token from @BotFather
-    TELEGRAM_CHAT_ID — Target group or chat ID
+    TELEGRAM_CHAT_ID — Target group or personal chat ID
 
-If either value is missing or the request fails, the function logs a warning
-and returns without raising — Telegram is non-critical to system operation.
+Both values are optional.  If either is missing the module skips silently.
+All errors are logged as warnings — Telegram is non-critical to server operation.
 
 Public API:
-    send_scan_report(counts, errors, image_path, timestamp) -> bool
+    send_scan_report(count, color_summary, image_path, timestamp) -> bool
 """
 
-import os
-import logging
+from __future__ import annotations
+
 from datetime import datetime
 from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
+from loguru import logger
 
-import configs.config as config
+from app.shared.config import cfg
 
-logger = logging.getLogger(__name__)
 
-load_dotenv()
-
-# Prefer .env values, fall back to config.py defaults
-_TOKEN   = os.getenv("TELEGRAM_TOKEN")   or config.TELEGRAM_TOKEN
-_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or config.TELEGRAM_CHAT_ID
-
+_TIMEOUT  = 15   # seconds per Telegram API call
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
-_TIMEOUT  = 15   # seconds per request
 
 
-def _api_url(method: str) -> str:
-    return _API_BASE.format(token=_TOKEN, method=method)
+def _url(method: str) -> str:
+    return _API_BASE.format(token=cfg.telegram_token, method=method)
 
 
-def _is_configured() -> bool:
-    if not _TOKEN or not _CHAT_ID:
-        logger.debug("Telegram not configured — skipping notification")
+def _ready() -> bool:
+    """Return True only when both token and chat_id are configured."""
+    if not cfg.telegram_token or not cfg.telegram_chat_id:
         return False
     return True
 
 
 def send_scan_report(
-    counts:     dict,
-    errors:     list[str],
-    image_path: str | Path | None = None,
-    timestamp:  datetime | None   = None,
+    count:         int,
+    color_summary: dict[str, int],
+    image_path:    str | Path | None = None,
+    timestamp:     datetime | None   = None,
 ) -> bool:
     """
-    Send a scan summary text and optional annotated image to Telegram.
+    Send a scan summary text + annotated image to Telegram.
 
     Args:
-        counts:     dict {0: n, 1: n, 2: n, 3: n, 4: n} — bottles per level
-        errors:     list of error strings, e.g. ["A11_0 Dup", "A25_2 Mismatch (L3)"]
-        image_path: path to the annotated JPG (None = text-only)
-        timestamp:  datetime of the scan (defaults to now)
+        count:         Total bottles detected.
+        color_summary: {level_label: count} dict, e.g. {"L0": 3, "L1": 4}.
+        image_path:    Absolute path to the annotated JPEG (None → text only).
+        timestamp:     Scan datetime (defaults to now).
 
     Returns:
-        True if all Telegram requests succeeded, False otherwise.
+        True if every Telegram request succeeded, False otherwise.
     """
-    if not _is_configured():
+    if not _ready():
+        logger.debug("Telegram not configured — skipping notification")
         return False
 
     if timestamp is None:
-        timestamp = datetime.now()
+        timestamp = datetime.utcnow()
 
-    # --- Build text summary ---
-    ts_str    = timestamp.strftime("%Y-%m-%d %H:%M")
-    counts_str = " | ".join(f"L{lvl}:{counts.get(lvl, 0)}" for lvl in range(5))
+    # ── Build message text ──────────────────────────────────────────────
+    ts_str = timestamp.strftime("%Y-%m-%d %H:%M UTC")
 
-    if errors:
-        error_str  = ", ".join(errors[:10])   # cap at 10 to stay readable
-        status_str = "\u274c Error"
+    if color_summary:
+        colors_str = "  ".join(f"{k}:{v}" for k, v in sorted(color_summary.items()))
     else:
-        error_str  = "None"
-        status_str = "\u2705 OK"
+        colors_str = "—"
 
     text = (
-        f"*Scan Result \u2014 {ts_str}*\n"
-        f"{counts_str}\n"
-        f"Errors: {error_str}\n"
-        f"Status: {status_str}"
+        f"*Scan Result — {ts_str}*\n"
+        f"Bottles: *{count}*\n"
+        f"Colors: {colors_str}"
     )
 
     success = True
 
-    # --- Send text message ---
+    # ── Send text message ───────────────────────────────────────────────
     try:
         resp = requests.post(
-            _api_url("sendMessage"),
-            data={"chat_id": _CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            _url("sendMessage"),
+            data={
+                "chat_id":    cfg.telegram_chat_id,
+                "text":       text,
+                "parse_mode": "Markdown",
+            },
             timeout=_TIMEOUT,
         )
         if not resp.ok:
-            logger.warning("Telegram sendMessage failed: %s", resp.text)
+            logger.warning("Telegram sendMessage failed ({}): {}", resp.status_code, resp.text)
             success = False
-    except Exception as e:
-        logger.warning("Telegram sendMessage error: %s", e)
+        else:
+            logger.debug("Telegram text sent OK")
+    except Exception as exc:
+        logger.warning("Telegram sendMessage error: {}", exc)
         success = False
 
-    # --- Send annotated image ---
-    if image_path and Path(image_path).is_file():
+    # ── Send annotated image ────────────────────────────────────────────
+    img = Path(image_path) if image_path else None
+    if img and img.is_file():
         try:
-            with open(image_path, "rb") as f:
+            with open(img, "rb") as fh:
                 resp = requests.post(
-                    _api_url("sendPhoto"),
-                    data={"chat_id": _CHAT_ID, "caption": f"Scan {ts_str}"},
-                    files={"photo": f},
+                    _url("sendPhoto"),
+                    data={
+                        "chat_id": cfg.telegram_chat_id,
+                        "caption": f"Scan {ts_str} — {count} bottles",
+                    },
+                    files={"photo": fh},
                     timeout=_TIMEOUT,
                 )
             if not resp.ok:
-                logger.warning("Telegram sendPhoto failed: %s", resp.text)
+                logger.warning("Telegram sendPhoto failed ({}): {}", resp.status_code, resp.text)
                 success = False
-        except Exception as e:
-            logger.warning("Telegram sendPhoto error: %s", e)
+            else:
+                logger.debug("Telegram photo sent OK")
+        except Exception as exc:
+            logger.warning("Telegram sendPhoto error: {}", exc)
             success = False
     elif image_path:
-        logger.debug("Telegram: image_path not found — %s", image_path)
+        logger.debug("Telegram: image file not found — {}", image_path)
 
     return success

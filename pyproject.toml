@@ -1,21 +1,38 @@
 [project]
 name = "urine-color-analysis"
-version = "0.1.0"
-description = "Automated urine color analysis system for Raspberry Pi"
+version = "0.2.0"
+description = "Automated urine color analysis system — Raspberry Pi client + Ubuntu server"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-    "opencv-python",
-    "numpy",
-    "flask",
-    "werkzeug",
-    "python-dotenv",
+dependencies = []
+
+[project.optional-dependencies]
+common = [
     "requests",
-    "RPi.GPIO>=0.7.1",
-    "smbus2>=0.4.3",
+    "python-dotenv",
+    "pydantic-settings>=2.0",
+    "loguru",
+    "numpy",
+    "pyyaml",
+]
+pi = [
     "picamera2>=0.3.12",
+    "RPi.GPIO>=0.7.1",
+    "raspberrypi-tm1637",
+    "rpi-lcd",
+    "psutil>=5.9",
+]
+server = [
+    "fastapi",
+    "uvicorn[standard]",
+    "openvino",
+    "opencv-python",
+    "sqlalchemy",
+    "jinja2",
+    "python-multipart",
     "ultralytics>=8.4.24",
     "psutil>=5.9",
+    "smbus2>=0.4.3",
 ]
 
 [dependency-groups]
@@ -35,19 +52,3 @@ packages = ["."]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-# ---------------------------------------------------------------------------
-# Sample-area crop applied before YOLO inference (px trimmed from each edge)
-#   x1 = left              y1 = top
-#   x2 = frame_w - right   y2 = frame_h - bottom
-# ---------------------------------------------------------------------------
-[tool.urine-analyzer.sample_roi]
-top    = 220
-bottom = 20
-left   = 200
-right  = 800
-
-[tool.urine-analyzer.yolo]
-conf_threshold = 0.25       # test default (production uses configs/config.toml)
-# imgsz = [640, 416]        # rectangular (needs model re-exported with matching imgsz)
-imgsz = 640

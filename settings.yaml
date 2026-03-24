@@ -1,0 +1,27 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+model:
+  path: "models/bottle_yolo26s_openvino_model"
+  input_size: 640
+  confidence_threshold: 0.25
+  iou_threshold: 0.45
+
+database:
+  path: "data/results.db"
+
+storage:
+  captures_dir: "app/web/static/captures"
+
+camera:
+  width: 4608
+  height: 2592
+
+gpio:
+  trigger_pin: 24          # BCM GPIO24 / physical pin 18
+
+display:
+  lcd_address: 0x27        # I2C address of the LCD backpack
+  tm1637_clk: 5
+  tm1637_dio: 6
