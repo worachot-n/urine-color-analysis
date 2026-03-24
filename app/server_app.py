@@ -208,6 +208,7 @@ app.mount("/static", StaticFiles(directory=str(_static_dir.parent.parent)), name
 # Jinja2 templates
 _templates_dir = Path(__file__).parent / "web" / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
+templates.env.filters["fromjson"] = json.loads
 
 
 # ─── Auth dependency ──────────────────────────────────────────────────────────
