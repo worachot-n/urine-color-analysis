@@ -345,6 +345,7 @@ async function restoreGrid() {
     btnSave.disabled  = false;
     btnReset.disabled = false;
     setStatus('โหลดค่าตารางสำเร็จ — ลากเส้นปรับได้ แล้วกดบันทึก', 'ok');
+    await showSlotOverlay();   // show slot labels + color picker section
   } catch(e) { setStatus('โหลดล้มเหลว: ' + e, 'err'); }
 }
 

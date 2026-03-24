@@ -191,20 +191,18 @@
 {# ── Latest scan result ── #}
 <div class="result-wrap">
 
-  {% if image_path %}
-  <div class="result-image">
-    <img src="/image/{{ scan_id }}" alt="Latest scan">
+  <div class="result-image" id="scan-img-wrap"{% if not image_path %} style="display:none"{% endif %}>
+    <img id="scan-img" src="/image/latest" alt="Latest scan">
   </div>
-  {% endif %}
 
   <div class="result-info">
-    <div class="result-ts">อัพเดตล่าสุด: {{ last_scan_time or "ยังไม่มีข้อมูล" }}</div>
+    <div class="result-ts" id="scan-ts">อัพเดตล่าสุด: {{ last_scan_time or "ยังไม่มีข้อมูล" }}</div>
 
     <div class="count-list">
       {% for lvl in range(5) %}
       <div class="count-row">
         <span class="level-badge lvl-{{ lvl }}">สี {{ lvl }}</span>
-        <span class="count-num">{{ counts[lvl] }}</span>
+        <span class="count-num" id="count-{{ lvl }}">{{ counts[lvl] }}</span>
         <span class="count-unit">นาย</span>
       </div>
       {% endfor %}
@@ -302,6 +300,41 @@ async function loadHistory() {
   }
 }
 
+// ── Live scan result polling ─────────────────────────────────────────────────
+// Poll /api/status every 10 s. When last_scan_time changes, refresh the
+// image and counts in-place without a full page reload.
+let _lastScanTime = {{ ('"' + last_scan_time + '"') if last_scan_time else 'null' }};
+
+async function pollStatus() {
+  try {
+    const res  = await fetch('/api/status');
+    const data = await res.json();
+    const ts   = data.last_scan_time || null;
+    if (ts && ts !== _lastScanTime) {
+      _lastScanTime = ts;
+      // Refresh image (cache-bust with timestamp)
+      const img  = document.getElementById('scan-img');
+      const wrap = document.getElementById('scan-img-wrap');
+      if (img) {
+        img.src = '/image/latest?t=' + Date.now();
+        if (wrap) wrap.style.display = '';
+      }
+      // Update timestamp text
+      const tsEl = document.getElementById('scan-ts');
+      if (tsEl) tsEl.textContent = 'อัพเดตล่าสุด: ' + ts;
+      // Update counts
+      const counts = data.counts || {};
+      for (let lvl = 0; lvl <= 4; lvl++) {
+        const el = document.getElementById('count-' + lvl);
+        if (el && counts[lvl] !== undefined) el.textContent = counts[lvl];
+      }
+      // Reload history cards
+      loadHistory();
+    }
+  } catch (_) { /* network blip — ignore */ }
+}
+
+window.addEventListener('load', () => { setInterval(pollStatus, 10000); });
 window.addEventListener('load', loadHistory);
 </script>
 {% endblock %}

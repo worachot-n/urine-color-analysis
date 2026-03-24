@@ -30,6 +30,7 @@ from configs.config import (
     YOLO_IMGSZ, YOLO_CONF_THRESHOLD, YOLO_IOU_THRESHOLD, YOLO_AUGMENT,
     YOLO_CONSENSUS_MIN, YOLO_CONSENSUS_IOU, YOLO_SLOT_MAX_DIST,
     YOLO_CLAHE_CLIP, YOLO_CLAHE_TILE, YOLO_ROI_PADDING,
+    SAMPLE_ROI_TOP, SAMPLE_ROI_BOTTOM, SAMPLE_ROI_LEFT, SAMPLE_ROI_RIGHT,
     IMG_DIR,
 )
 
@@ -300,8 +301,34 @@ class YoloBottleDetector:
         return assigned, duplicate_slots
 
     # ------------------------------------------------------------------
-    # ROI helper
+    # ROI helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fixed_sample_roi(frame_shape: tuple) -> tuple:
+        """
+        Compute (x1, y1, x2, y2) from the fixed per-edge margins in config.toml.
+
+        Each SAMPLE_ROI_* value is pixels trimmed FROM that edge:
+            x1 = left,              y1 = top
+            x2 = frame_w − right,   y2 = frame_h − bottom
+
+        If a margin would make x2 ≤ x1 or y2 ≤ y1 (i.e. the margin is larger
+        than the frame), that side falls back to the frame boundary so no crop
+        is applied on that side.  This handles right=8000 on a 4608-px-wide
+        frame gracefully (x2 → frame_w, no right-side crop).
+        """
+        fh, fw = frame_shape[:2]
+        x1 = max(0, SAMPLE_ROI_LEFT)
+        y1 = max(0, SAMPLE_ROI_TOP)
+        x2 = fw - SAMPLE_ROI_RIGHT
+        y2 = fh - SAMPLE_ROI_BOTTOM
+        # Clamp: if margin overshoots, keep full frame on that side
+        if x2 <= x1:
+            x2 = fw
+        if y2 <= y1:
+            y2 = fh
+        return x1, y1, x2, y2
 
     @staticmethod
     def _roi_from_corners(corners, frame_shape, padding: int = YOLO_ROI_PADDING) -> tuple:
@@ -337,12 +364,9 @@ class YoloBottleDetector:
         """
         roi = None
         if frames:
-            if getattr(grid_cfg, 'sample_roi', None):
-                # Prefer sample-area ROI (rows 1-12 only) — excludes reference row
-                roi = tuple(grid_cfg.sample_roi)
-            elif getattr(grid_cfg, 'corners', None):
-                # Fallback: full-grid corners (old grids without sample_roi saved)
-                roi = self._roi_from_corners(grid_cfg.corners, frames[0].shape)
+            # Fixed config-based crop takes priority — excludes reference row and
+            # applies consistent margins defined in config.toml [sample_roi].
+            roi = self._fixed_sample_roi(frames[0].shape)
 
         detections_list = [self.detect_once(f, roi=roi) for f in frames]
         confirmed = self.consensus_filter(detections_list)

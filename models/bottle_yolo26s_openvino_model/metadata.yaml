@@ -1,7 +1,7 @@
-description: Ultralytics YOLO26s model trained on ./data.yaml
+description: Ultralytics YOLO26s model trained on /content/crop-bottle-detection-1/data.yaml
 author: Ultralytics
-date: '2026-03-23T09:36:34.215877'
-version: 8.4.24
+date: '2026-03-24T00:15:29.965072'
+version: 8.4.26
 license: AGPL-3.0 License (https://ultralytics.com/license)
 docs: https://docs.ultralytics.com
 stride: 32

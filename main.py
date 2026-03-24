@@ -313,9 +313,12 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
 
     Returns True on success, False on timeout or error.
     """
-    led_yellow()
-    lcd_clear()
-    lcd_message("Scanning...", 1)
+    try:
+        led_yellow()
+        lcd_clear()
+        lcd_message("Scanning...", 1)
+    except Exception:
+        pass
     logger.info("Scan cycle started")
 
     result_box = [None]
@@ -379,26 +382,36 @@ def run_scan_cycle(grid_cfg, web_ip: str = ""):
     errors = result["errors"]
     log_path = log_path_box[0]
 
-    tm1637_show_all(counts)
+    try:
+        tm1637_show_all(counts)
+    except Exception:
+        pass
     web_server.update_scan_result(counts, errors, log_path, result["slot_assignments"])
-    telegram_bot.send_scan_report(counts, errors, log_path, ts)
+    try:
+        telegram_bot.send_scan_report(counts, errors, log_path, ts)
+    except Exception:
+        logger.warning("Telegram report failed — continuing")
 
-    lcd_clear()
+    try:
+        lcd_clear()
+        if result["has_errors"]:
+            led_red()
+            first_err = errors[0] if errors else "Unknown"
+            lcd_message("Error:", 1)
+            lcd_message(first_err[:16], 2)
+        else:
+            led_green()
+            lcd_message("ALL OK", 1)
+            lcd_message(f"L0:{counts[0]}L1:{counts[1]}L2:{counts[2]}", 2)
+            lcd_message(f"L3:{counts[3]} L4:{counts[4]}", 3)
+        if web_ip:
+            lcd_message(f"{web_ip}:5000", 4)
+    except Exception:
+        pass
     if result["has_errors"]:
-        led_red()
-        first_err = errors[0] if errors else "Unknown"
-        lcd_message("Error:", 1)
-        lcd_message(first_err[:16], 2)
         logger.warning("Scan complete: ERRORS — %s", errors)
     else:
-        led_green()
-        lcd_message("ALL OK", 1)
-        lcd_message(f"L0:{counts[0]}L1:{counts[1]}L2:{counts[2]}", 2)
-        lcd_message(f"L3:{counts[3]} L4:{counts[4]}", 3)
         logger.info("Scan complete: OK — counts=%s", counts)
-
-    if web_ip:
-        lcd_message(f"{web_ip}:5000", 4)
 
     return True
 
@@ -461,9 +474,19 @@ def run_live_mode(grid_cfg, web_ip: str = "", lcd_lines=None):
 
             button_wait_press()
             logger.info("Button pressed — starting scan")
-            run_scan_cycle(grid_cfg, web_ip=web_ip)
-            lcd_message("Press button", 2)
-            lcd_message("to re-scan", 3)
+            try:
+                run_scan_cycle(grid_cfg, web_ip=web_ip)
+            except Exception as exc:
+                logger.exception("run_scan_cycle crashed: %s", exc)
+                try:
+                    led_red()
+                except Exception:
+                    pass
+            try:
+                lcd_message("Press button", 2)
+                lcd_message("to re-scan", 3)
+            except Exception:
+                pass
 
     except KeyboardInterrupt:
         logger.info("Live mode stopped")

@@ -151,6 +151,25 @@ clahe_tile_size     = 8          # CLAHE tile grid size (NxN)
 roi_padding_px      = 10         # Padding (px) added around grid corners for ROI crop
 
 # =============================================================================
+# SAMPLE ROI — Fixed-margin crop fed to YOLO (excludes reference row)
+#
+# Each value is pixels trimmed FROM that edge of the full frame:
+#   y1 = top              y2 = frame_height − bottom
+#   x1 = left             x2 = frame_width  − right
+#
+# If a margin would make x2 ≤ x1 or y2 ≤ y1 (margin larger than the frame),
+# that side falls back to the frame boundary (no crop on that side).
+#
+# Coordinate translation: detect_once() automatically adds (x1, y1) back to
+# every returned bounding box so all downstream code stays in full-frame space.
+# =============================================================================
+[sample_roi]
+top    = 220    # trim reference row from top
+bottom = 20     # trim small margin at bottom
+left   = 200    # trim dead-zone column on left
+right  = 800    # if > frame width − left, no right-side crop is applied
+
+# =============================================================================
 # SYSTEM SAFETY
 # =============================================================================
 [system]

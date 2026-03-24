@@ -7,16 +7,16 @@ CLASSES
     Class 0: bottle — sample bottles ONLY (rows 1-12, main grid area)
 
     IMPORTANT — ROI CONSISTENCY:
-    The production inference pipeline crops each frame to the sample-area ROI
-    (rows 1-12 only, stored as grid_config.json::system_metadata::sample_roi)
-    BEFORE running YOLO.  Reference row bottles (row 0) are intentionally
-    excluded — their colors are sampled separately via the manual color-picker
-    calibration step and saved to color.json.
+    The production inference pipeline crops each frame using FIXED MARGINS
+    defined in config.toml [sample_roi] (top/bottom/left/right pixels from
+    each edge) BEFORE running YOLO.  Reference row bottles (row 0) are
+    intentionally excluded — their colors are sampled separately via the
+    manual color-picker calibration step and saved to color.json.
 
     Therefore training and validation images MUST also be pre-cropped to the
-    sample_roi region before labelling.  Labels must only annotate bottles in
-    rows 1-12.  Do NOT label reference row bottles — they will never appear
-    in the YOLO input at inference time.
+    same [sample_roi] margins before labelling.  Labels must only annotate
+    bottles in rows 1-12.  Do NOT label reference row bottles — they will
+    never appear in the YOLO input at inference time.
 
 =============================================================================
 DATASET STRUCTURE

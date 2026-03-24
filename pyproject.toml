@@ -11,9 +11,9 @@ dependencies = [
     "werkzeug",
     "python-dotenv",
     "requests",
-    "RPi.GPIO>=0.7.1",
-    "smbus2>=0.4.3",
-    "picamera2>=0.3.12",
+    # "RPi.GPIO>=0.7.1",
+    # "smbus2>=0.4.3",
+    # "picamera2>=0.3.12",
     "ultralytics>=8.4.24",
 ]
 
@@ -34,3 +34,14 @@ packages = ["."]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# ---------------------------------------------------------------------------
+# Sample-area crop applied before YOLO inference (px trimmed from each edge)
+#   x1 = left              y1 = top
+#   x2 = frame_w - right   y2 = frame_h - bottom
+# ---------------------------------------------------------------------------
+[tool.urine-analyzer.sample_roi]
+top    = 220
+bottom = 20
+left   = 200
+right  = 800

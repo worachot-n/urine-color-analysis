@@ -308,16 +308,11 @@ def api_detect():
     mode  = "opencv"
     warn  = None
 
-    # ---- Compute ROI once — shared by YOLO and OpenCV paths ----
+    # ---- Compute ROI once — fixed config margins, shared by YOLO and OpenCV paths ----
     roi = None
     try:
         from utils.yolo_detector import YoloBottleDetector as _YD
-        from utils.grid import GridConfig as _GC
-        _gcfg = _GC()
-        if _gcfg.sample_roi:
-            roi = tuple(_gcfg.sample_roi)
-        elif _gcfg.corners:
-            roi = _YD._roi_from_corners(_gcfg.corners, frame.shape)
+        roi = _YD._fixed_sample_roi(frame.shape)
     except Exception:
         pass
 

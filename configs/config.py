@@ -135,6 +135,20 @@ YOLO_CLAHE_TILE:         int   = _cfg["yolo"]["clahe_tile_size"]
 YOLO_ROI_PADDING:        int   = int(_cfg["yolo"].get("roi_padding_px", 30))
 
 # =============================================================================
+# Sample ROI (fixed-margin crop for YOLO inference — excludes reference row)
+# Each value is pixels to trim FROM that edge of the full frame:
+#   x1 = left,              y1 = top
+#   x2 = frame_w − right,   y2 = frame_h − bottom
+# If a margin would make x2 ≤ x1 (margin too large for the frame),
+# that side falls back to the frame boundary (i.e. no crop on that side).
+# =============================================================================
+_sroi = _cfg.get("sample_roi", {})
+SAMPLE_ROI_TOP:    int = int(_sroi.get("top",    0))
+SAMPLE_ROI_BOTTOM: int = int(_sroi.get("bottom", 0))
+SAMPLE_ROI_LEFT:   int = int(_sroi.get("left",   0))
+SAMPLE_ROI_RIGHT:  int = int(_sroi.get("right",  0))
+
+# =============================================================================
 # System / debug
 # =============================================================================
 WATCHDOG_TIMEOUT_SEC: int  = _cfg["system"]["watchdog_timeout_sec"]

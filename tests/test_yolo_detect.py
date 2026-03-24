@@ -84,9 +84,29 @@ def process_image(img_path: Path, model, conf_threshold: float, roi, out_dir: Pa
         print(f"  [SKIP] Cannot read {img_path.name}")
         return
 
-    boxes = model.detect_once(frame, roi=roi)
+    # ── Step 1: explicit crop to sample ROI ──────────────────────────────────
+    if roi is not None:
+        rx1, ry1, rx2, ry2 = roi
+        cropped = frame[ry1:ry2, rx1:rx2]
+        x_off, y_off = rx1, ry1
+    else:
+        cropped = frame
+        rx1, ry1, rx2, ry2 = 0, 0, frame.shape[1], frame.shape[0]
+        x_off, y_off = 0, 0
 
-    # Scale down for display (max 1600px wide)
+    # Save the cropped image so YOLO input is visible for inspection
+    crop_path = out_dir / f"crop_{img_path.stem}.jpg"
+    cv2.imwrite(str(crop_path), cropped, [cv2.IMWRITE_JPEG_QUALITY, 92])
+
+    # ── Step 2: run YOLO on the cropped image (no roi arg) ───────────────────
+    boxes_crop = model.detect_once(cropped)
+
+    # ── Step 3: translate box coordinates back to full-frame space ───────────
+    boxes = []
+    for cx, cy, w, h, conf, cls in boxes_crop:
+        boxes.append([cx + x_off, cy + y_off, w, h, conf, cls])
+
+    # ── Step 4: annotate full frame for output ───────────────────────────────
     scale = min(1.0, 1600 / frame.shape[1])
     vis_w = int(frame.shape[1] * scale)
     vis_h = int(frame.shape[0] * scale)
@@ -95,32 +115,28 @@ def process_image(img_path: Path, model, conf_threshold: float, roi, out_dir: Pa
     def s(v):   # scale a coordinate
         return int(v * scale)
 
-    # Draw ROI boundary
-    if roi is not None:
-        rx1, ry1, rx2, ry2 = roi
-        cv2.rectangle(vis, (s(rx1), s(ry1)), (s(rx2), s(ry2)), COLOR_ROI, 2)
-        cv2.putText(vis, "ROI", (s(rx1) + 5, s(ry1) + 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_ROI, 2, cv2.LINE_AA)
+    # Draw crop boundary on full-frame vis
+    cv2.rectangle(vis, (s(rx1), s(ry1)), (s(rx2), s(ry2)), COLOR_ROI, 2)
+    cv2.putText(vis, "CROP", (s(rx1) + 5, s(ry1) + 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_ROI, 2, cv2.LINE_AA)
 
-    # Draw detected boxes (scale coords to vis size)
-    scaled_boxes = []
+    # Draw detected boxes (translated back to full-frame, scaled for vis)
     for b in boxes:
         cx, cy, w, h, conf, cls = b
         sb = [cx*scale, cy*scale, w*scale, h*scale, conf, cls]
-        scaled_boxes.append(sb)
         _draw_box(vis, sb)
 
     # Draw summary overlay
-    roi_str = f"({roi[0]},{roi[1]})-({roi[2]},{roi[3]})" if roi else "none"
+    roi_str = f"({rx1},{ry1})-({rx2},{ry2})"
     _draw_summary(vis, boxes, roi_str, conf_threshold)
 
-    # Save
+    # Save annotated full-frame result
     out_path = out_dir / f"det_{img_path.stem}.jpg"
     cv2.imwrite(str(out_path), vis, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
     print(f"  {img_path.name:45s}  {len(boxes):3d} bottle(s)"
           f"  tiny={sum(1 for b in boxes if b[2]<30 or b[3]<30)}"
-          f"  → {out_path.name}")
+          f"  → {out_path.name}  crop→{crop_path.name}")
 
 
 def main():
@@ -152,19 +168,19 @@ def main():
         import utils.yolo_detector as _yd_mod
         _yd_mod.YOLO_CONF_THRESHOLD = args.conf
 
-    # ── Load ROI from grid calibration ───────────────────────────────────────
-    roi = None
-    try:
-        from utils.grid import GridConfig
-        gcfg = GridConfig()
-        if gcfg.corners:
-            # Use a sample image shape for ROI bounds (will be re-clamped per image)
-            sample = cv2.imread(str(next(_DATA_DIR.glob("*.jpg"), None) or ""))
-            if sample is not None:
-                roi = YoloBottleDetector._roi_from_corners(gcfg.corners, sample.shape)
-        print(f"[INFO] ROI: {roi}")
-    except Exception as exc:
-        print(f"[WARN] Grid config not loaded ({exc}) — running on full frame")
+    # ── Load crop margins from pyproject.toml ────────────────────────────────
+    import tomllib
+    _pyproject = _ROOT / "pyproject.toml"
+    with open(_pyproject, "rb") as _f:
+        _pp = tomllib.load(_f)
+    _sroi = _pp.get("tool", {}).get("urine-analyzer", {}).get("sample_roi", {})
+    _crop_top    = int(_sroi.get("top",    0))
+    _crop_bottom = int(_sroi.get("bottom", 0))
+    _crop_left   = int(_sroi.get("left",   0))
+    _crop_right  = int(_sroi.get("right",  0))
+    print(f"[INFO] Crop margins from pyproject.toml — "
+          f"top={_crop_top} bottom={_crop_bottom} "
+          f"left={_crop_left} right={_crop_right}")
 
     # ── Collect images ───────────────────────────────────────────────────────
     if args.images:
@@ -184,14 +200,18 @@ def main():
 
     total_detections = 0
     for img_path in images:
-        # Recompute ROI clamped to this image's exact shape
+        # Compute ROI from pyproject.toml margins, clamped to this image's resolution
         img_roi = None
-        if roi is not None:
-            frame_tmp = cv2.imread(str(img_path))
-            if frame_tmp is not None:
-                img_roi = YoloBottleDetector._roi_from_corners(
-                    gcfg.corners, frame_tmp.shape
-                ) if (hasattr(gcfg, 'corners') and gcfg.corners) else roi
+        frame_tmp = cv2.imread(str(img_path))
+        if frame_tmp is not None:
+            fh, fw = frame_tmp.shape[:2]
+            x1 = max(0, _crop_left)
+            y1 = max(0, _crop_top)
+            x2 = fw - _crop_right
+            y2 = fh - _crop_bottom
+            if x2 <= x1: x2 = fw   # margin too large — keep full width
+            if y2 <= y1: y2 = fh   # margin too large — keep full height
+            img_roi = (x1, y1, x2, y2)
 
         process_image(img_path, model, conf_threshold, img_roi, _OUT_DIR)
 

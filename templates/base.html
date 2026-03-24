@@ -39,10 +39,19 @@
         border: 2px solid var(--color-accent);
         background: var(--color-green-2);
         flex-shrink: 0;
+        overflow: hidden;
         display: flex;
         align-items: center;
         justify-content: center;
         font-size: 1.6rem;
+      }
+      .navbar-logo img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
+        /* SVG fill is black — invert to white so it shows on dark green */
+        filter: brightness(0) invert(1);
       }
 
       .navbar-links {
