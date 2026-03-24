@@ -188,15 +188,24 @@ def _create_dashboard_app() -> Flask:
     def image_latest():
         with _state_lock:
             path = _scan_state["image_path"]
+        serve_path = None
         if path and Path(path).is_file():
-            return send_file(path, mimetype="image/jpeg")
-        # Fallback: serve newest .jpg in logs/img/ (handles stale/missing path)
-        img_dir = Path(config.IMG_DIR)
-        if img_dir.is_dir():
-            jpegs = sorted(img_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if jpegs:
-                return send_file(str(jpegs[0].resolve()), mimetype="image/jpeg")
-        return "No image available", 404
+            serve_path = path
+        else:
+            # Fallback: serve newest .jpg in logs/img/ (handles stale/missing path)
+            img_dir = Path(config.IMG_DIR)
+            if img_dir.is_dir():
+                jpegs = sorted(img_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if jpegs:
+                    serve_path = str(jpegs[0].resolve())
+        if serve_path is None:
+            return "No image available", 404
+        # conditional=False disables ETag/Last-Modified → prevents HTTP 304 responses
+        resp = send_file(serve_path, mimetype="image/jpeg", conditional=False)
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"]  = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
 
     @app.route("/image/<int:scan_id>")
     def image_by_id(scan_id):
