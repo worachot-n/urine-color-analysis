@@ -100,7 +100,7 @@
                   <span class="badge bg-primary rounded-pill">{{ r.count }}</span>
                 </td>
                 <td>
-                  {% set colors = r.color_json | tojson | fromjson %}
+                  {% set colors = r.color_json | fromjson %}
                   {% for k, v in colors.items() %}
                     <span class="badge bg-secondary badge-level me-1">{{ k }}:{{ v }}</span>
                   {% else %}

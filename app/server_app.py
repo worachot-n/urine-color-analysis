@@ -120,7 +120,7 @@ class _YoloInference:
         count = len(boxes_orig)
 
         # ── Color analysis (requires grid_config.json on the server) ──────
-        color_summary: dict[str, int] = {}
+        color_summary: dict[str, int] = {f"L{i}": 0 for i in range(5)}
         try:
             from utils.grid import GridConfig
             from utils.color_analysis import (
@@ -169,7 +169,7 @@ def _run_color_analysis(img: np.ndarray, boxes_orig: list, grid_cfg) -> dict[str
     if not baseline:
         return {}
 
-    summary: dict[str, int] = {}
+    summary: dict[str, int] = {f"L{i}": 0 for i in range(5)}
     for box in boxes_orig:
         cx = int((box[0] + box[2]) / 2)
         cy = int((box[1] + box[3]) / 2)
