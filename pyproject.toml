@@ -15,6 +15,7 @@ dependencies = [
     "smbus2>=0.4.3",
     "picamera2>=0.3.12",
     "ultralytics>=8.4.24",
+    "psutil>=5.9",
 ]
 
 [dependency-groups]

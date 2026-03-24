@@ -46,6 +46,13 @@ class YoloBottleDetector:
     """
 
     def __init__(self, model_path: str):
+        try:
+            import psutil
+            logger.info("Available RAM before model load: %.0f MB",
+                        psutil.virtual_memory().available / 1024 ** 2)
+        except ImportError:
+            pass
+
         # ------------------------------------------------------------------
         # Inject OpenVINO CACHE_DIR + LATENCY into every ov.Core() created
         # from this point — including the instance ultralytics creates internally.
@@ -84,12 +91,25 @@ class YoloBottleDetector:
             except ImportError:
                 pass
 
+        try:
+            import psutil
+            logger.info("Available RAM after model load: %.0f MB",
+                        psutil.virtual_memory().available / 1024 ** 2)
+        except ImportError:
+            pass
+
         # Warmup: force OpenVINO JIT compilation now so it is cached to disk.
         # Subsequent loads (every scan subprocess) read from cache — fast (~2-5s).
         try:
             dummy = np.zeros((640, 640, 3), dtype=np.uint8)
             self.model(dummy, imgsz=YOLO_IMGSZ, verbose=False)
             logger.info("YOLO warmup done — OpenVINO model compiled and cached")
+            try:
+                import psutil
+                logger.info("Available RAM after warmup: %.0f MB",
+                            psutil.virtual_memory().available / 1024 ** 2)
+            except ImportError:
+                pass
         except Exception as e:
             logger.warning("YOLO warmup failed: %s", e)
 

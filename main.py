@@ -587,7 +587,7 @@ def main():
     logger.info("Locking white balance (point camera at white card)...")
     lcd_clear()
     lcd_message("Locking AWB...", 1)
-    _, controls = capture_white_balance_frame()
+    _awb_frame, controls = capture_white_balance_frame()
     _camera_controls.update(controls)
 
     if controls:
@@ -596,7 +596,13 @@ def main():
     else:
         logger.warning("AWB lock failed — continuing without lock")
         lcd_message("AWB: No lock", 1)
-    time.sleep(1)
+
+    # Explicitly release the 4608×2592 AWB frame (~36 MB) and force GC so
+    # the OS can reclaim picamera2 DMA buffers before OpenVINO JIT compilation.
+    import gc as _gc
+    del _awb_frame
+    _gc.collect()
+    time.sleep(2)   # allow kernel ~2 s to reclaim ISP/DMA pages
 
     # ---- Web server ----
     web_server.start_web_server(port=config.WEB_SERVER_PORT)
@@ -644,11 +650,23 @@ def main():
     # _yolo_detector object — no model reload per scan after this point.
     logger.info("Pre-loading YOLO model (first load triggers OpenVINO JIT, ~60s)...")
     try:
+        import psutil as _psutil
+        logger.info("Available RAM before YOLO load: %.0f MB",
+                    _psutil.virtual_memory().available / 1024 ** 2)
+    except ImportError:
+        logger.warning("psutil not installed — install with: pip install psutil")
+    try:
         lcd_clear()
         lcd_message("Loading AI...", 1)
         lcd_message("Please wait...", 2)
         _get_yolo()
         logger.info("YOLO model ready")
+        try:
+            import psutil as _psutil
+            logger.info("Available RAM after YOLO load: %.0f MB",
+                        _psutil.virtual_memory().available / 1024 ** 2)
+        except ImportError:
+            pass
         lcd_clear()
         lcd_message("AI model ready!", 1)
         time.sleep(1)
