@@ -93,7 +93,7 @@ def save_annotated_image(frame, slot_assignments, grid_cfg,
     if timestamp is None:
         timestamp = datetime.now()
 
-    log_dir = Path(IMG_DIR)
+    log_dir = Path(IMG_DIR).resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
 
     vis = frame.copy()

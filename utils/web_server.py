@@ -74,12 +74,13 @@ def update_scan_result(
     slot_assignments: dict | None = None,
 ) -> None:
     """Called by main.py after every scan to refresh dashboard data and persist to DB."""
+    abs_path = str(Path(image_path).resolve()) if image_path else None
     with _state_lock:
         _scan_state["counts"]         = dict(counts)
         _scan_state["errors"]         = list(errors)
         _scan_state["last_scan_time"] = datetime.now().isoformat(timespec="seconds")
-        _scan_state["image_path"]     = str(Path(image_path).resolve()) if image_path else None
-    scan_id = _db.save_scan_result(counts, errors, image_path)
+        _scan_state["image_path"]     = abs_path
+    scan_id = _db.save_scan_result(counts, errors, abs_path)
     if slot_assignments:
         _db.save_slot_results(scan_id, slot_assignments)
 
@@ -215,7 +216,11 @@ def _create_dashboard_app() -> Flask:
                 "SELECT image_path FROM scan_results WHERE id=?", (scan_id,)
             ).fetchone()
         if row and row[0] and Path(row[0]).is_file():
-            return send_file(row[0], mimetype="image/jpeg")
+            resp = send_file(row[0], mimetype="image/jpeg", conditional=False)
+            resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            resp.headers["Pragma"]  = "no-cache"
+            resp.headers["Expires"] = "0"
+            return resp
         return "Image not found", 404
 
     @app.route("/api/history")
