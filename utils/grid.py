@@ -63,6 +63,19 @@ class GridConfig:
         if roi_raw and len(roi_raw) == 4:
             self.sample_roi = [int(v) for v in roi_raw]
 
+        # Fallback: compute sample_roi from grid_pts when not saved (old JSON files)
+        if self.sample_roi is None:
+            gp_raw = meta.get("grid_pts")
+            if gp_raw:
+                gp = np.array(gp_raw, dtype=np.float64)  # (14, 17, 2)
+                sample_pts = gp[1:14, :, :]               # rows 1-12
+                self.sample_roi = [
+                    int(np.min(sample_pts[:, :, 0])),  # x1
+                    int(np.min(sample_pts[:, :, 1])),  # y1
+                    int(np.max(sample_pts[:, :, 0])),  # x2
+                    int(np.max(sample_pts[:, :, 1])),  # y2
+                ]
+
         for slot_id, info in data['reference_row']['slots'].items():
             self.reference_slots[slot_id] = {
                 'coords': np.array(info['coords'], dtype=np.float32),

@@ -393,9 +393,17 @@ class YoloBottleDetector:
         """
         roi = None
         if frames:
-            # Fixed config-based crop takes priority — excludes reference row and
-            # applies consistent margins defined in config.toml [sample_roi].
-            roi = self._fixed_sample_roi(frames[0].shape)
+            fshape = frames[0].shape
+            if grid_cfg is not None and grid_cfg.sample_roi:
+                # Priority 1: tight sample-area ROI from calibration grid_pts (rows 1-12)
+                x1, y1, x2, y2 = grid_cfg.sample_roi
+                roi = (x1, y1, x2, y2)
+            elif grid_cfg is not None and grid_cfg.corners:
+                # Priority 2: bounding box of the 4 calibration corners
+                roi = self._roi_from_corners(grid_cfg.corners, fshape)
+            else:
+                # Priority 3: fallback to hardcoded config.toml margins
+                roi = self._fixed_sample_roi(fshape)
 
         detections_list = [self.detect_once(f, roi=roi) for f in frames]
         confirmed = self.consensus_filter(detections_list)

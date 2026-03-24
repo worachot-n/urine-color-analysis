@@ -78,7 +78,7 @@ def update_scan_result(
         _scan_state["counts"]         = dict(counts)
         _scan_state["errors"]         = list(errors)
         _scan_state["last_scan_time"] = datetime.now().isoformat(timespec="seconds")
-        _scan_state["image_path"]     = str(image_path) if image_path else None
+        _scan_state["image_path"]     = str(Path(image_path).resolve()) if image_path else None
     scan_id = _db.save_scan_result(counts, errors, image_path)
     if slot_assignments:
         _db.save_slot_results(scan_id, slot_assignments)
@@ -190,6 +190,12 @@ def _create_dashboard_app() -> Flask:
             path = _scan_state["image_path"]
         if path and Path(path).is_file():
             return send_file(path, mimetype="image/jpeg")
+        # Fallback: serve newest .jpg in logs/img/ (handles stale/missing path)
+        img_dir = Path(config.IMG_DIR)
+        if img_dir.is_dir():
+            jpegs = sorted(img_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if jpegs:
+                return send_file(str(jpegs[0].resolve()), mimetype="image/jpeg")
         return "No image available", 404
 
     @app.route("/image/<int:scan_id>")

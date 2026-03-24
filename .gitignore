@@ -9,3 +9,5 @@ logs/
 data/
 models/bottle_yolo26s_openvino_model/*
 !models/bottle_yolo26s_openvino_model/.gitkeep
+color.json
+grid_config.json
