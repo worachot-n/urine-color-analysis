@@ -1,151 +1,332 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Urine Analysis — Settings</title>
-  <link
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-    rel="stylesheet"
-    integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-    crossorigin="anonymous"
-  >
-  <style>
-    body          { background: #f0f4f8; }
-    .stat-card    { border-radius: 14px; border: none; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
-    #calibCanvas  { cursor: crosshair; max-width: 100%; border: 2px solid #dee2e6; border-radius: 8px; }
-    .corner-dot   { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
-    .swatch-box   { width: 60px; height: 40px; border-radius: 6px; border: 1px solid #dee2e6; }
-    .table th     { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
-  </style>
-</head>
-<body>
+{% extends "layout.html" %}
 
-<nav class="navbar navbar-dark bg-dark px-4 py-2">
-  <span class="navbar-brand mb-0 h5">Urine Color Analysis</span>
-  <div class="d-flex gap-2">
-    <a href="/dashboard" class="btn btn-sm btn-outline-light">Dashboard</a>
-    <a href="/health"    class="btn btn-sm btn-outline-success">Health</a>
-  </div>
-</nav>
+{% block title %}การตั้งค่า — การตรวจวัดสีปัสสาวะ{% endblock %}
 
-<div class="container-fluid py-4">
-  <h4 class="mb-1">Settings</h4>
-  <p class="text-muted mb-4">Grid calibration and color reference management.</p>
+{% block head %}
+<style>
+  /* ── Settings-specific styles ────────────────────────────────────── */
 
-  <!-- Status cards -->
-  <div class="row g-3 mb-4">
-    <div class="col-md-4">
-      <div class="card stat-card p-3">
-        <div class="text-muted small mb-1">Grid Config</div>
-        {% if grid_date %}
-          <span class="badge bg-success">Calibrated {{ grid_date }}</span>
-        {% else %}
-          <span class="badge bg-danger">Not calibrated</span>
-        {% endif %}
-      </div>
-    </div>
-    <div class="col-md-4">
-      <div class="card stat-card p-3">
-        <div class="text-muted small mb-1">Color Reference</div>
-        {% if color_date %}
-          <span class="badge bg-success">Extracted {{ color_date }}</span>
-        {% else %}
-          <span class="badge bg-warning text-dark">Not extracted</span>
-        {% endif %}
-      </div>
-    </div>
-  </div>
+  /* Color reference table */
+  .color-table-wrap {
+    max-width: 1180px; margin: 0 auto 16px;
+    padding: 0 16px; overflow-x: auto;
+  }
+  .color-ref-table {
+    width: 100%; border-collapse: collapse;
+    font-size: .78rem; font-family: 'Courier New', monospace;
+  }
+  .color-ref-table th, .color-ref-table td {
+    border: 1px solid var(--border);
+    padding: 5px 8px; text-align: center; white-space: nowrap;
+  }
+  .color-ref-table thead tr { background: var(--panel-bg); }
+  .color-ref-table tbody tr { background: rgba(0,0,0,.25); }
+  .color-swatch {
+    display: inline-block; width: 14px; height: 14px;
+    border-radius: 3px; border: 1px solid rgba(255,255,255,.2);
+    vertical-align: middle; margin-right: 4px;
+  }
 
-  <!-- Tabs -->
-  <ul class="nav nav-tabs mb-3" id="settingsTabs">
-    <li class="nav-item">
-      <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabGrid">
-        Grid Calibration
-      </button>
-    </li>
-    <li class="nav-item">
-      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabColors">
-        Color Reference
-      </button>
-    </li>
-  </ul>
+  /* Main layout */
+  .main-grid {
+    display: flex; gap: 20px;
+    max-width: 1180px; margin: 0 auto;
+    padding: 0 16px 36px; align-items: flex-start;
+  }
+  @media (max-width: 860px) {
+    .main-grid { flex-direction: column; }
+    .right-col  { width: 100% !important; }
+  }
 
-  <div class="tab-content">
+  /* Canvas panel */
+  .canvas-wrap {
+    flex: 1; min-width: 0; position: relative;
+    background: #000; border-radius: 10px;
+    overflow: hidden; cursor: crosshair;
+  }
+  #bgImg { display: block; width: 100%; }
+  #overlayCanvas {
+    position: absolute; top: 0; left: 0;
+    width: 100%; z-index: 2; pointer-events: auto;
+  }
+  .canvas-placeholder {
+    width: 100%; aspect-ratio: 16/10;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: .95rem; background: #0a180a;
+  }
 
-    <!-- ── Tab 1: Grid Calibration ─────────────────────────────────── -->
-    <div class="tab-pane fade show active" id="tabGrid">
-      <div class="card stat-card p-4">
-        <h6 class="mb-3">Step 1 — Upload a full-resolution tray image</h6>
-        <p class="text-muted small">
-          Upload the image, then click the <strong>4 corners</strong> of the tray grid
-          in order: <span class="badge bg-primary">TL</span>
-          <span class="badge bg-success">TR</span>
-          <span class="badge bg-warning text-dark">BR</span>
-          <span class="badge bg-danger">BL</span>.
-          When all 4 corners are marked, click <em>Compute Grid</em>.
-        </p>
+  /* Right controls */
+  .right-col {
+    width: 300px; flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .restore-row { display: flex; align-items: center; gap: 10px; }
+  .restore-row .btn { flex: 1; white-space: nowrap; font-size: .9rem; padding: 11px 8px; }
+  .restore-ts {
+    font-size: .8rem; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .instr-box {
+    background: #0a180a; border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px;
+    font-size: .78rem; color: #9db89d; line-height: 1.6;
+  }
+  .instr-box p { margin-bottom: 2px; }
+  .section-label {
+    font-size: .75rem; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted);
+    padding: 2px 0; border-top: 1px solid var(--border);
+  }
+  #statusMsg { font-size: .82rem; color: var(--muted); text-align: center; min-height: 18px; }
+</style>
+{% endblock %}
 
-        <div class="mb-3">
-          <label class="form-label fw-semibold">Calibration image</label>
-          <input type="file" class="form-control" id="gridImageInput" accept="image/*">
-        </div>
-
-        <div id="canvasWrapper" class="mb-3 d-none">
-          <canvas id="calibCanvas"></canvas>
-          <div class="mt-2 d-flex gap-2 align-items-center flex-wrap" id="cornerStatus">
-            <span class="text-muted small">Corners marked:</span>
-            <span id="cornerCount" class="fw-bold">0 / 4</span>
-            <button class="btn btn-sm btn-outline-secondary" id="resetCornersBtn">Reset</button>
-          </div>
-        </div>
-
-        <div id="gridResult" class="alert d-none"></div>
-
-        <button class="btn btn-primary" id="computeGridBtn" disabled>
-          Compute Grid
-        </button>
-      </div>
-    </div>
-
-    <!-- ── Tab 2: Color Reference ──────────────────────────────────── -->
-    <div class="tab-pane fade" id="tabColors">
-      <div class="card stat-card p-4">
-        <h6 class="mb-3">Extract reference colors from a tray image</h6>
-        <p class="text-muted small">
-          Upload an image that shows the <strong>reference row</strong> (15 calibration bottles).
-          The server will extract Lab colors from the 5 level groups and show you swatches.
-          Click <em>Save Color Reference</em> to persist the results to <code>color.json</code>.
-        </p>
-
-        <div class="mb-3">
-          <label class="form-label fw-semibold">Reference image</label>
-          <input type="file" class="form-control" id="colorImageInput" accept="image/*">
-        </div>
-
-        <button class="btn btn-primary mb-3" id="extractColorsBtn" disabled>
-          Extract Colors
-        </button>
-
-        <div id="swatchContainer" class="d-none mb-3">
-          <h6>Extracted color reference</h6>
-          <div id="swatchRow" class="d-flex flex-wrap gap-3"></div>
-        </div>
-
-        <div id="colorResult" class="alert d-none"></div>
-
-        <button class="btn btn-success d-none" id="saveColorsBtn">
-          Save Color Reference
-        </button>
-      </div>
-    </div>
-
-  </div>
+{% block content %}
+<div class="page-header">
+  <h1>การตั้งค่าและปรับตาราง</h1>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-  integrity="sha384-YvpcrYf0tY3lHB60NNkmXc4s9bIOgUxi8T/jzmQjejBxFm+H5HLUF8H3PBzVtpw7"
-  crossorigin="anonymous"></script>
-<script src="/static/settings.js"></script>
-</body>
-</html>
+<!-- Color reference table -->
+<div class="color-table-wrap">
+  <table class="color-ref-table" id="colorRefTable">
+    <thead>
+      <tr id="colorHeaderRow">
+        {% set baseline = color_data.get("baseline", {}) %}
+        {% for i in range(5) %}
+          {% set info = baseline.get(i|string, {}) %}
+          {% set hex  = info.get("hex", "#------") %}
+          <th colspan="3">
+            <span class="color-swatch" style="background:{{ hex }}"></span>{{ hex }}
+          </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      <tr id="colorDetailRow">
+        {% set bottles = color_data.get("bottles", {}) %}
+        {% for i in range(5) %}
+          {% set group = bottles.get(i|string, []) %}
+          {% for j in range(3) %}
+            {% if j < group|length %}
+              {% set bhex = group[j].get("hex", "#------") %}
+              <td><span class="color-swatch" style="background:{{ bhex }}"></span>{{ bhex }}</td>
+            {% else %}
+              <td style="color:var(--muted)">—</td>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Main content -->
+<div class="main-grid">
+
+  <!-- Left: calibration canvas -->
+  <div class="canvas-wrap" id="canvasWrap">
+    {% if latest_capture %}
+      <img id="bgImg" src="{{ latest_capture }}" alt="">
+    {% else %}
+      <div class="canvas-placeholder" id="placeholder">
+        อัพโหลดภาพหรือถ่ายภาพจากกล้องเพื่อเริ่มต้น
+      </div>
+    {% endif %}
+    <canvas id="overlayCanvas"></canvas>
+  </div>
+
+  <!-- Right: controls -->
+  <div class="right-col">
+
+    <div class="btn-row">
+      <button class="btn btn-blue" id="captureBtn">ถ่ายภาพจากกล้อง</button>
+      <button class="btn btn-blue" id="uploadBtn">อัพโหลดภาพ</button>
+    </div>
+    <input type="file" id="fileInput" accept="image/*" style="display:none">
+
+    <div class="restore-row">
+      <button class="btn btn-green" id="restoreBtn">คืนค่าตาราง</button>
+      <span class="restore-ts" id="gridTs">
+        {% if thai_grid_date %}ล่าสุด: {{ thai_grid_date }}{% endif %}
+      </span>
+    </div>
+
+    <div class="instr-box">
+      <p>Step 1: Choose an image source above.</p>
+      <p>Step 2: Click the 4 outer corners of the grid in order:</p>
+      <p>&nbsp;&nbsp;&nbsp;&nbsp;Top-Left → Top-Right → Bottom-Right → Bottom-Left.</p>
+      <p>Step 3: Drag grid lines to fine-tune if needed.</p>
+      <p>Step 4: Click Save Calibration.</p>
+    </div>
+
+    <div class="section-label">ตาราง</div>
+    <button class="btn btn-red"   id="resetGridBtn">รีเซ็ตค่าตาราง</button>
+    <button class="btn btn-green" id="saveGridBtn">บันทึกค่าตาราง</button>
+
+    <div class="section-label">สีอ้างอิง</div>
+    <button class="btn btn-red"   id="resetColorBtn">รีเซ็ตค่าสี</button>
+    <button class="btn btn-green" id="saveColorBtn">บันทึกค่าสี</button>
+
+    <div id="statusMsg"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+'use strict';
+
+let corners = [], imgW = 0, imgH = 0, currentImgSrc = null;
+const overlay = document.getElementById('overlayCanvas');
+const oc      = overlay.getContext('2d');
+const wrap    = document.getElementById('canvasWrap');
+const statusEl = document.getElementById('statusMsg');
+const CORNER_COLORS = ['#2196f3','#4caf50','#ff9800','#f44336'];
+const CORNER_LABELS = ['TL','TR','BR','BL'];
+const NH = 14, NV = 17;
+
+function syncOverlay() {
+  const img = document.getElementById('bgImg');
+  if (!img) return;
+  overlay.style.width  = img.clientWidth  + 'px';
+  overlay.style.height = img.clientHeight + 'px';
+  overlay.width  = img.clientWidth;
+  overlay.height = img.clientHeight;
+  imgW = img.naturalWidth  || img.clientWidth;
+  imgH = img.naturalHeight || img.clientHeight;
+}
+window.addEventListener('resize', () => { syncOverlay(); redraw(); });
+
+function loadImage(src) {
+  currentImgSrc = src; corners = [];
+  let img = document.getElementById('bgImg');
+  const ph = document.getElementById('placeholder');
+  if (ph) ph.remove();
+  if (!img) {
+    img = document.createElement('img');
+    img.id = 'bgImg'; img.style.width = '100%'; img.style.display = 'block';
+    wrap.insertBefore(img, overlay);
+  }
+  img.onload = () => { syncOverlay(); redraw(); };
+  img.src = src; status('');
+}
+
+function lerp2([ax,ay],[bx,by],t) { return [ax+t*(bx-ax), ay+t*(by-ay)]; }
+function gridPts(c) {
+  const [tl,tr,br,bl] = c, pts = [];
+  for (let r=0;r<NH;r++) {
+    const row=[], tR=r/(NH-1);
+    for (let col=0;col<NV;col++) {
+      const tC=col/(NV-1);
+      row.push(lerp2(lerp2(tl,tr,tC), lerp2(bl,br,tC), tR));
+    }
+    pts.push(row);
+  }
+  return pts;
+}
+function toD([ox,oy]) { return [ox*(overlay.width/imgW), oy*(overlay.height/imgH)]; }
+function toO(dx,dy)   { return [dx*(imgW/overlay.width), dy*(imgH/overlay.height)]; }
+
+function redraw() {
+  oc.clearRect(0,0,overlay.width,overlay.height);
+  if (!overlay.width) return;
+  if (corners.length===4) {
+    const pts = gridPts(corners);
+    oc.strokeStyle='rgba(255,255,255,0.45)'; oc.lineWidth=0.8;
+    for (let r=0;r<NH;r++) { oc.beginPath(); pts[r].forEach(([ox,oy],c)=>{ const [x,y]=toD([ox,oy]); c?oc.lineTo(x,y):oc.moveTo(x,y); }); oc.stroke(); }
+    for (let c=0;c<NV;c++) { oc.beginPath(); pts.forEach((row,r)=>{ const [x,y]=toD(row[c]); r?oc.lineTo(x,y):oc.moveTo(x,y); }); oc.stroke(); }
+    oc.strokeStyle='#fff'; oc.lineWidth=1.5; oc.setLineDash([6,4]);
+    oc.beginPath(); corners.forEach(([ox,oy],i)=>{ const [x,y]=toD([ox,oy]); i?oc.lineTo(x,y):oc.moveTo(x,y); }); oc.closePath(); oc.stroke(); oc.setLineDash([]);
+  }
+  corners.forEach(([ox,oy],i)=>{
+    const [dx,dy]=toD([ox,oy]), col=CORNER_COLORS[i];
+    oc.strokeStyle=col; oc.lineWidth=2;
+    oc.beginPath(); oc.moveTo(dx-16,dy); oc.lineTo(dx+16,dy); oc.moveTo(dx,dy-16); oc.lineTo(dx,dy+16); oc.stroke();
+    oc.fillStyle=col; oc.beginPath(); oc.arc(dx,dy,6,0,2*Math.PI); oc.fill();
+    oc.fillStyle='#fff'; oc.font='bold 12px Sarabun,sans-serif'; oc.fillText(CORNER_LABELS[i],dx+9,dy-6);
+  });
+  if (corners.length>0 && corners.length<4) {
+    oc.fillStyle='rgba(255,255,255,.7)'; oc.font='13px Sarabun,sans-serif';
+    oc.fillText(`คลิกมุม ${CORNER_LABELS[corners.length]} (${corners.length+1}/4)`, 10, overlay.height-12);
+  }
+}
+
+overlay.addEventListener('click', function(e) {
+  if (!currentImgSrc||corners.length>=4) return;
+  const r=overlay.getBoundingClientRect();
+  const sx=overlay.width/r.width, sy=overlay.height/r.height;
+  corners.push(toO((e.clientX-r.left)*sx, (e.clientY-r.top)*sy));
+  redraw();
+  status(corners.length===4 ? '4 มุมครบแล้ว — กด "บันทึกค่าตาราง"' : `เลือกมุม ${corners.length}/4`);
+});
+
+document.getElementById('uploadBtn').addEventListener('click', ()=>document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', function(){ if(this.files[0]){const r=new FileReader();r.onload=e=>loadImage(e.target.result);r.readAsDataURL(this.files[0]);} });
+
+document.getElementById('captureBtn').addEventListener('click', async function(){
+  this.disabled=true; status('กำลังโหลดภาพล่าสุด…');
+  try { const d=await (await fetch('/api/latest-capture')).json(); d.url?loadImage(d.url):status('ไม่พบภาพ'); } catch(e){status('ข้อผิดพลาด: '+e.message);}
+  this.disabled=false;
+});
+
+document.getElementById('restoreBtn').addEventListener('click', async function(){
+  this.disabled=true; status('กำลังโหลดค่าตาราง…');
+  try {
+    const d=await (await fetch('/api/settings/grid-corners')).json();
+    if(d.corners?.length===4){corners=d.corners.map(([x,y])=>[x,y]);syncOverlay();redraw();
+      if(d.calibration_date){const [y,m,dd]=d.calibration_date.split('-').map(Number);document.getElementById('gridTs').textContent=`ล่าสุด: ${dd}/${m}/${y+543}`;}
+      status('โหลดค่าตารางสำเร็จ');}else{status('ยังไม่มีค่าตารางที่บันทึกไว้');}
+  } catch(e){status('ข้อผิดพลาด: '+e.message);}
+  this.disabled=false;
+});
+
+document.getElementById('resetGridBtn').addEventListener('click', ()=>{corners=[];redraw();status('รีเซ็ตแล้ว — คลิก 4 มุมอีกครั้ง');});
+
+document.getElementById('saveGridBtn').addEventListener('click', async function(){
+  if(corners.length!==4){status('กรุณาเลือก 4 มุมก่อน');return;}
+  this.disabled=true; status('กำลังบันทึก…');
+  try {
+    const blob=await getBlob(); if(!blob){status('ไม่พบภาพ');this.disabled=false;return;}
+    const fd=new FormData(); fd.append('file',blob,'calibration.jpg'); fd.append('corners',JSON.stringify(corners));
+    const resp=await fetch('/settings/grid',{method:'POST',body:fd}); const d=await resp.json();
+    if(resp.ok){const [y,m,dd]=d.calibration_date.split('-').map(Number);document.getElementById('gridTs').textContent=`ล่าสุด: ${dd}/${m}/${y+543}`;status('บันทึกสำเร็จ ✓');}
+    else{status('เกิดข้อผิดพลาด: '+(d.detail||'?'));}
+  }catch(e){status('เกิดข้อผิดพลาด: '+e.message);}
+  this.disabled=false;
+});
+
+document.getElementById('resetColorBtn').addEventListener('click', ()=>status('รีเซ็ตค่าสี — กด "บันทึกค่าสี" เพื่อดึงใหม่'));
+
+document.getElementById('saveColorBtn').addEventListener('click', async function(){
+  if(!currentImgSrc){status('กรุณาโหลดภาพก่อน');return;}
+  this.disabled=true; status('กำลังดึงสีอ้างอิง…');
+  try {
+    const blob=await getBlob(); if(!blob){status('ไม่พบภาพ');this.disabled=false;return;}
+    const fd=new FormData(); fd.append('file',blob,'ref.jpg');
+    const resp=await fetch('/settings/colors',{method:'POST',body:fd}); const d=await resp.json();
+    if(resp.ok){updateColorTable(d.swatches||[]);status(`บันทึกค่าสีสำเร็จ ✓ (${d.swatches?.length||0} ระดับ)`);}
+    else{status('เกิดข้อผิดพลาด: '+(d.detail||'?'));}
+  }catch(e){status('เกิดข้อผิดพลาด: '+e.message);}
+  this.disabled=false;
+});
+
+function updateColorTable(swatches) {
+  const hCells=document.getElementById('colorHeaderRow').querySelectorAll('th');
+  swatches.forEach(s=>{ const lvl=parseInt(s.level); if(hCells[lvl]) hCells[lvl].innerHTML=`<span class="color-swatch" style="background:${s.hex}"></span>${s.hex}`; });
+}
+
+async function getBlob() {
+  const fi=document.getElementById('fileInput');
+  if(fi.files[0]) return fi.files[0];
+  if(!currentImgSrc) return null;
+  try { return await (await fetch(currentImgSrc)).blob(); } catch { return null; }
+}
+
+function status(msg){ statusEl.textContent=msg; }
+
+window.addEventListener('load', function(){
+  const img=document.getElementById('bgImg');
+  if(img){ if(img.complete){syncOverlay();redraw();}else{img.onload=()=>{syncOverlay();redraw();};} currentImgSrc=img.src; }
+});
+</script>
+{% endblock %}

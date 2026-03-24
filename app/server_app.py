@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -171,32 +171,52 @@ def _run_color_analysis(
     grid_cfg,
 ) -> tuple[dict[str, int], dict[str, dict], dict[str, int]]:
     """
-    Map detected boxes onto grid slots, classify colors, return summary + detail dicts.
+    Map detected boxes onto grid slots, classify colors using K-means
+    nearest-centroid assignment in CIE Lab space.
+
+    Centroid priority
+    -----------------
+    1. color.json  — 5 pre-calibrated centroids, each = mean Lab of the 3
+                     reference bottles for that class (build_kmeans_centroids).
+    2. Live frame  — dynamically sample the reference row in the current image
+                     (build_reference_baseline), used when color.json is absent.
+    3. Fallback    — return empty dicts if neither source yields a baseline.
 
     Returns:
-        summary           — {f"L{i}": count} per color level
+        summary           — {"L0"…"L4": count} per color level
         sample_hits       — {slot_id: {"cx": int, "cy": int}} for each assigned box
         classified_levels — {slot_id: level_int} for color-zone validation
     """
     from utils.color_analysis import (
+        build_kmeans_centroids,
         build_reference_baseline,
         classify_sample,
         extract_bottle_color,
     )
+    from configs.config import COLOR_JSON_FILE
 
     summary:           dict[str, int]  = {f"L{i}": 0 for i in range(5)}
     sample_hits:       dict[str, dict] = {}
     classified_levels: dict[str, int]  = {}
 
-    # Build reference baseline from reference-row slots in this frame
-    ref_positions = grid_cfg.get_reference_positions()
-    if not ref_positions:
-        return summary, sample_hits, classified_levels
+    # ── Step 1: build K-means centroids ──────────────────────────────────
+    # Primary: load from color.json (3 reference bottles → mean per class)
+    baseline = build_kmeans_centroids(COLOR_JSON_FILE)
 
-    baseline = build_reference_baseline(img, ref_positions)
     if not baseline:
+        # Fallback: sample reference row live from this frame
+        logger.debug("color.json centroids unavailable — falling back to live reference extraction")
+        ref_positions = grid_cfg.get_reference_positions()
+        if ref_positions:
+            baseline = build_reference_baseline(img, ref_positions)
+
+    if not baseline:
+        logger.warning("No color baseline available — skipping color classification")
         return summary, sample_hits, classified_levels
 
+    logger.debug("Color baseline loaded: {} levels", len(baseline))
+
+    # ── Step 2: assign each detected box to a slot + classify ────────────
     for box in boxes_orig:
         cx     = int((box[0] + box[2]) / 2)
         cy     = int((box[1] + box[3]) / 2)
@@ -206,17 +226,26 @@ def _run_color_analysis(
         if slot_id is None or slot_id in grid_cfg.reference_slots:
             continue
 
+        # Deduplicate: keep first (highest-confidence YOLO box) per slot
+        if slot_id in sample_hits:
+            continue
+
         sample_hits[slot_id] = {"cx": cx, "cy": cy}
 
+        # ── Step 3: extract median Lab from bottle center (inner crop) ────
         lab = extract_bottle_color(img, cx, cy, radius)
         if lab is None:
             continue
 
-        level, _delta_e, _confident = classify_sample(lab, baseline)
+        # ── Step 4: nearest-centroid assignment (≡ K-means assign step) ──
+        level, delta_e, confident = classify_sample(lab, baseline)
         if level is not None:
             classified_levels[slot_id] = level
-            label = f"L{level}"
-            summary[label] = summary.get(label, 0) + 1
+            summary[f"L{level}"] = summary.get(f"L{level}", 0) + 1
+            logger.debug(
+                "Slot {} → L{} (ΔE={:.1f}, confident={})",
+                slot_id, level, delta_e, confident,
+            )
 
     return summary, sample_hits, classified_levels
 
@@ -329,13 +358,21 @@ async def analyze(file: UploadFile = File(...)):
         logger.warning("Telegram notification failed: {}", exc)
 
     return {
-        "status":        "success",
-        "count":         count,
-        "color_summary": color_summary,
-        "errors":        errors,
-        "timestamp":     now.isoformat(),
-        "image_id":      image_id,
+        "status":               "success",
+        "total_physical_count": count,   # total unique occupied slots (for TM1637)
+        "count":                count,   # legacy alias
+        "summary":              color_summary,  # per-level counts keyed L0–L4
+        "color_summary":        color_summary,  # legacy alias
+        "errors":               errors,
+        "timestamp":            now.isoformat(),
+        "image_id":             image_id,
     }
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard")
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -349,24 +386,104 @@ async def dashboard(request: Request):
         )
         total_scans = session.execute(text("SELECT COUNT(*) FROM results")).scalar() or 0
 
-    latest_count = results[0].count if results else 0
-    avg_count = (
-        round(sum(r.count for r in results) / len(results), 1) if results else 0
-    )
-    latest_image = results[0].image_path if results else None
+    latest_colors: dict[str, int] = {f"L{i}": 0 for i in range(5)}
+    latest_errors: dict           = {}
+    latest_image:  str | None     = None
+    thai_timestamp: str           = "—"
+
+    if results:
+        r = results[0]
+        latest_image = r.image_path
+        try:
+            latest_colors = json.loads(r.color_json) if r.color_json else latest_colors
+        except Exception:
+            pass
+        try:
+            latest_errors = json.loads(r.errors_json) if r.errors_json else {}
+        except Exception:
+            pass
+        ts = r.timestamp
+        thai_year = ts.year + 543
+        thai_timestamp = f"{ts.day}/{ts.month}/{thai_year} เวลา {ts.strftime('%H%M')}"
 
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
-            "results":       results,
-            "total_scans":   total_scans,
-            "latest_count":  latest_count,
-            "avg_count":     avg_count,
-            "latest_image":  latest_image,
-            "last_updated":  datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            "results":        results,
+            "total_scans":    total_scans,
+            "latest_image":   latest_image,
+            "latest_colors":  latest_colors,   # {L0..L4: count}
+            "latest_errors":  latest_errors,   # {duplicate_slots, wrong_color_slots}
+            "thai_timestamp": thai_timestamp,
         },
     )
+
+
+# ─── Trend analysis ───────────────────────────────────────────────────────────
+
+@app.get("/trend", response_class=HTMLResponse)
+async def trend_page(request: Request):
+    return templates.TemplateResponse(request=request, name="trend.html", context={})
+
+
+@app.get("/api/trend")
+async def api_trend(from_date: str = None, to_date: str = None):
+    """
+    Return historical scan records as JSON for the trend chart.
+
+    from_date / to_date: Thai Buddhist date string "D/M/YYYY" (e.g. "1/1/2569").
+    """
+    def _parse_thai(s: str) -> datetime | None:
+        try:
+            d, m, y = s.strip().split("/")
+            return datetime(int(y) - 543, int(m), int(d))
+        except Exception:
+            return None
+
+    with _Session() as session:
+        query = session.query(AnalysisResult).order_by(AnalysisResult.timestamp.asc())
+
+        if from_date:
+            dt = _parse_thai(from_date)
+            if dt:
+                query = query.filter(AnalysisResult.timestamp >= dt)
+        if to_date:
+            dt = _parse_thai(to_date)
+            if dt:
+                # include the whole day
+                query = query.filter(AnalysisResult.timestamp < dt + timedelta(days=1))
+
+        rows = query.limit(500).all()
+
+    records = []
+    for r in rows:
+        colors: dict = {}
+        errors: dict = {}
+        try:
+            colors = json.loads(r.color_json) if r.color_json else {}
+        except Exception:
+            pass
+        try:
+            errors = json.loads(r.errors_json) if r.errors_json else {}
+        except Exception:
+            pass
+
+        ts = r.timestamp
+        thai_year = ts.year + 543
+        records.append({
+            "id":         r.id,
+            "timestamp":  ts.isoformat(),
+            "thai_date":  f"{ts.day}/{ts.month}/{thai_year}",
+            "count":      r.count or 0,
+            "colors":     colors,
+            "n_errors":   (
+                len(errors.get("duplicate_slots",  [])) +
+                len(errors.get("wrong_color_slots", []))
+            ),
+        })
+
+    return {"data": records}
 
 
 # ─── Settings ─────────────────────────────────────────────────────────────────
@@ -376,31 +493,79 @@ async def settings_page(request: Request):
     grid_path  = Path("grid_config.json")
     color_path = Path("color.json")
 
-    grid_info  = None
-    color_info = None
+    grid_date   = None
+    color_date  = None
+    color_data: dict = {"baseline": {}, "bottles": {}}
 
     if grid_path.exists():
         try:
-            data = json.loads(grid_path.read_text())
-            grid_info = data.get("system_metadata", {}).get("calibration_date", "unknown")
+            d = json.loads(grid_path.read_text())
+            grid_date = d.get("system_metadata", {}).get("calibration_date", "unknown")
         except Exception:
-            grid_info = "invalid"
+            grid_date = "invalid"
 
     if color_path.exists():
         try:
-            data = json.loads(color_path.read_text())
-            color_info = data.get("calibration_date", "unknown")
+            d = json.loads(color_path.read_text())
+            color_date = d.get("calibration_date", "unknown")
+            color_data = d
         except Exception:
-            color_info = "invalid"
+            color_date = "invalid"
+
+    # Latest capture image URL
+    latest_capture: str | None = None
+    captures_dir = Path(cfg.captures_dir)
+    if captures_dir.exists():
+        imgs = sorted(captures_dir.glob("*.jpg"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        if imgs:
+            latest_capture = f"/static/captures/{imgs[0].name}"
+
+    # Thai timestamp for grid calibration date
+    thai_grid_date = "ยังไม่ได้ตั้งค่า"
+    if grid_date and grid_date not in ("unknown", "invalid"):
+        try:
+            from datetime import datetime as _dt
+            gd = _dt.strptime(grid_date, "%Y-%m-%d")
+            thai_grid_date = f"{gd.day}/{gd.month}/{gd.year + 543}"
+        except Exception:
+            thai_grid_date = grid_date
 
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
         context={
-            "grid_date":  grid_info,
-            "color_date": color_info,
+            "grid_date":      grid_date,
+            "color_date":     color_date,
+            "color_data":     color_data,
+            "latest_capture": latest_capture,
+            "thai_grid_date": thai_grid_date,
         },
     )
+
+
+@app.get("/api/latest-capture")
+async def api_latest_capture():
+    """Return the URL of the most recent captured image."""
+    captures_dir = Path(cfg.captures_dir)
+    if captures_dir.exists():
+        imgs = sorted(captures_dir.glob("*.jpg"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        if imgs:
+            return {"url": f"/static/captures/{imgs[0].name}"}
+    return {"url": None}
+
+
+@app.get("/api/settings/grid-corners")
+async def api_grid_corners():
+    """Return the 4 corner coordinates from the current grid_config.json."""
+    try:
+        d = json.loads(Path("grid_config.json").read_text())
+        corners = d.get("system_metadata", {}).get("corners", None)
+        calibration_date = d.get("system_metadata", {}).get("calibration_date", None)
+        return {"corners": corners, "calibration_date": calibration_date}
+    except Exception:
+        return {"corners": None, "calibration_date": None}
 
 
 @app.post("/settings/grid")

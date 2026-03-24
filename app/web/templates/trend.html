@@ -1,0 +1,265 @@
+{% extends "layout.html" %}
+
+{% block title %}การวิเคราะห์แนวโน้ม — การตรวจวัดสีปัสสาวะ{% endblock %}
+
+{% block head %}
+<style>
+  /* ── Trend-specific styles ───────────────────────────────────────── */
+  .main-grid {
+    display: flex;
+    gap: 24px;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px 40px;
+    align-items: flex-start;
+  }
+  @media (max-width: 820px) {
+    .main-grid { flex-direction: column; }
+    .right-col  { width: 100% !important; }
+  }
+
+  /* Chart panel */
+  .chart-panel {
+    flex: 1; min-width: 0;
+    background: #ffffff;
+    border-radius: 12px;
+    padding: 12px;
+    min-height: 400px;
+    position: relative;
+  }
+  #trendChart { width: 100% !important; }
+  .chart-empty {
+    display: flex; align-items: center; justify-content: center;
+    height: 360px; color: #999; font-size: 1rem;
+  }
+
+  /* Controls column */
+  .right-col {
+    width: 280px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    gap: 20px; padding-top: 8px;
+  }
+
+  .filter-group label {
+    display: block; font-weight: 700; font-size: 1rem;
+    margin-bottom: 8px; color: var(--text);
+  }
+  .filter-group input[type="text"] {
+    width: 100%;
+    background: #ffffff; color: #1a1a1a;
+    border: none; border-radius: 10px;
+    padding: 12px 16px;
+    font-family: 'Sarabun', sans-serif;
+    font-size: 1.05rem; font-weight: 600;
+    text-align: center; outline: none;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25);
+    transition: box-shadow .15s;
+  }
+  .filter-group input:focus { box-shadow: 0 0 0 3px rgba(0,200,83,.4); }
+
+  .btn-show, .btn-reset {
+    width: 100%; border: none; border-radius: 10px;
+    padding: 13px; font-family: 'Sarabun', sans-serif;
+    font-size: 1.05rem; font-weight: 700;
+    cursor: pointer; transition: background .15s, transform .1s;
+  }
+  .btn-show:active, .btn-reset:active { transform: scale(.97); }
+  .btn-show  { background: var(--green); color: #000; }
+  .btn-show:hover  { background: var(--green-h); }
+  .btn-reset { background: var(--red);   color: #fff; }
+  .btn-reset:hover { background: var(--red-h); }
+
+  .legend { display: flex; flex-direction: column; gap: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: .9rem; }
+  .legend-dot  { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+
+  #statusMsg {
+    font-size: .85rem; min-height: 20px;
+    text-align: center; color: var(--muted);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>การวิเคราะห์แนวโน้ม</h1>
+</div>
+
+<div class="main-grid">
+
+  <!-- Left: chart -->
+  <div class="chart-panel">
+    <canvas id="trendChart"></canvas>
+    <div class="chart-empty" id="emptyMsg">กรุณาเลือกช่วงวันที่ แล้วกด แสดงผล</div>
+  </div>
+
+  <!-- Right: controls -->
+  <div class="right-col">
+
+    <div class="filter-group">
+      <label>ตั้งแต่วันที่</label>
+      <input type="text" id="fromDate" placeholder="D/M/YYYY" autocomplete="off">
+    </div>
+
+    <div class="filter-group">
+      <label>ถึงวันที่</label>
+      <input type="text" id="toDate" placeholder="D/M/YYYY" autocomplete="off">
+    </div>
+
+    <button class="btn-show"  id="showBtn">แสดงผล</button>
+    <button class="btn-reset" id="resetBtn">รีเซ็ตค่า</button>
+
+    <div id="statusMsg"></div>
+
+    <div class="legend" id="chartLegend" style="display:none;">
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#1565c0"></div>
+        <span>จำนวนขวด (แนวโน้ม)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#c62828"></div>
+        <span>ข้อผิดพลาด (แนวโน้ม)</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+'use strict';
+
+const canvas   = document.getElementById('trendChart');
+const emptyMsg = document.getElementById('emptyMsg');
+const statusEl = document.getElementById('statusMsg');
+const legendEl = document.getElementById('chartLegend');
+let chartInst  = null;
+
+const BLUE      = '#1565c0';
+const BLUE_L    = 'rgba(21,101,192,0.55)';
+const BLUE_BAND = 'rgba(21,101,192,0.12)';
+const RED       = '#c62828';
+const RED_L     = 'rgba(198,40,40,0.55)';
+const RED_BAND  = 'rgba(198,40,40,0.12)';
+
+function linReg(xs, ys) {
+  const n = xs.length;
+  if (n < 2) return null;
+  const mx = xs.reduce((s,v) => s+v, 0) / n;
+  const my = ys.reduce((s,v) => s+v, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (xs[i]-mx)*(ys[i]-my); den += (xs[i]-mx)**2; }
+  if (den === 0) return null;
+  const slope = num/den, intercept = my - slope*mx;
+  let ssRes = 0;
+  for (let i = 0; i < n; i++) { const p = slope*xs[i]+intercept; ssRes += (ys[i]-p)**2; }
+  return { slope, intercept, std: Math.sqrt(ssRes/n) };
+}
+const trendPts  = (reg, xs) => xs.map(x => ({ x, y: reg.slope*x + reg.intercept }));
+const bandUpper = (reg, xs) => xs.map(x => ({ x, y: reg.slope*x + reg.intercept + reg.std }));
+const bandLower = (reg, xs) => xs.map(x => ({ x, y: reg.slope*x + reg.intercept - reg.std }));
+
+function buildDatasets(records) {
+  const xs     = records.map((_,i) => i+1);
+  const counts = records.map(r => r.count);
+  const errors = records.map(r => r.n_errors);
+  const labels = records.map(r => r.thai_date);
+  const regC   = linReg(xs, counts);
+  const regE   = linReg(xs, errors);
+  const t2     = [xs[0], xs[xs.length-1]];
+  const ds = [
+    { type:'scatter', label:'จำนวนขวด',   data: xs.map((x,i)=>({x,y:counts[i]})), backgroundColor: BLUE_L, pointRadius:6, pointHoverRadius:8, order:4 },
+    { type:'scatter', label:'ข้อผิดพลาด', data: xs.map((x,i)=>({x,y:errors[i]})), backgroundColor: RED_L,  pointRadius:6, pointHoverRadius:8, order:4 },
+  ];
+  if (regC) {
+    ds.push({ type:'line', label:'_bcu', data:bandUpper(regC,t2), backgroundColor:BLUE_BAND, borderColor:'transparent', pointRadius:0, fill:'+1', tension:0, order:3 });
+    ds.push({ type:'line', label:'_bcl', data:bandLower(regC,t2), backgroundColor:BLUE_BAND, borderColor:'transparent', pointRadius:0, fill:false, tension:0, order:3 });
+    ds.push({ type:'line', label:'แนวโน้มจำนวน', data:trendPts(regC,t2), borderColor:BLUE, borderWidth:2.5, pointRadius:0, fill:false, tension:0, order:2 });
+  }
+  if (regE) {
+    ds.push({ type:'line', label:'_beu', data:bandUpper(regE,t2), backgroundColor:RED_BAND, borderColor:'transparent', pointRadius:0, fill:'+1', tension:0, order:3 });
+    ds.push({ type:'line', label:'_bel', data:bandLower(regE,t2), backgroundColor:RED_BAND, borderColor:'transparent', pointRadius:0, fill:false, tension:0, order:3 });
+    ds.push({ type:'line', label:'แนวโน้มข้อผิดพลาด', data:trendPts(regE,t2), borderColor:RED, borderWidth:2.5, pointRadius:0, fill:false, tension:0, order:2 });
+  }
+  return { ds, labels };
+}
+
+function renderChart(records) {
+  if (chartInst) { chartInst.destroy(); chartInst = null; }
+  emptyMsg.style.display = 'none';
+  canvas.style.display   = 'block';
+  legendEl.style.display = 'flex';
+  const { ds, labels } = buildDatasets(records);
+  chartInst = new Chart(canvas, {
+    data: { datasets: ds },
+    options: {
+      responsive: true,
+      interaction: { mode:'index', intersect:false },
+      plugins: {
+        legend: {
+          display: true,
+          labels: { filter: item => !item.text.startsWith('_'), color:'#333', font:{ family:'Sarabun', size:12 } },
+        },
+        tooltip: {
+          filter: item => !item.dataset.label.startsWith('_'),
+          callbacks: { title: ctx => { const i=ctx[0].parsed.x-1; return labels[i] ?? `สแกน ${ctx[0].parsed.x}`; } },
+        },
+      },
+      scales: {
+        x: { type:'linear', title:{ display:true, text:'ลำดับการสแกน', color:'#555', font:{family:'Sarabun',size:12} }, ticks:{color:'#555',font:{family:'Sarabun'}}, grid:{color:'rgba(0,0,0,.08)'} },
+        y: { beginAtZero:true, title:{ display:true, text:'จำนวน (นาย / ข้อผิดพลาด)', color:'#555', font:{family:'Sarabun',size:12} }, ticks:{color:'#555',font:{family:'Sarabun'}}, grid:{color:'rgba(0,0,0,.08)'} },
+      },
+    },
+  });
+}
+
+async function fetchData() {
+  const from = document.getElementById('fromDate').value.trim();
+  const to   = document.getElementById('toDate').value.trim();
+  if (!from && !to) { statusEl.textContent = 'กรุณาระบุช่วงวันที่'; return; }
+  statusEl.textContent = 'กำลังโหลดข้อมูล…';
+  showBtn.disabled = true;
+  try {
+    const p = new URLSearchParams();
+    if (from) p.set('from_date', from);
+    if (to)   p.set('to_date', to);
+    const resp = await fetch(`/api/trend?${p}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
+    const records = json.data || [];
+    if (!records.length) {
+      emptyMsg.textContent = 'ไม่พบข้อมูลในช่วงวันที่ที่เลือก';
+      emptyMsg.style.display = 'flex';
+      canvas.style.display   = 'none';
+      legendEl.style.display = 'none';
+      if (chartInst) { chartInst.destroy(); chartInst = null; }
+      statusEl.textContent = '';
+    } else {
+      renderChart(records);
+      statusEl.textContent = `แสดงผล ${records.length} รายการ`;
+    }
+  } catch (err) {
+    statusEl.textContent = `ข้อผิดพลาด: ${err.message}`;
+  } finally {
+    showBtn.disabled = false;
+  }
+}
+
+const showBtn  = document.getElementById('showBtn');
+const resetBtn = document.getElementById('resetBtn');
+showBtn.addEventListener('click', fetchData);
+resetBtn.addEventListener('click', function () {
+  document.getElementById('fromDate').value = '';
+  document.getElementById('toDate').value   = '';
+  statusEl.textContent   = '';
+  legendEl.style.display = 'none';
+  emptyMsg.textContent   = 'กรุณาเลือกช่วงวันที่ แล้วกด แสดงผล';
+  emptyMsg.style.display = 'flex';
+  canvas.style.display   = 'none';
+  if (chartInst) { chartInst.destroy(); chartInst = null; }
+});
+document.getElementById('toDate').addEventListener('keydown', e => { if (e.key === 'Enter') fetchData(); });
+</script>
+{% endblock %}

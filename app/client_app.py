@@ -131,8 +131,8 @@ def _on_button_press(lcd, tm, server_url: str) -> None:
         _tm(tm, "Err")
         return
 
-    count        = data.get("count", 0)
-    color_summary: dict = data.get("color_summary", {})
+    count        = data.get("total_physical_count", data.get("count", 0))
+    color_summary: dict = data.get("summary", data.get("color_summary", {}))
     errors:       dict = data.get("errors", {})
     dup_n  = len(errors.get("duplicate_slots",  []))
     wc_n   = len(errors.get("wrong_color_slots", []))

@@ -170,6 +170,55 @@ def load_static_baseline(path="color.json"):
         return {}
 
 
+def build_kmeans_centroids(path="color.json"):
+    """
+    Compute K-means initial centroids (k=5) from the 3 individual reference
+    bottle Lab values stored in color.json under the "bottles" key.
+
+    Each centroid is the mean of the 3 reference bottles for that class,
+    computed directly from the raw Lab measurements rather than from the
+    pre-averaged "baseline" key.  This makes the centroid origin explicit
+    and independent of how the file was generated.
+
+    Centroid assignment uses nearest-centroid (minimum Delta E CIE76 in Lab
+    space), which is equivalent to the assignment step of K-means with fixed
+    centroids — no iteration needed because the reference set is already the
+    ground truth.
+
+    Args:
+        path: path to color.json (default "color.json")
+
+    Returns:
+        dict {level (int): (L, a, b)} — one centroid per color class (0–4).
+        Returns empty dict if the file is missing, malformed, or has no
+        "bottles" key with valid Lab values.
+    """
+    try:
+        data = json.loads(Path(path).read_text())
+        bottles = data.get("bottles", {})
+        if not bottles:
+            return {}
+
+        centroids: dict[int, tuple[float, float, float]] = {}
+        for cls_str, refs in bottles.items():
+            cls = int(cls_str)
+            labs = [
+                (float(b["lab"][0]), float(b["lab"][1]), float(b["lab"][2]))
+                for b in refs
+                if "lab" in b and len(b["lab"]) == 3
+            ]
+            if not labs:
+                continue
+            L = float(np.mean([v[0] for v in labs]))
+            a = float(np.mean([v[1] for v in labs]))
+            b = float(np.mean([v[2] for v in labs]))
+            centroids[cls] = (L, a, b)
+
+        return centroids
+    except Exception:
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Classification
 # ---------------------------------------------------------------------------
