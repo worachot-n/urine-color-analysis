@@ -72,26 +72,19 @@ def main() -> None:
             sys.exit(1)
         logger.info("Starting in CLIENT mode → {}", server_url)
 
-        # ── GPIO lifecycle: single owner, single cleanup point ────────────
-        import RPi.GPIO as GPIO  # noqa: N813
-
-        # Pre-clean: reset any stale sysfs state left by a previous crashed run.
-        # Without this, GPIO.wait_for_edge raises "Error waiting for edge" because
-        # /sys/class/gpio/gpioN/edge is still exported from the last process.
-        try:
-            GPIO.cleanup()
-        except Exception:
-            pass
-
         from app.client_app import run_client
         try:
             run_client(server_url=server_url)
+        except KeyboardInterrupt:
+            logger.info("Shutdown requested — exiting")
         finally:
+            # Single cleanup point — runs only when the process truly exits
             try:
+                import RPi.GPIO as GPIO  # noqa: N813
                 GPIO.cleanup()
+                logger.info("GPIO cleanup complete")
             except Exception:
                 pass
-            logger.info("GPIO cleanup complete")
 
 
 if __name__ == "__main__":

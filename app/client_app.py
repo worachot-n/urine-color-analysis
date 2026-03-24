@@ -81,17 +81,15 @@ def run_client(server_url: str) -> None:
 
     try:
         while True:
-            GPIO.wait_for_edge(
-                cfg.gpio_trigger_pin,
-                GPIO.FALLING,
-                bouncetime=cfg.button_debounce_ms,
-            )
-            time.sleep(0.05)  # debounce settle
-            _on_button_press(lcd, tm, GPIO, server_url)
-    except KeyboardInterrupt:
-        logger.info("Shutdown requested — exiting client loop")
+            # bouncetime omitted — it triggers add_event_detect internally which
+            # can raise "Error waiting for edge" on some kernels; debounce manually.
+            GPIO.wait_for_edge(cfg.gpio_trigger_pin, GPIO.FALLING)
+            time.sleep(cfg.button_debounce_ms / 1000.0)   # manual debounce
+            if GPIO.input(cfg.gpio_trigger_pin) == GPIO.LOW:
+                _on_button_press(lcd, tm, GPIO, server_url)
     finally:
-        # Turn relays off and drop TM1637 ref before caller does GPIO.cleanup()
+        # Runs on KeyboardInterrupt or any other exit — relays off, TM1637 ref dropped.
+        # GPIO.cleanup() is called by main.py after this returns.
         _relay_all_off(GPIO)
         try:
             import gc
@@ -99,7 +97,6 @@ def run_client(server_url: str) -> None:
             gc.collect()
         except Exception:
             pass
-        # GPIO.cleanup() is called by main.py after this returns — not here
 
 
 # ─── Button handler ───────────────────────────────────────────────────────────
