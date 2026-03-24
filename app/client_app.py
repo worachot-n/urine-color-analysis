@@ -51,52 +51,53 @@ _SPIN_FRAMES = ["-   ", " -  ", "  - ", "   -"]
 # ─── Public entry point ───────────────────────────────────────────────────────
 
 def run_client(server_url: str) -> None:
-    """Initialise hardware and enter the main event loop."""
+    """
+    Initialise hardware and enter the blocking event loop.
+
+    This function does NOT return until the process is killed (Ctrl+C or fatal
+    error).  GPIO.cleanup() is intentionally NOT called here — it is the sole
+    responsibility of the caller (main.py finally block).
+    """
     _check_imports()
 
     import RPi.GPIO as GPIO  # noqa: N813
 
+    # ── Step 1: GPIO mode — must be first, before any GPIO call ──────────
     GPIO.setmode(GPIO.BCM)
     GPIO.setwarnings(False)
 
+    # ── Step 2: Hardware init (safe now that BCM mode is set) ─────────────
     lcd = _init_lcd()
     tm  = _init_tm1637()
 
-    # Trigger button — input with pull-up (active LOW)
     GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
-    # Relay outputs — initialise to OFF before setting direction
     _relay_setup(GPIO)
 
     _lcd(lcd, "Urine Analyzer", "Ready")
-    _tm(tm, 0)           # 0000 on boot
-    _relay(GPIO, "idle") # Green ON
+    _tm(tm, 0)            # 0000 on boot
+    _relay(GPIO, "idle")  # Green ON
 
     logger.info(
-        "Client ready — GPIO{} button | relay pins R={} Y={} G={} | server: {}",
+        "Client ready — GPIO{} trigger | relay R={} Y={} G={} | server: {}",
         cfg.gpio_trigger_pin,
         cfg.relay_red_pin, cfg.relay_yellow_pin, cfg.relay_green_pin,
         server_url,
     )
 
+    # ── Step 3: Clear any stale edge-detection from a previous crashed run ─
+    # Without this, wait_for_edge with bouncetime raises "Error waiting for edge"
+    # because /sys/class/gpio/gpioN/edge is already exported from the old process.
     try:
-        while True:
-            # bouncetime omitted — it triggers add_event_detect internally which
-            # can raise "Error waiting for edge" on some kernels; debounce manually.
-            GPIO.wait_for_edge(cfg.gpio_trigger_pin, GPIO.FALLING)
-            time.sleep(cfg.button_debounce_ms / 1000.0)   # manual debounce
-            if GPIO.input(cfg.gpio_trigger_pin) == GPIO.LOW:
-                _on_button_press(lcd, tm, GPIO, server_url)
-    finally:
-        # Runs on KeyboardInterrupt or any other exit — relays off, TM1637 ref dropped.
-        # GPIO.cleanup() is called by main.py after this returns.
-        _relay_all_off(GPIO)
-        try:
-            import gc
-            tm = None  # noqa: F841 — triggers TM1637.__del__ while BCM mode still live
-            gc.collect()
-        except Exception:
-            pass
+        GPIO.remove_event_detect(cfg.gpio_trigger_pin)
+    except Exception:
+        pass
+
+    logger.info("WAITING for button press on GPIO{}…", cfg.gpio_trigger_pin)
+
+    # ── Step 4: Blocking service loop ─────────────────────────────────────
+    while True:
+        GPIO.wait_for_edge(cfg.gpio_trigger_pin, GPIO.FALLING, bouncetime=500)
+        _on_button_press(lcd, tm, GPIO, server_url)
 
 
 # ─── Button handler ───────────────────────────────────────────────────────────

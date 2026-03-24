@@ -74,15 +74,15 @@ def main() -> None:
 
         from app.client_app import run_client
         try:
-            run_client(server_url=server_url)
+            run_client(server_url=server_url)   # blocks until Ctrl+C or fatal error
         except KeyboardInterrupt:
-            logger.info("Shutdown requested — exiting")
+            logger.info("User stopped the program.")
         finally:
             # Single cleanup point — runs only when the process truly exits
             try:
                 import RPi.GPIO as GPIO  # noqa: N813
                 GPIO.cleanup()
-                logger.info("GPIO cleanup complete")
+                logger.info("GPIO cleanup complete at the END of program.")
             except Exception:
                 pass
 
