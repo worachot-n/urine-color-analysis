@@ -67,9 +67,9 @@ def run_client(server_url: str) -> None:
       run_client(url)  ──────────►  GPIO.setmode(BCM)      ← step 1
                                     init LCD, TM1637        ← step 2
                                     GPIO.setup(pins)        ← step 3
-                                    remove_event_detect()   ← step 4 (stale-state guard)
+                                    time.sleep(1.0)         ← step 4 (pull-up settle)
                                     while True:             ← step 5 (blocks here)
-                                      wait_for_edge(...)
+                                      poll GPIO.input()
                                       _on_button_press(...)
                        ◄──────────  KeyboardInterrupt propagates up
     except KeyboardInterrupt: ...
@@ -124,16 +124,15 @@ def run_client(server_url: str) -> None:
 
     # ── Step 4: Trigger pin LAST — after all other hardware has settled ───────
     GPIO.setup(cfg.gpio_trigger_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    time.sleep(0.5)   # allow pull-up to settle electrically
+    time.sleep(1.0)   # allow pull-up resistor to settle electrically
 
-    try:
-        GPIO.remove_event_detect(cfg.gpio_trigger_pin)
-    except Exception:
-        pass
-
-    logger.info("WAITING for button press on GPIO{}…", cfg.gpio_trigger_pin)
+    logger.info("WAITING for button press on GPIO{}… (polling mode)", cfg.gpio_trigger_pin)
 
     # ── Step 5: Fortress loop — NEVER exits unless KeyboardInterrupt ──────────
+    #
+    #   Polling instead of wait_for_edge eliminates RuntimeError: Error waiting
+    #   for edge, which can occur when the kernel GPIO event queue overflows or
+    #   the pin is briefly reconfigured by another library.
     #
     #   Outer except KeyboardInterrupt  — graceful Ctrl+C exit
     #   Inner except Exception          — any scan/hardware error → log & retry
@@ -141,19 +140,13 @@ def run_client(server_url: str) -> None:
     try:
         while True:
             try:
-                # timeout=5000 ms: wakes every 5 s so the GC stays cooperative.
-                # channel is None on timeout — no press, just loop again.
-                channel = GPIO.wait_for_edge(
-                    cfg.gpio_trigger_pin,
-                    GPIO.FALLING,
-                    bouncetime=500,
-                    timeout=5000,
-                )
-                if channel is None:
-                    continue
+                if GPIO.input(cfg.gpio_trigger_pin) == GPIO.LOW:
+                    logger.info("Button pressed! Starting analysis…")
+                    time.sleep(0.05)   # debounce: ignore contact bounce
+                    _on_button_press(lcd, tm, GPIO, server_url)
+                    time.sleep(1.0)    # lock-out: ignore spurious re-triggers
 
-                logger.info("Button pressed! Starting analysis…")
-                _on_button_press(lcd, tm, GPIO, server_url)
+                time.sleep(0.1)        # polling interval — keeps CPU idle
 
             except KeyboardInterrupt:
                 raise   # let the outer handler catch it cleanly
@@ -161,7 +154,8 @@ def run_client(server_url: str) -> None:
             except Exception as exc:
                 # Any OSError, RuntimeError, I2C [Errno 121], network failure, etc.
                 # Log it and stay in the loop — never crash out to main.py.
-                logger.error("Scan error (will retry on next press): {}", exc)
+                logger.error("Loop error (will retry): {}", exc)
+                time.sleep(1.0)
                 try:
                     _relay(GPIO, "error")
                 except Exception:
