@@ -175,6 +175,7 @@ class _YoloInference:
 
         # ── Step 4: map back to full-image coords (remove padding → scale → add ROI offset) ──
         boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y, roi_x1, roi_y1)
+        logger.debug("YOLO raw detections: {} boxes", len(boxes_orig))
 
         # ── Slot-based color analysis (requires grid_config.json) ─────────
         color_summary:     dict[str, int] = {f"L{i}": 0 for i in range(5)}
@@ -231,9 +232,10 @@ class _YoloInference:
             slots_detail[slot_id] = entry
 
         validation_results: dict = {
-            "slots":             slots_detail,
-            "duplicate_slots":   errors.get("duplicate_slots",   []),
-            "wrong_color_slots": errors.get("wrong_color_slots", []),
+            "slots":               slots_detail,
+            "duplicate_slots":     errors.get("duplicate_slots",   []),
+            "wrong_color_slots":   errors.get("wrong_color_slots", []),
+            "raw_detection_count": len(boxes_orig),
         }
 
         # ── Dashboard thumbnail: simple green boxes + confidence scores ───
@@ -325,9 +327,14 @@ def _run_color_analysis(
         slot_id, overlap_px = grid_cfg.assign_bbox(
             x1, y1, x2, y2, img_shape=(img_h, img_w)
         )
-        if slot_id is None or slot_id in grid_cfg.reference_slots:
+        if slot_id is None:
+            logger.debug("Box [{},{},{},{}] dropped — no slot match (IoA < 30%)", x1, y1, x2, y2)
+            continue
+        if slot_id in grid_cfg.reference_slots:
+            logger.debug("Box [{},{},{},{}] → {} (reference row, skipped)", x1, y1, x2, y2, slot_id)
             continue
 
+        logger.debug("Box [{},{},{},{}] → slot {} (overlap={:.0f}px)", x1, y1, x2, y2, slot_id, overlap_px)
         raw_assignments.append((slot_id, overlap_px, x1, y1, x2, y2))
 
     # Phase 2 — greedy assignment sorted by overlap area (largest wins)
@@ -340,6 +347,7 @@ def _run_color_analysis(
     for slot_id, overlap_px, x1, y1, x2, y2 in raw_assignments:
         base = slot_id.split("_")[0]   # physical slot, e.g. "A11_0" → "A11"
         if base in claimed_bases:
+            logger.debug("Box → {} dropped — physical slot {} already claimed by higher-overlap box", slot_id, base)
             continue   # physical slot already claimed by a better-fitting box
 
         claimed_bases.add(base)
@@ -631,6 +639,7 @@ async def analyze(file: UploadFile = File(...)):
         "status":               "success",
         "total_physical_count": count,         # unique occupied slots (for TM1637)
         "count":                count,         # legacy alias
+        "raw_detection_count":  validation_results.get("raw_detection_count", count),
         "summary":              color_summary, # {"L0": n, …, "L4": n}
         "color_summary":        color_summary, # legacy alias
         "errors":               errors,
@@ -1036,11 +1045,12 @@ async def api_test_upload(file: UploadFile = File(...)):
     }
 
     return {
-        "status":    "success",
-        "count":     count,
-        "summary":   color_summary,
-        "errors":    errors,
-        "image_url": image_url,
+        "status":              "success",
+        "count":               count,
+        "raw_detection_count": validation_results.get("raw_detection_count", count),
+        "summary":             color_summary,
+        "errors":              errors,
+        "image_url":           image_url,
         "detailed_results": {
             "slots":             detail_slots,
             "duplicate_slots":   validation_results.get("duplicate_slots",   []),
