@@ -573,15 +573,32 @@ async function extractAndSaveColors(triggerEl) {
   if(triggerEl) triggerEl.disabled=false;
 }
 
-document.getElementById('resetColorBtn').addEventListener('click', function(){
-  extractAndSaveColors(this);
+document.getElementById('resetColorBtn').addEventListener('click', function(e) {
+  e.stopPropagation();
+  e.preventDefault();
+  // Clear color table UI only — grid state (corners, gridPtsArr) is NEVER touched
+  resetColorTable();
+  status('รีเซ็ตค่าสีแล้ว — กด "บันทึกค่าสี" เพื่อดึงสีใหม่จากภาพ');
 });
 
-document.getElementById('saveColorBtn').addEventListener('click', function(){
+document.getElementById('saveColorBtn').addEventListener('click', function(e) {
+  e.stopPropagation();
+  e.preventDefault();
   extractAndSaveColors(this);
 });
 
 /* ── Utilities ─────────────────────────────────────────────────────────── */
+function resetColorTable() {
+  // Clear header row swatches to placeholder — does NOT affect grid state
+  document.getElementById('colorHeaderRow').querySelectorAll('th').forEach(th => {
+    th.innerHTML = '<span class="color-swatch" style="background:#333"></span>#------';
+  });
+  document.getElementById('colorDetailRow').querySelectorAll('td').forEach(td => {
+    td.style.color = 'var(--muted)';
+    td.innerHTML = '—';
+  });
+}
+
 function updateColorTable(swatches) {
   const hCells=document.getElementById('colorHeaderRow').querySelectorAll('th');
   swatches.forEach(s=>{
