@@ -336,19 +336,13 @@ class GridConfig:
         """
         Unified entry point for bbox-to-slot assignment.
 
-        Tries perspective-normalised assignment first (more robust under
-        high camera tilt / lens distortion). Falls back to polygon-based
-        raster overlap when no homography is available.
-
-        Both paths enforce the same min_ioa threshold (default 30%).
+        Uses calibrated polygon overlap (bilinear grid_pts from grid_config.json),
+        which is consistent with the settings canvas labels.
 
         Returns
         -------
-        (slot_id, ioa)  — consistent float metric across both paths.
+        (slot_id, ioa)  — slot id and intersection-over-area fraction.
         """
-        slot_id, ioa = self.find_slot_for_bbox_warped(x1, y1, x2, y2, min_ioa)
-        if slot_id is not None:
-            return slot_id, ioa
         return self.find_slot_for_bbox(x1, y1, x2, y2, img_shape, min_ioa)
 
     # ------------------------------------------------------------------
