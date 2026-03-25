@@ -24,6 +24,7 @@ pi = [
     "raspberrypi-tm1637 ; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "rpi-lcd            ; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "smbus2>=0.4.3      ; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "Pillow>=10.0",
     "psutil>=5.9",
 ]
 server = [

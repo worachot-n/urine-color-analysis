@@ -298,7 +298,8 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
 def _capture_image() -> bytes | None:
     """Capture a still image and return it as JPEG bytes, or None on failure."""
     try:
-        import cv2
+        import io
+        from PIL import Image
         from picamera2 import Picamera2
 
         picam2 = Picamera2()
@@ -313,13 +314,11 @@ def _capture_image() -> bytes | None:
         picam2.stop()
         picam2.close()
 
-        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        if not ok:
-            logger.error("cv2.imencode failed")
-            return None
-
-        return buf.tobytes()
+        # picamera2 RGB888 → Pillow Image → JPEG bytes (no cv2 needed on Pi)
+        img = Image.fromarray(frame)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
 
     except Exception as exc:
         logger.exception("Camera capture exception: {}", exc)
