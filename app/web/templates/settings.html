@@ -576,9 +576,9 @@ async function extractAndSaveColors(triggerEl) {
 document.getElementById('resetColorBtn').addEventListener('click', function(e) {
   e.stopPropagation();
   e.preventDefault();
-  // Clear color table UI only — grid state (corners, gridPtsArr) is NEVER touched
+  // Clear color table UI first (grid state is NEVER touched), then re-extract
   resetColorTable();
-  status('รีเซ็ตค่าสีแล้ว — กด "บันทึกค่าสี" เพื่อดึงสีใหม่จากภาพ');
+  extractAndSaveColors(this);
 });
 
 document.getElementById('saveColorBtn').addEventListener('click', function(e) {
