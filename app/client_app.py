@@ -341,9 +341,11 @@ def _capture_image() -> bytes | None:
         picam2.stop()
         picam2.close()
 
-        # picamera2 RGB888 → PIL Image (already RGB, no conversion needed).
-        # Rotate 180° when camera is mounted upside-down (cfg.camera_rotate_180).
-        img = Image.fromarray(frame)
+        # picamera2 "RGB888" is a V4L2 format name where bytes are stored in
+        # BGR order (Blue first).  Reverse the channel axis before handing to
+        # PIL so that Pillow encodes a true-RGB JPEG.  Without this swap the
+        # red and blue channels are exchanged, producing a blue/cyan tint.
+        img = Image.fromarray(frame[:, :, ::-1])  # BGR → RGB
         if cfg.camera_rotate_180:
             img = img.rotate(180)
 

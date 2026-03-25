@@ -995,6 +995,20 @@ async def api_test_upload(file: UploadFile = File(...)):
     test_dir = Path(cfg.captures_dir).parent / "test"
     test_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Color-verification save ───────────────────────────────────────────────
+    # Decode the received JPEG with PIL (no BGR/RGB gymnastics) and save it as
+    # test_rgb.jpg.  Open this file in any viewer to confirm the colours look
+    # natural before the OpenCV pipeline touches the image.
+    try:
+        import io as _io
+        from PIL import Image as _PILImage
+        _pil_img = _PILImage.open(_io.BytesIO(img_bytes))
+        _rgb_path = test_dir / "test_rgb.jpg"
+        _pil_img.save(str(_rgb_path), format="JPEG", quality=95)
+        logger.debug("Color-verification image saved → {}", _rgb_path)
+    except Exception as _exc:
+        logger.warning("Could not save test_rgb.jpg: {}", _exc)
+
     image_id = str(uuid.uuid4())
     log_path  = test_dir / f"{image_id}.jpg"
 
