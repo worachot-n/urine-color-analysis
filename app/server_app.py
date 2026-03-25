@@ -322,7 +322,7 @@ def _run_color_analysis(
     for box in boxes_orig:
         x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
 
-        slot_id, overlap_px = grid_cfg.find_slot_for_bbox(
+        slot_id, overlap_px = grid_cfg.assign_bbox(
             x1, y1, x2, y2, img_shape=(img_h, img_w)
         )
         if slot_id is None or slot_id in grid_cfg.reference_slots:

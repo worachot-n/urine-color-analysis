@@ -19,6 +19,10 @@ from pathlib import Path
 
 from configs.config import GRID_CONFIG_FILE
 
+# Grid line counts (must match calibration.py _N_HLINES/_N_VLINES)
+_NH = 14   # 14 horizontal lines → 13 row spans  (0=ref, 1-12=samples)
+_NV = 17   # 17 vertical lines   → 16 col spans  (0=ZZ,  1-15=data)
+
 
 # ---------------------------------------------------------------------------
 # Main class
@@ -91,6 +95,23 @@ class GridConfig:
                 'group':          info['group'],
             }
 
+        # Homography: full-image corners → canonical rectangle.
+        # Used by find_slot_for_bbox_warped() to normalise perspective before
+        # slot assignment (cv2.getPerspectiveTransform).
+        self._H    = None   # 3×3 float32 homography matrix, or None
+        self._H_w  = 0      # width  of canonical (warped) rectangle in pixels
+        self._H_h  = 0      # height of canonical (warped) rectangle in pixels
+        if self.corners and len(self.corners) == 4:
+            tl, tr, br, bl = [np.array(c, dtype=np.float32) for c in self.corners]
+            w = int((np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / 2)
+            h = int((np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / 2)
+            if w > 0 and h > 0:
+                src = np.float32([tl, tr, br, bl])
+                dst = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+                self._H   = cv2.getPerspectiveTransform(src, dst)
+                self._H_w = w
+                self._H_h = h
+
     # ------------------------------------------------------------------
     # Slot assignment
     # ------------------------------------------------------------------
@@ -142,31 +163,37 @@ class GridConfig:
         self,
         x1: int, y1: int, x2: int, y2: int,
         img_shape: tuple | None = None,
+        min_ioa: float = 0.30,
     ) -> tuple:
         """
         Assign a YOLO bounding box to the grid slot with the maximum
-        intersection area (pixel count). No majority threshold — always
-        picks the cell with the largest overlap.
+        Intersection over Bbox Area (IoA). Uses rasterised polygon masks.
 
         Parameters
         ----------
         x1, y1, x2, y2 : int
             Bounding box corners in full-image pixel coordinates.
         img_shape : (height, width), optional
-            When two slots share the identical overlap pixel count, the one
-            whose centroid is closer to the image centre wins (compensates
-            for outward perspective lean at image edges).
+            Used for tie-breaking: the slot whose centroid is closer to the
+            image centre wins (compensates for outward perspective lean).
+        min_ioa : float, default 0.30
+            Minimum IoA required to accept the assignment. Detections below
+            this threshold are treated as false positives / ghost bottles.
 
         Returns
         -------
-        (slot_id, overlap_px)
-            slot_id    : str | None — winning slot, or None if overlap is 0
-            overlap_px : int        — pixel count of the winning intersection
+        (slot_id, ioa)
+            slot_id : str | None — winning slot, or None if IoA < min_ioa
+            ioa     : float 0-1  — Intersection / BboxArea of winning slot
         """
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        bbox_area = (x2 - x1) * (y2 - y1)
+        if bbox_area <= 0:
+            return None, 0.0
+
         best_slot    : str | None = None
         best_overlap : int        = 0
-        ties         : list       = []   # [(slot_id, overlap_px)]
+        ties         : list       = []
 
         for slot_id, info in self.slot_data.items():
             overlap = _bbox_polygon_overlap(x1, y1, x2, y2, info["coords"])
@@ -180,7 +207,12 @@ class GridConfig:
                 ties.append((slot_id, overlap))
 
         if best_slot is None:
-            return None, 0
+            return None, 0.0
+
+        # IoA filter — reject ghost / noise detections
+        ioa = best_overlap / bbox_area
+        if ioa < min_ioa:
+            return None, 0.0
 
         # Tie-breaking: slot centroid closer to image centre wins
         if len(ties) > 1 and img_shape is not None:
@@ -196,7 +228,128 @@ class GridConfig:
 
             best_slot = min((sid for sid, _ in ties), key=_dist_to_centre)
 
-        return best_slot, best_overlap
+        return best_slot, ioa
+
+    def find_slot_for_bbox_warped(
+        self,
+        x1: int, y1: int, x2: int, y2: int,
+        min_ioa: float = 0.30,
+    ) -> tuple:
+        """
+        Perspective-normalised slot assignment via homography.
+
+        1. Transform the four corners of the YOLO bbox through the
+           homography H (computed from grid corners → canonical rectangle
+           via cv2.getPerspectiveTransform at load time).
+        2. In the canonical (undistorted) space, each grid cell is a
+           perfect rectangle — IoA reduces to simple AABB arithmetic.
+        3. Return the cell with maximum IoA if IoA >= min_ioa.
+        4. Ties: prefer the cell whose centre is closest to the image centre
+           in the canonical space (counteracts lens distortion).
+
+        Returns (None, 0.0) when:
+          - No homography is available (corners not saved in grid_config.json)
+          - Best IoA is below min_ioa (false-positive / ghost filter)
+
+        Parameters
+        ----------
+        x1, y1, x2, y2 : int   Bbox in full-image pixel coordinates.
+        min_ioa         : float Minimum IoA to accept (default 0.30).
+
+        Returns
+        -------
+        (slot_id, ioa)
+            slot_id : str | None
+            ioa     : float 0-1
+        """
+        if self._H is None:
+            return None, 0.0
+
+        # Warp all four bbox corners through H, take bounding rect of result
+        pts_img = np.float32([
+            [x1, y1], [x2, y1], [x2, y2], [x1, y2]
+        ]).reshape(-1, 1, 2)
+        pts_warp = cv2.perspectiveTransform(pts_img, self._H).reshape(-1, 2)
+        nx1 = float(np.min(pts_warp[:, 0]))
+        ny1 = float(np.min(pts_warp[:, 1]))
+        nx2 = float(np.max(pts_warp[:, 0]))
+        ny2 = float(np.max(pts_warp[:, 1]))
+
+        bbox_area = (nx2 - nx1) * (ny2 - ny1)
+        if bbox_area <= 0:
+            return None, 0.0
+
+        # Canonical cell dimensions (uniform grid in warped space)
+        cell_w = self._H_w / (_NV - 1)
+        cell_h = self._H_h / (_NH - 1)
+
+        best_slot : str | None = None
+        best_ioa  : float      = 0.0
+        ties      : list       = []
+
+        for r in range(_NH - 1):
+            for c in range(_NV - 1):
+                sid = _canonical_slot_id(r, c)
+                if sid is None:
+                    continue
+                # Cell bounds in canonical space
+                cx1 = c * cell_w;  cy1 = r * cell_h
+                cx2 = cx1 + cell_w; cy2 = cy1 + cell_h
+                # AABB intersection
+                ix1 = max(nx1, cx1); iy1 = max(ny1, cy1)
+                ix2 = min(nx2, cx2); iy2 = min(ny2, cy2)
+                inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+                if inter == 0:
+                    continue
+                ioa = inter / bbox_area
+                if ioa > best_ioa:
+                    best_ioa  = ioa
+                    best_slot = sid
+                    ties      = [(sid, ioa)]
+                elif ioa == best_ioa:
+                    ties.append((sid, ioa))
+
+        if best_slot is None or best_ioa < min_ioa:
+            return None, 0.0
+
+        # Tie-breaking: canonical cell centre closer to canonical image centre
+        if len(ties) > 1:
+            img_cx = self._H_w / 2.0
+            img_cy = self._H_h / 2.0
+
+            def _canonical_dist(sid: str) -> float:
+                r_idx, c_idx = _slot_id_to_rc(sid)
+                scx = (c_idx + 0.5) * cell_w
+                scy = (r_idx + 0.5) * cell_h
+                return math.hypot(scx - img_cx, scy - img_cy)
+
+            best_slot = min((sid for sid, _ in ties), key=_canonical_dist)
+
+        return best_slot, best_ioa
+
+    def assign_bbox(
+        self,
+        x1: int, y1: int, x2: int, y2: int,
+        img_shape: tuple | None = None,
+        min_ioa: float = 0.30,
+    ) -> tuple:
+        """
+        Unified entry point for bbox-to-slot assignment.
+
+        Tries perspective-normalised assignment first (more robust under
+        high camera tilt / lens distortion). Falls back to polygon-based
+        raster overlap when no homography is available.
+
+        Both paths enforce the same min_ioa threshold (default 30%).
+
+        Returns
+        -------
+        (slot_id, ioa)  — consistent float metric across both paths.
+        """
+        slot_id, ioa = self.find_slot_for_bbox_warped(x1, y1, x2, y2, min_ioa)
+        if slot_id is not None:
+            return slot_id, ioa
+        return self.find_slot_for_bbox(x1, y1, x2, y2, img_shape, min_ioa)
 
     # ------------------------------------------------------------------
     # Reference positions
@@ -275,6 +428,38 @@ def _circle_polygon_overlap(cx, cy, radius, polygon_coords):
 
     intersection = cv2.bitwise_and(poly_mask, circle_mask)
     return float(cv2.countNonZero(intersection))
+
+
+def _canonical_slot_id(r: int, c: int):
+    """
+    Return the slot_id for grid cell (row_span r, col_span c), or None.
+
+    Row spans:  0 = reference row (skip), 1-12 = sample rows
+    Col spans:  0 = ZZ dead zone (skip), 1-15 = data columns
+    """
+    if c == 0 or r == 0 or r > 12 or c > 15:
+        return None
+    group_num = math.ceil(r / 3)          # 1-4
+    level_idx = (c - 1) // 3             # 0-4
+    wgr       = (r - 1) % 3             # within-group row  0-2
+    wbc       = (c - 1) % 3             # within-block col  0-2
+    slot_num  = wgr * 3 + wbc + 1       # 1-9
+    return f"A{group_num}{slot_num}_{level_idx}"
+
+
+def _slot_id_to_rc(slot_id: str):
+    """
+    Reverse of _canonical_slot_id — returns (row_span, col_span).
+    Used for tie-breaking centroid distance in warped space.
+    """
+    g  = int(slot_id[1])                         # group 1-4
+    s  = int(slot_id[2])                         # slot  1-9
+    l  = int(slot_id.split("_")[1])              # level 0-4
+    wgr = (s - 1) // 3                           # within-group row
+    wbc = (s - 1) % 3                            # within-block col
+    r   = (g - 1) * 3 + wgr + 1                 # row span 1-12
+    c   = l * 3 + wbc + 1                        # col span 1-15
+    return r, c
 
 
 def _bbox_polygon_overlap(x1: int, y1: int, x2: int, y2: int,
