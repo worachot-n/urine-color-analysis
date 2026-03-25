@@ -97,15 +97,15 @@ def run_client(server_url: str) -> None:
 
     # ── Step 3: Peripheral init — each wrapped so a hardware fault can't abort ─
     lcd = None
-    tm  = None
+    tms: list = [None] * 5
     try:
         lcd = _init_lcd()
     except Exception as exc:
         logger.warning("LCD init failed ({}), continuing without display", exc)
     try:
-        tm = _init_tm1637()
+        tms = _init_tm1637_all()
     except Exception as exc:
-        logger.warning("TM1637 init failed ({}), continuing without display", exc)
+        logger.warning("TM1637 init failed ({}), continuing without displays", exc)
     try:
         _relay_setup(GPIO)
         _relay(GPIO, "idle")   # Green ON
@@ -113,7 +113,7 @@ def run_client(server_url: str) -> None:
         logger.warning("Relay setup failed ({}), continuing anyway", exc)
 
     _lcd(lcd, "Urine Analyzer", "Ready")
-    _tm(tm, 0)   # 0000 on boot
+    _tm_all(tms, 0)   # 0000 on all displays at boot
 
     logger.info(
         "System Ready — GPIO{} trigger | relay R={} Y={} G={} | server: {}",
@@ -143,7 +143,7 @@ def run_client(server_url: str) -> None:
                 if GPIO.input(cfg.gpio_trigger_pin) == GPIO.LOW:
                     logger.info("Button pressed! Starting analysis…")
                     time.sleep(0.05)   # debounce: ignore contact bounce
-                    _on_button_press(lcd, tm, GPIO, server_url)
+                    _on_button_press(lcd, tms, GPIO, server_url)
                     time.sleep(1.0)    # lock-out: ignore spurious re-triggers
 
                 time.sleep(0.1)        # polling interval — keeps CPU idle
@@ -167,7 +167,7 @@ def run_client(server_url: str) -> None:
     finally:
         _relay_all_off(GPIO)
         try:
-            tm = None   # noqa: F841
+            tms = [None] * 5   # noqa: F841 — release TM1637 objects before GPIO cleanup
             gc.collect()
         except Exception:
             pass
@@ -176,29 +176,29 @@ def run_client(server_url: str) -> None:
 
 # ─── Button handler ───────────────────────────────────────────────────────────
 
-def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
+def _on_button_press(lcd, tms: list, GPIO, server_url: str) -> None:
     import requests
 
     _relay(GPIO, "processing")   # Yellow ON — stays on through entire scan
     _lcd(lcd, "Capturing...", "")
-    _tm(tm, 8888)
+    _tm_all(tms, 8888)
 
     img_bytes = _capture_image()
     if img_bytes is None:
         logger.error("Camera capture failed")
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: CAMERA", "Capture failed")
-        _tm(tm, None)
+        _tm_all(tms, None)
         return
 
     size_kb = len(img_bytes) / 1024
     logger.info("Image captured ({:.1f} KB) — uploading to {}", size_kb, server_url)
     _lcd(lcd, "Uploading...", "Please wait")
 
-    # TM1637 spinner + delayed LCD "Analyzing..." while POST is in flight
+    # TM1637 spinner (all 5 displays) + delayed LCD "Analyzing..." while POST is in flight
     stop_spin = threading.Event()
     spin_thread = threading.Thread(
-        target=_tm_spin, args=(tm, stop_spin), daemon=True
+        target=_tm_spin, args=(tms, stop_spin), daemon=True
     )
     lcd_thread = threading.Thread(
         target=_lcd_delayed, args=(lcd, stop_spin, "Analyzing...", "AI running", 4.0),
@@ -223,7 +223,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         logger.error("Server unreachable after {:.1f}s: {}", time.perf_counter() - t0, exc)
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: SRV OFF", "Check network")
-        _tm(tm, None)
+        _tm_all(tms, None)
         return
 
     except requests.exceptions.Timeout:
@@ -231,7 +231,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         logger.error("Request timed out after {:.1f}s (limit 60s)", time.perf_counter() - t0)
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: TIMEOUT", "Server slow")
-        _tm(tm, None)
+        _tm_all(tms, None)
         return
 
     except requests.exceptions.HTTPError as exc:
@@ -240,7 +240,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         logger.error("HTTP {} after {:.1f}s: {}", status, time.perf_counter() - t0, exc)
         _relay(GPIO, "error")
         _lcd(lcd, f"ERR: HTTP {status}", "")
-        _tm(tm, None)
+        _tm_all(tms, None)
         return
 
     except Exception as exc:
@@ -248,7 +248,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         logger.exception("Unexpected error after {:.1f}s: {}", time.perf_counter() - t0, exc)
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: AI FAIL", "")
-        _tm(tm, None)
+        _tm_all(tms, None)
         return
 
     finally:
@@ -262,7 +262,7 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
         logger.error("Server returned error: {}", msg)
         _relay(GPIO, "error")
         _lcd(lcd, "ERR: AI FAIL", msg[:16])
-        _tm(tm, None)
+        _tm_all(tms, None)
         return
 
     count         = data.get("total_physical_count", data.get("count", 0))
@@ -271,7 +271,8 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
     dup_n  = len(errors.get("duplicate_slots",  []))
     wc_n   = len(errors.get("wrong_color_slots", []))
 
-    _tm(tm, count)
+    # Show per-level counts: H0→L0, H1→L1, H2→L2, H3→L3, H4→L4
+    _tm_levels(tms, color_summary)
 
     if dup_n > 0 or wc_n > 0:
         parts = []
@@ -428,14 +429,26 @@ def _init_lcd():
         return None
 
 
-def _init_tm1637():
-    """Return a TM1637 object or None if the hardware is not available."""
-    try:
-        import tm1637
-        return tm1637.TM1637(clk=cfg.tm1637_clk, dio=cfg.tm1637_dio)
-    except Exception as exc:
-        logger.warning("TM1637 init failed ({}), display disabled", exc)
-        return None
+def _init_tm1637_all() -> list:
+    """Initialise all 5 TM1637 displays (H0–H4). Returns a list of length 5;
+    failed/missing units are represented as None."""
+    pins = [
+        (cfg.tm1637_h0_clk, cfg.tm1637_h0_dio),
+        (cfg.tm1637_h1_clk, cfg.tm1637_h1_dio),
+        (cfg.tm1637_h2_clk, cfg.tm1637_h2_dio),
+        (cfg.tm1637_h3_clk, cfg.tm1637_h3_dio),
+        (cfg.tm1637_h4_clk, cfg.tm1637_h4_dio),
+    ]
+    result = []
+    for i, (clk, dio) in enumerate(pins):
+        try:
+            import tm1637
+            result.append(tm1637.TM1637(clk=clk, dio=dio))
+            logger.debug("TM1637 H{} initialised (CLK={} DIO={})", i, clk, dio)
+        except Exception as exc:
+            logger.warning("TM1637 H{} init failed ({}), display disabled", i, exc)
+            result.append(None)
+    return result
 
 
 def _lcd(lcd, line1: str, line2: str) -> None:
@@ -478,15 +491,29 @@ def _tm(tm, value: int | str | None) -> None:
         logger.warning("TM1637 write failed: {}", exc)
 
 
-def _tm_spin(tm, stop_event: threading.Event) -> None:
-    """Cycle through spinner frames on TM1637 until stop_event is set."""
+def _tm_all(tms: list, value) -> None:
+    """Broadcast the same value to all TM1637 displays in the list."""
+    for tm in tms:
+        _tm(tm, value)
+
+
+def _tm_levels(tms: list, summary: dict) -> None:
+    """Show per-level counts: tms[0]→L0, tms[1]→L1, …, tms[4]→L4."""
+    for i, tm in enumerate(tms):
+        _tm(tm, summary.get(f"L{i}", 0))
+
+
+def _tm_spin(tms_or_tm, stop_event: threading.Event) -> None:
+    """Cycle through spinner frames on all TM1637 displays until stop_event is set."""
+    tm_list = tms_or_tm if isinstance(tms_or_tm, list) else [tms_or_tm]
     i = 0
     while not stop_event.is_set():
-        if tm is not None:
-            try:
-                tm.show(_SPIN_FRAMES[i % len(_SPIN_FRAMES)])
-            except Exception:
-                pass
+        for tm in tm_list:
+            if tm is not None:
+                try:
+                    tm.show(_SPIN_FRAMES[i % len(_SPIN_FRAMES)])
+                except Exception:
+                    pass
         i += 1
         stop_event.wait(0.25)
 

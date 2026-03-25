@@ -151,7 +151,18 @@ class Settings(BaseSettings):
     # ── LCD — config.toml [gpio.lcd] preferred ──────────────────────────────
     lcd_address: int = _t_lcd.get("i2c_address", _y_disp.get("lcd_address", 0x27))
 
-    # ── TM1637 — config.toml [gpio.tm1637.H2] preferred (H2 = main display) ─
+    # ── TM1637 — all 5 displays H0-H4 (config.toml [gpio.tm1637]) ──────────
+    tm1637_h0_clk: int = _tm_pin("H0", "CLK", 4)
+    tm1637_h0_dio: int = _tm_pin("H0", "DIO", 17)
+    tm1637_h1_clk: int = _tm_pin("H1", "CLK", 27)
+    tm1637_h1_dio: int = _tm_pin("H1", "DIO", 22)
+    tm1637_h2_clk: int = _tm_pin("H2", "CLK", 5)
+    tm1637_h2_dio: int = _tm_pin("H2", "DIO", 6)
+    tm1637_h3_clk: int = _tm_pin("H3", "CLK", 13)
+    tm1637_h3_dio: int = _tm_pin("H3", "DIO", 19)
+    tm1637_h4_clk: int = _tm_pin("H4", "CLK", 26)
+    tm1637_h4_dio: int = _tm_pin("H4", "DIO", 16)
+    # Legacy aliases kept for backward compatibility
     tm1637_clk: int = _tm_pin("H2", "CLK", _y_disp.get("tm1637_clk", 5))
     tm1637_dio: int = _tm_pin("H2", "DIO", _y_disp.get("tm1637_dio", 6))
 
