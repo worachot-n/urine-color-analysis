@@ -315,7 +315,8 @@ def _capture_image() -> bytes | None:
         picam2.close()
 
         # picamera2 RGB888 → Pillow Image → JPEG bytes (no cv2 needed on Pi)
-        img = Image.fromarray(frame)
+        # Rotate 180° — camera is physically mounted upside-down on the rig.
+        img = Image.fromarray(frame).rotate(180)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=92)
         return buf.getvalue()
