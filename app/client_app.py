@@ -296,7 +296,15 @@ def _on_button_press(lcd, tm, GPIO, server_url: str) -> None:
 # ─── Camera capture ───────────────────────────────────────────────────────────
 
 def _capture_image() -> bytes | None:
-    """Capture a still image and return it as JPEG bytes, or None on failure."""
+    """Capture a still image and return it as JPEG bytes, or None on failure.
+
+    Strategy:
+      1. Start with AE + AWB enabled and wait 2 s for the algorithms to converge.
+      2. Read the converged ColourGains / ExposureTime / AnalogueGain from metadata.
+      3. Lock whichever of AWB / AE are enabled in config so the final capture is
+         taken with identical, stable settings — no colour shift mid-frame.
+      4. Encode as RGB JPEG (picamera2 RGB888 arrays are already in RGB order).
+    """
     try:
         import io
         from PIL import Image
@@ -308,17 +316,43 @@ def _capture_image() -> bytes | None:
         )
         picam2.configure(still_cfg)
         picam2.start()
-        time.sleep(2)  # allow auto-exposure to settle
+        time.sleep(2)  # allow AE / AWB to converge under real scene lighting
+
+        # Lock gains/exposure so the actual capture frame is colour-stable.
+        if cfg.camera_awb_lock or cfg.camera_ae_lock:
+            metadata = picam2.capture_metadata()
+            lock_controls: dict = {}
+            if cfg.camera_awb_lock:
+                lock_controls["AwbEnable"]   = False
+                lock_controls["ColourGains"] = metadata["ColourGains"]
+                logger.debug("AWB locked — ColourGains={}", metadata["ColourGains"])
+            if cfg.camera_ae_lock:
+                lock_controls["AeEnable"]      = False
+                lock_controls["ExposureTime"]  = metadata["ExposureTime"]
+                lock_controls["AnalogueGain"]  = metadata["AnalogueGain"]
+                logger.debug(
+                    "AE locked — ExposureTime={}µs AnalogueGain={:.2f}",
+                    metadata["ExposureTime"], metadata["AnalogueGain"],
+                )
+            picam2.set_controls(lock_controls)
+            time.sleep(0.5)  # let locked settings take effect before capture
 
         frame = picam2.capture_array()
         picam2.stop()
         picam2.close()
 
-        # picamera2 RGB888 → Pillow Image → JPEG bytes (no cv2 needed on Pi)
-        # Rotate 180° — camera is physically mounted upside-down on the rig.
-        img = Image.fromarray(frame).rotate(180)
+        # picamera2 RGB888 → PIL Image (already RGB, no conversion needed).
+        # Rotate 180° when camera is mounted upside-down (cfg.camera_rotate_180).
+        img = Image.fromarray(frame)
+        if cfg.camera_rotate_180:
+            img = img.rotate(180)
+
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=92)
+        img.save(buf, format="JPEG", quality=cfg.camera_jpeg_quality)
+        logger.debug(
+            "Image encoded — size={}×{} quality={} bytes={:.1f}KB",
+            img.width, img.height, cfg.camera_jpeg_quality, buf.tell() / 1024,
+        )
         return buf.getvalue()
 
     except Exception as exc:

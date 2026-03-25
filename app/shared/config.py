@@ -131,8 +131,12 @@ class Settings(BaseSettings):
                           _st.get("visual_log_dir", "logs/img"))
 
     # ── Camera — config.toml [camera] preferred ─────────────────────────────
-    camera_width:  int = _cam_dim(0, _y_cam.get("width",  4608))
-    camera_height: int = _cam_dim(1, _y_cam.get("height", 2592))
+    camera_width:        int  = _cam_dim(0, _y_cam.get("width",  4608))
+    camera_height:       int  = _cam_dim(1, _y_cam.get("height", 2592))
+    camera_awb_lock:     bool = _t_cam.get("awb_lock",     True)
+    camera_ae_lock:      bool = _t_cam.get("ae_lock",      True)
+    camera_rotate_180:   bool = _t_cam.get("rotate_180",   True)
+    camera_jpeg_quality: int  = _t_cam.get("jpeg_quality", 95)
 
     # ── GPIO button — config.toml [gpio.button] preferred ───────────────────
     gpio_trigger_pin:    int = _t_btn.get("pin",         _y_gpio.get("trigger_pin", 24))

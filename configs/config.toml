@@ -50,6 +50,7 @@ capture_resolution = [4608, 2592]   # Camera Module 3 maximum resolution
 awb_lock           = true           # Lock auto white-balance after warm-up
 ae_lock            = true           # Lock auto exposure after warm-up
 rotate_180         = true           # Camera is mounted upside-down
+jpeg_quality       = 95             # JPEG encode quality sent to server (0-100)
 
 # =============================================================================
 # IMAGE PROCESSING — Red Cap Detection
