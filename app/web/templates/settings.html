@@ -553,15 +553,13 @@ document.getElementById('saveGridBtn').addEventListener('click', async function(
   this.disabled=false;
 });
 
-document.getElementById('resetColorBtn').addEventListener('click',
-  ()=>status('รีเซ็ตค่าสี — กด "บันทึกค่าสี" เพื่อดึงใหม่'));
-
-document.getElementById('saveColorBtn').addEventListener('click', async function(){
+async function extractAndSaveColors(triggerEl) {
   if(!currentImgSrc){status('กรุณาโหลดภาพก่อน');return;}
-  this.disabled=true; status('กำลังดึงสีอ้างอิง…');
+  if(triggerEl) triggerEl.disabled=true;
+  status('กำลังดึงสีอ้างอิงจากภาพ…');
   try {
     const blob=await getBlob();
-    if(!blob){status('ไม่พบภาพ');this.disabled=false;return;}
+    if(!blob){status('ไม่พบภาพ');if(triggerEl)triggerEl.disabled=false;return;}
     const fd=new FormData(); fd.append('file',blob,'ref.jpg');
     const resp=await fetch('/settings/colors',{method:'POST',body:fd});
     const d=await resp.json();
@@ -572,7 +570,15 @@ document.getElementById('saveColorBtn').addEventListener('click', async function
       status('เกิดข้อผิดพลาด: '+(d.detail||'?'));
     }
   } catch(e){status('เกิดข้อผิดพลาด: '+e.message);}
-  this.disabled=false;
+  if(triggerEl) triggerEl.disabled=false;
+}
+
+document.getElementById('resetColorBtn').addEventListener('click', function(){
+  extractAndSaveColors(this);
+});
+
+document.getElementById('saveColorBtn').addEventListener('click', function(){
+  extractAndSaveColors(this);
 });
 
 /* ── Utilities ─────────────────────────────────────────────────────────── */
