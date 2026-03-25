@@ -12,6 +12,7 @@ emits ZZ entries, so detection is automatically skipped for that column.
 """
 
 import json
+import math
 import cv2
 import numpy as np
 from pathlib import Path
@@ -137,6 +138,66 @@ class GridConfig:
 
         return None, 0.0
 
+    def find_slot_for_bbox(
+        self,
+        x1: int, y1: int, x2: int, y2: int,
+        img_shape: tuple | None = None,
+    ) -> tuple:
+        """
+        Assign a YOLO bounding box to the grid slot with the maximum
+        intersection area (pixel count). No majority threshold — always
+        picks the cell with the largest overlap.
+
+        Parameters
+        ----------
+        x1, y1, x2, y2 : int
+            Bounding box corners in full-image pixel coordinates.
+        img_shape : (height, width), optional
+            When two slots share the identical overlap pixel count, the one
+            whose centroid is closer to the image centre wins (compensates
+            for outward perspective lean at image edges).
+
+        Returns
+        -------
+        (slot_id, overlap_px)
+            slot_id    : str | None — winning slot, or None if overlap is 0
+            overlap_px : int        — pixel count of the winning intersection
+        """
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        best_slot    : str | None = None
+        best_overlap : int        = 0
+        ties         : list       = []   # [(slot_id, overlap_px)]
+
+        for slot_id, info in self.slot_data.items():
+            overlap = _bbox_polygon_overlap(x1, y1, x2, y2, info["coords"])
+            if overlap == 0:
+                continue
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_slot    = slot_id
+                ties         = [(slot_id, overlap)]
+            elif overlap == best_overlap:
+                ties.append((slot_id, overlap))
+
+        if best_slot is None:
+            return None, 0
+
+        # Tie-breaking: slot centroid closer to image centre wins
+        if len(ties) > 1 and img_shape is not None:
+            ih, iw = img_shape
+            img_cx, img_cy = iw / 2.0, ih / 2.0
+
+            def _dist_to_centre(sid: str) -> float:
+                c = self.slot_data[sid]["coords"]
+                return math.hypot(
+                    float(np.mean(c[:, 0])) - img_cx,
+                    float(np.mean(c[:, 1])) - img_cy,
+                )
+
+            best_slot = min((sid for sid, _ in ties), key=_dist_to_centre)
+
+        return best_slot, best_overlap
+
     # ------------------------------------------------------------------
     # Reference positions
     # ------------------------------------------------------------------
@@ -214,6 +275,45 @@ def _circle_polygon_overlap(cx, cy, radius, polygon_coords):
 
     intersection = cv2.bitwise_and(poly_mask, circle_mask)
     return float(cv2.countNonZero(intersection))
+
+
+def _bbox_polygon_overlap(x1: int, y1: int, x2: int, y2: int,
+                           polygon_coords: np.ndarray) -> int:
+    """
+    Pixel-level intersection area between a bounding-box rectangle and a
+    polygon, using rasterized binary masks (same technique as
+    _circle_polygon_overlap).
+
+    Returns overlap pixel count (0 if no intersection).
+    """
+    pts    = polygon_coords.astype(np.int32)
+    px_min = max(0, int(np.min(pts[:, 0])) - 1)
+    py_min = max(0, int(np.min(pts[:, 1])) - 1)
+    px_max = int(np.max(pts[:, 0])) + 1
+    py_max = int(np.max(pts[:, 1])) + 1
+
+    w = px_max - px_min + 1
+    h = py_max - py_min + 1
+    if w <= 0 or h <= 0:
+        return 0
+
+    # Fast AABB reject — if bbox and polygon bounding rect don't overlap, skip
+    if x2 <= px_min or x1 >= px_max or y2 <= py_min or y1 >= py_max:
+        return 0
+
+    poly_mask = np.zeros((h, w), dtype=np.uint8)
+    shifted   = pts - np.array([px_min, py_min], dtype=np.int32)
+    cv2.fillPoly(poly_mask, [shifted.reshape(-1, 1, 2)], 255)
+
+    bbox_mask = np.zeros((h, w), dtype=np.uint8)
+    bx1 = max(0, x1 - px_min)
+    by1 = max(0, y1 - py_min)
+    bx2 = min(w - 1, x2 - px_min)
+    by2 = min(h - 1, y2 - py_min)
+    if bx2 > bx1 and by2 > by1:
+        cv2.rectangle(bbox_mask, (bx1, by1), (bx2, by2), 255, -1)
+
+    return int(cv2.countNonZero(cv2.bitwise_and(poly_mask, bbox_mask)))
 
 
 # ---------------------------------------------------------------------------

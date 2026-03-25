@@ -314,23 +314,42 @@ def _run_color_analysis(
 
     logger.debug("Color baseline loaded: {} levels", len(baseline))
 
-    # ── Step 2: assign each detected box to a slot + classify ────────────
-    for box in boxes_orig:
-        cx     = int((box[0] + box[2]) / 2)
-        cy     = int((box[1] + box[3]) / 2)
-        radius = int((box[2] - box[0]) / 2)
+    # ── Step 2: two-phase max-overlap bbox assignment ────────────────────
+    # Phase 1 — find the best-fitting slot for every detected box
+    img_h, img_w = img.shape[:2]
+    raw_assignments: list = []   # [(slot_id, overlap_px, x1, y1, x2, y2)]
 
-        slot_id, _ = grid_cfg.find_slot_for_circle(cx, cy, radius)
+    for box in boxes_orig:
+        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+
+        slot_id, overlap_px = grid_cfg.find_slot_for_bbox(
+            x1, y1, x2, y2, img_shape=(img_h, img_w)
+        )
         if slot_id is None or slot_id in grid_cfg.reference_slots:
             continue
 
-        # Deduplicate: keep first (highest-confidence YOLO box) per slot
-        if slot_id in sample_hits:
-            continue
+        raw_assignments.append((slot_id, overlap_px, x1, y1, x2, y2))
 
+    # Phase 2 — greedy assignment sorted by overlap area (largest wins)
+    # When two boxes compete for the same physical base slot, the box with
+    # more overlap area claims it; the other is discarded.
+    raw_assignments.sort(key=lambda a: a[1], reverse=True)
+
+    claimed_bases: set = set()
+
+    for slot_id, overlap_px, x1, y1, x2, y2 in raw_assignments:
+        base = slot_id.split("_")[0]   # physical slot, e.g. "A11_0" → "A11"
+        if base in claimed_bases:
+            continue   # physical slot already claimed by a better-fitting box
+
+        claimed_bases.add(base)
+
+        cx     = int((x1 + x2) / 2)
+        cy     = int((y1 + y2) / 2)
+        radius = int((x2 - x1) / 2)
         sample_hits[slot_id] = {"cx": cx, "cy": cy, "radius": radius}
 
-        # ── Step 3: extract median Lab from bottle center (inner crop) ────
+        # ── Step 3: extract median Lab from bottle centre (inner crop) ────
         lab = extract_bottle_color(img, cx, cy, radius)
         if lab is None:
             continue
@@ -341,8 +360,8 @@ def _run_color_analysis(
             classified_levels[slot_id] = level
             summary[f"L{level}"] = summary.get(f"L{level}", 0) + 1
             logger.debug(
-                "Slot {} → L{} (ΔE={:.1f}, confident={})",
-                slot_id, level, delta_e, confident,
+                "Slot {} → L{} (ΔE={:.1f}, confident={}, overlap={}px)",
+                slot_id, level, delta_e, confident, overlap_px,
             )
 
     return summary, sample_hits, classified_levels
