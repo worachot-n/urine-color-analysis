@@ -150,13 +150,30 @@ class _YoloInference:
         Returns (full_image, boxes_in_full_image_space).
         No ROI crop — matches training pre-processing (full frame).
         boxes format: [[x1, y1, x2, y2, conf, cls], ...]
+
+        Letterbox math:
+            gain  = min(640/W, 640/H)   (uniform scale that fits the image)
+            pad_x = (640 - W*gain) / 2  (horizontal white bar half-width)
+            pad_y = (640 - H*gain) / 2  (vertical white bar half-height)
+        Inverse:
+            X_orig = (X_640 - pad_x) / gain
+            Y_orig = (Y_640 - pad_y) / gain
+        Boxes whose center lies inside the white padding zone are discarded as
+        false positives before coordinate inversion.
         """
         nparr = np.frombuffer(img_bytes, np.uint8)
         img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("cv2.imdecode returned None — invalid image data")
 
+        h_img, w_img = img.shape[:2]
         padded, scale, pad_x, pad_y = letterbox_white_padding(img, self._input_size)
+
+        # Bounds of actual image content inside the 640×640 frame
+        content_x1 = pad_x
+        content_y1 = pad_y
+        content_x2 = pad_x + int(round(w_img * scale))
+        content_y2 = pad_y + int(round(h_img * scale))
 
         results = self._model.predict(
             source=padded,
@@ -168,13 +185,33 @@ class _YoloInference:
         )
 
         boxes_640: list[list[float]] = []
+        n_padding_rejected = 0
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
+                cx_640 = (x1 + x2) / 2
+                cy_640 = (y1 + y2) / 2
+                # Discard detections whose center is inside a padding zone
+                if not (content_x1 <= cx_640 <= content_x2 and
+                        content_y1 <= cy_640 <= content_y2):
+                    n_padding_rejected += 1
+                    logger.debug(
+                        "Padding-zone detection discarded: center=({:.0f},{:.0f}) "
+                        "content=[{},{},{},{}] conf={:.2f}",
+                        cx_640, cy_640, content_x1, content_y1, content_x2, content_y2,
+                        float(box.conf[0]),
+                    )
+                    continue
                 boxes_640.append([x1, y1, x2, y2, float(box.conf[0]), int(box.cls[0])])
 
+        if n_padding_rejected:
+            logger.info("YOLO: {} padding-zone false positive(s) discarded", n_padding_rejected)
+
         boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y)
-        logger.debug("YOLO raw detections: {} boxes", len(boxes_orig))
+        logger.debug(
+            "YOLO detections: {} kept (image {}×{}, scale={:.4f}, pad_x={}, pad_y={})",
+            len(boxes_orig), w_img, h_img, scale, pad_x, pad_y,
+        )
         return img, boxes_orig
 
 
@@ -1160,8 +1197,11 @@ async def api_grid_corners():
                 "corners":          gj.get("corners"),
                 "calibration_date": gj.get("calibration_date"),
                 "grid_pts":         gj.get("grid_pts"),
+                "image_width":      gj.get("image_width", 0),
+                "image_height":     gj.get("image_height", 0),
             }
-    return {"corners": None, "calibration_date": None, "grid_pts": None}
+    return {"corners": None, "calibration_date": None, "grid_pts": None,
+            "image_width": 0, "image_height": 0}
 
 
 @app.post("/settings/grid")

@@ -303,9 +303,24 @@ function resetCorners() {
 function restoreGrid() {
   fetch('/api/settings/grid-corners').then(r => r.json()).then(d => {
     if (!d.corners) { alert('ยังไม่มีข้อมูลกริดที่บันทึกไว้'); return; }
-    corners = d.corners;
-    if (d.grid_pts) {
-      gridPtsArr = d.grid_pts;
+    const calibW = d.image_width  || 0;
+    const calibH = d.image_height || 0;
+    const imgW   = bgImg.naturalWidth;
+    const imgH   = bgImg.naturalHeight;
+    let scaledCorners = d.corners;
+    let scaledGridPts = d.grid_pts;
+    if (calibW > 0 && calibH > 0 && imgW > 0 && imgH > 0 &&
+        (Math.abs(calibW - imgW) > 4 || Math.abs(calibH - imgH) > 4)) {
+      const sx = imgW / calibW;
+      const sy = imgH / calibH;
+      scaledCorners = d.corners.map(c => [c[0] * sx, c[1] * sy]);
+      scaledGridPts = d.grid_pts ? d.grid_pts.map(row =>
+        row.map(pt => [pt[0] * sx, pt[1] * sy])
+      ) : null;
+    }
+    corners = scaledCorners;
+    if (scaledGridPts) {
+      gridPtsArr = scaledGridPts;
     } else {
       initGrid();
     }

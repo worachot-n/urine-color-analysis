@@ -101,31 +101,36 @@ def scale_coordinates(
     roi_y1: int = 0,
 ) -> list[list[float]]:
     """
-    Map bounding boxes from 640 × 640 padded space back to full-image space.
+    Map bounding boxes from 640 × 640 letterboxed space back to full-image space.
 
-    When an ROI crop was applied before letterboxing, pass roi_x1/roi_y1 (the
-    top-left corner of the crop in full-image pixels) to translate the result
-    back into the global coordinate system used by grid_config.json.
+    Inverse letterbox transform:
+        X_orig = (X_640 - pad_x) / scale + roi_x1
+        Y_orig = (Y_640 - pad_y) / scale + roi_y1
+
+    where scale = min(640/W, 640/H), pad_x/pad_y are the half-widths of the
+    white padding bars returned by letterbox_white_padding().
 
     Args:
         boxes:   List of [x1, y1, x2, y2, conf, cls, ...] in letterboxed coords.
         scale:   The *scale* value returned by letterbox_white_padding().
         pad_x:   The *pad_x* value returned by letterbox_white_padding().
         pad_y:   The *pad_y* value returned by letterbox_white_padding().
-        roi_x1:  Left origin of the ROI crop in full-image pixels (default 0).
-        roi_y1:  Top origin of the ROI crop in full-image pixels (default 0).
+        roi_x1:  Left origin of an upstream ROI crop in full-image pixels (0 = none).
+        roi_y1:  Top origin of an upstream ROI crop in full-image pixels (0 = none).
 
     Returns:
         Same list structure with x1/y1/x2/y2 in full-image coordinates.
         conf, cls, and any extra fields are passed through unchanged.
+        Coordinates are clamped to ≥ 0 so partial-padding boxes don't produce
+        negative values.
     """
     out = []
     for box in boxes:
         x1, y1, x2, y2 = box[:4]
-        ox1 = (x1 - pad_x) / scale + roi_x1
-        oy1 = (y1 - pad_y) / scale + roi_y1
-        ox2 = (x2 - pad_x) / scale + roi_x1
-        oy2 = (y2 - pad_y) / scale + roi_y1
+        ox1 = max(0.0, (x1 - pad_x) / scale) + roi_x1
+        oy1 = max(0.0, (y1 - pad_y) / scale) + roi_y1
+        ox2 = max(0.0, (x2 - pad_x) / scale) + roi_x1
+        oy2 = max(0.0, (y2 - pad_y) / scale) + roi_y1
         out.append([ox1, oy1, ox2, oy2, *box[4:]])
     return out
 
