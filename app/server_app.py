@@ -1187,6 +1187,214 @@ async def settings_grid(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+# ─── Upload page (full pipeline, no auth) ────────────────────────────────────
+
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page(request: Request):
+    return templates.TemplateResponse(request=request, name="upload.html", context={})
+
+
+@app.post("/api/upload")
+async def api_upload(file: UploadFile = File(...)):
+    """
+    Web upload — identical to /analyze but no auth header required.
+    Saves ScanSession + TestSlot rows and sends Telegram report.
+    """
+    img_bytes = await file.read()
+    if not img_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    with _Session() as session:
+        active_tray = session.query(Tray).filter_by(is_active=True).first()
+        if active_tray is None:
+            raise HTTPException(
+                status_code=400,
+                detail="กรุณาเลือกถาดก่อนสแกน (No active tray selected)",
+            )
+        active_tray_id = active_tray.id
+        tray_grid_json = active_tray.grid_json
+        layout_map: dict[str, str] = _normalize_layout_map(
+            active_tray.layout_json, cols=active_tray.cols or 15
+        )
+        tray_name = active_tray.tray_name or f"Tray-{active_tray.id}"
+
+    if not tray_grid_json:
+        raise HTTPException(
+            status_code=400,
+            detail="กรุณาปรับเทียบกริดก่อนสแกน (Grid not calibrated for this tray)",
+        )
+
+    now      = datetime.utcnow()
+    image_id = str(uuid.uuid4())
+    ts_str   = now.strftime("%Y%m%d_%H%M%S")
+
+    captures = Path(cfg.captures_dir)
+    captures.mkdir(parents=True, exist_ok=True)
+    thumb_path = captures / f"{image_id}.jpg"
+    static_url = f"/static/captures/{image_id}.jpg"
+
+    log_dir  = Path(cfg.visual_log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"URINE_SCAN_{ts_str}.jpg"
+
+    try:
+        nparr    = np.frombuffer(img_bytes, np.uint8)
+        img_full = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_full is None:
+            raise ValueError("Invalid image data")
+
+        grid_result  = _grid_pts_to_result(tray_grid_json["grid_pts"])
+        slot_centers = grid_result.sample_centres
+
+        from utils.color_analysis import build_reference_baseline
+        ref_positions = _build_ref_positions(grid_result.ref_centres, grid_result.grid_spacing)
+        live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
+        if not live_baseline:
+            logger.warning("/api/upload: reference row extraction failed — falling back to color.json")
+
+        _, boxes_orig = app.state.yolo.detect_raw(img_bytes)
+        slot_hits     = _match_detections_to_slots(boxes_orig, slot_centers)
+        classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Upload inference failed")
+        raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
+
+    slot_rows   = _build_slot_rows(slot_hits, classified)
+    error_slots = [r for r in slot_rows if r["is_error"]]
+    count       = len(slot_hits)
+    error_count = len(error_slots)
+
+    color_counts: dict[int, int] = {i: 0 for i in range(5)}
+    for lvl in classified.values():
+        if lvl is not None:
+            color_counts[lvl] = color_counts.get(lvl, 0) + 1
+
+    validation_results_compat: dict = {
+        "slots": {
+            str(r["position_index"]): {
+                "cx":          slot_hits[r["position_index"]]["cx"] if r["position_index"] in slot_hits else 0,
+                "cy":          slot_hits[r["position_index"]]["cy"] if r["position_index"] in slot_hits else 0,
+                "radius":      slot_hits[r["position_index"]]["radius"] if r["position_index"] in slot_hits else 30,
+                "level":       r["color_result"],
+                "ok":          not r["is_error"],
+                "wrong_color": r["is_error"],
+                "duplicate":   False,
+            }
+            for r in slot_rows if r["color_result"] is not None
+        },
+        "duplicate_slots":     [],
+        "wrong_color_slots":   [
+            {"slot_id": str(r["position_index"]),
+             "expected": _expected_level_from_position(r["position_index"]),
+             "actual":   r["color_result"]}
+            for r in error_slots
+        ],
+        "raw_detection_count": len(boxes_orig),
+    }
+
+    from app.shared.processor import _render_annotated_canvas
+    thumb_canvas = _render_annotated_canvas(
+        img_full, validation_results_compat, None, slot_centers, layout_map
+    )
+    cv2.imwrite(str(thumb_path), thumb_canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
+
+    try:
+        save_visual_log(
+            image=img_full,
+            validation_results=validation_results_compat,
+            grid_cfg=None,
+            filepath=log_path,
+            slot_centers=slot_centers,
+            layout_map=layout_map,
+        )
+    except Exception as exc:
+        logger.warning("save_visual_log failed (non-critical): {}", exc)
+
+    with _Session() as session:
+        scan = ScanSession(
+            tray_id=active_tray_id,
+            scanned_at=now,
+            image_raw_path=static_url,
+            image_annotated_path=str(log_path),
+            color_0=color_counts[0],
+            color_1=color_counts[1],
+            color_2=color_counts[2],
+            color_3=color_counts[3],
+            color_4=color_counts[4],
+            error_count=error_count,
+            is_clean=(error_count == 0),
+        )
+        session.add(scan)
+        session.flush()
+
+        session.bulk_insert_mappings(TestSlot, [
+            {
+                "session_id":     scan.id,
+                "position_index": r["position_index"],
+                "color_result":   r["color_result"],
+                "is_error":       r["is_error"],
+                "person_id":      None,
+            }
+            for r in slot_rows
+        ])
+        session.commit()
+        session_id = scan.id
+
+    logger.success(
+        "Upload done — tray_id={}, count={}, errors={}, session_id={}",
+        active_tray_id, count, error_count, session_id,
+    )
+
+    if cfg.telegram_token and cfg.telegram_chat_id:
+        try:
+            caption = _build_thai_caption(
+                now=now, tray_name=tray_name, count=count,
+                color_counts=color_counts, error_count=error_count,
+                server_url=cfg.server_url,
+            )
+            report_bytes = log_path.read_bytes() if log_path.exists() else None
+            if report_bytes:
+                _send_telegram_report(
+                    img_bytes=report_bytes,
+                    caption=caption,
+                    token=cfg.telegram_token,
+                    chat_id=cfg.telegram_chat_id,
+                )
+        except Exception as exc:
+            logger.warning("Telegram report failed (non-critical): {}", exc)
+
+    wrong_color_items = [
+        {
+            "slot_id":  "R{:02d}C{:02d}".format(
+                (r["position_index"] - 1) // 15 + 1,
+                (r["position_index"] - 1) % 15  + 1,
+            ),
+            "expected": _expected_level_from_position(r["position_index"]),
+            "actual":   r["color_result"],
+        }
+        for r in error_slots
+    ]
+
+    return {
+        "status":    "success",
+        "session_id": session_id,
+        "tray_name": tray_name,
+        "count":     count,
+        "summary":   {f"L{i}": color_counts[i] for i in range(5)},
+        "is_clean":  error_count == 0,
+        "errors": {
+            "duplicate_slots":   [],
+            "wrong_color_slots": wrong_color_items,
+        },
+        "slots":     slot_rows,
+        "image_url": static_url,
+        "timestamp": now.isoformat(),
+    }
+
+
 # ─── Test page ────────────────────────────────────────────────────────────────
 
 @app.get("/test", response_class=HTMLResponse)
@@ -1291,11 +1499,15 @@ async def api_test_upload(file: UploadFile = File(...)):
     image_url = f"/static/test/{image_id}.jpg"
     logger.info("Test upload — count={}, errors={}", count, len(error_slots))
 
-    error_coords = [
-        "R{:02d}C{:02d}".format(
-            (r["position_index"] - 1) // 15 + 1,
-            (r["position_index"] - 1) % 15  + 1,
-        )
+    wrong_color_items = [
+        {
+            "slot_id":  "R{:02d}C{:02d}".format(
+                (r["position_index"] - 1) // 15 + 1,
+                (r["position_index"] - 1) % 15  + 1,
+            ),
+            "expected": _expected_level_from_position(r["position_index"]),
+            "actual":   r["color_result"],
+        }
         for r in error_slots
     ]
 
@@ -1306,7 +1518,7 @@ async def api_test_upload(file: UploadFile = File(...)):
         "is_clean":  len(error_slots) == 0,
         "errors": {
             "duplicate_slots":  [],
-            "wrong_color_slots": error_coords,
+            "wrong_color_slots": wrong_color_items,
         },
         "slots":     slot_rows,
         "image_url": image_url,

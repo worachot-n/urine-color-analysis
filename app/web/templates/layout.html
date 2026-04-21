@@ -282,8 +282,6 @@
           {% set _a_trays = request.url.path == '/trays' %}
           <a href="/trays" class="{% if _a_trays %}active{% endif %}" {% if _a_trays %}aria-current="page"{% endif %}>จัดการถาด</a>
 
-          {% set _a_test = request.url.path == '/test' %}
-          <a href="/test" class="{% if _a_test %}active{% endif %}" {% if _a_test %}aria-current="page"{% endif %}>ทดสอบระบบ</a>
         </div>
 
         <button
