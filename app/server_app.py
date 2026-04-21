@@ -228,24 +228,6 @@ def _grid_pts_to_result(grid_pts_list):
     return GridDetectionResult(sample_centres, ref_centres, grid_spacing)
 
 
-def _scale_grid_result(result, grid_json: dict, img: np.ndarray):
-    """Scale slot centres from calibration image space → current image space."""
-    from utils.grid_detector import GridDetectionResult
-    calib_w = grid_json.get("image_width",  0)
-    calib_h = grid_json.get("image_height", 0)
-    th, tw  = img.shape[:2]
-    if not calib_w or not calib_h or (calib_w == tw and calib_h == th):
-        return result
-    sx = tw / calib_w
-    sy = th / calib_h
-    logger.debug("Grid scale: calib={}x{} → img={}x{} (sx={:.3f}, sy={:.3f})",
-                 calib_w, calib_h, tw, th, sx, sy)
-    return GridDetectionResult(
-        sample_centres=[(int(x * sx), int(y * sy)) for x, y in result.sample_centres],
-        ref_centres=   [(int(x * sx), int(y * sy)) for x, y in result.ref_centres],
-        grid_spacing=  result.grid_spacing * (sx + sy) / 2,
-    )
-
 
 def _expected_level_from_position(position_index: int) -> int:
     """
@@ -614,7 +596,7 @@ async def analyze(file: UploadFile = File(...)):
 
         # Load grid from DB calibration
         grid_result  = _grid_pts_to_result(tray_grid_json["grid_pts"])
-        grid_result  = _scale_grid_result(grid_result, tray_grid_json, img_full)
+
         slot_centers = grid_result.sample_centres
 
         # Build live colour baseline from reference row
@@ -670,12 +652,9 @@ async def analyze(file: UploadFile = File(...)):
         "raw_detection_count": len(boxes_orig),
     }
 
-    # Dashboard thumbnail
-    from app.shared.processor import _render_annotated_canvas
-    thumb_canvas = _render_annotated_canvas(
-        img_full, validation_results_compat, None, slot_centers, layout_map
-    )
-    cv2.imwrite(str(thumb_path), thumb_canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    # Save raw image to captures_dir — used by /api/latest-capture for grid calibration.
+    # Annotated overlay is written separately to logs/img/ via save_visual_log below.
+    cv2.imwrite(str(thumb_path), img_full, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
     # Visual log (best-effort)
     try:
@@ -1285,7 +1264,7 @@ async def api_upload(file: UploadFile = File(...)):
             raise ValueError("Invalid image data")
 
         grid_result  = _grid_pts_to_result(tray_grid_json["grid_pts"])
-        grid_result  = _scale_grid_result(grid_result, tray_grid_json, img_full)
+
         slot_centers = grid_result.sample_centres
 
         from utils.color_analysis import build_reference_baseline
@@ -1337,11 +1316,7 @@ async def api_upload(file: UploadFile = File(...)):
         "raw_detection_count": len(boxes_orig),
     }
 
-    from app.shared.processor import _render_annotated_canvas
-    thumb_canvas = _render_annotated_canvas(
-        img_full, validation_results_compat, None, slot_centers, layout_map
-    )
-    cv2.imwrite(str(thumb_path), thumb_canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    cv2.imwrite(str(thumb_path), img_full, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
     try:
         save_visual_log(
@@ -1481,7 +1456,7 @@ async def api_test_upload(file: UploadFile = File(...)):
             raise ValueError("Invalid image data")
 
         grid_result  = _grid_pts_to_result(test_grid_json["grid_pts"])
-        grid_result  = _scale_grid_result(grid_result, test_grid_json, img_full)
+
         slot_centers = grid_result.sample_centres
 
         from utils.color_analysis import build_reference_baseline
