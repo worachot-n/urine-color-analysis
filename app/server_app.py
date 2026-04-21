@@ -1123,6 +1123,30 @@ async def api_latest_capture():
     return {"url": None}
 
 
+@app.post("/api/upload-capture")
+async def api_upload_capture(file: UploadFile = File(...)):
+    """Save an uploaded image to captures_dir so it becomes the latest capture."""
+    img_bytes = await file.read()
+    if not img_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    captures_dir = Path(cfg.captures_dir)
+    captures_dir.mkdir(parents=True, exist_ok=True)
+
+    image_id = str(uuid.uuid4())
+    dest = captures_dir / f"{image_id}.jpg"
+
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Invalid image data")
+
+    cv2.imwrite(str(dest), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    url = f"/static/captures/{image_id}.jpg"
+    logger.info("Capture uploaded: {}", dest.name)
+    return {"url": url}
+
+
 @app.get("/api/settings/grid-corners")
 async def api_grid_corners():
     with _Session() as session:

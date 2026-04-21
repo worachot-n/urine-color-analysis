@@ -1,0 +1,353 @@
+{% extends "layout.html" %}
+
+{% block title %}ปรับเทียบกริด — การตรวจวัดสีปัสสาวะ{% endblock %}
+
+{% block head %}
+<style>
+  .cal-wrap   { display:flex; gap:1.5rem; flex-wrap:wrap; align-items:flex-start; }
+  .canvas-box { position:relative; display:inline-block; border:2px solid #555; background:#111; }
+  .canvas-box img    { display:block; max-width:900px; max-height:600px; }
+  .canvas-box canvas { position:absolute; top:0; left:0; }
+  .controls   { min-width:240px; display:flex; flex-direction:column; gap:.75rem; }
+  .status-box { background:#1e1e1e; border:1px solid #444; border-radius:6px; padding:.75rem 1rem; font-size:.9rem; line-height:1.8; }
+  .btn        { padding:.5rem 1rem; border:none; border-radius:5px; cursor:pointer; font-size:.9rem; }
+  .btn-primary   { background:#4a90e2; color:#fff; }
+  .btn-secondary { background:#555; color:#ddd; }
+  .btn-success   { background:#27ae60; color:#fff; }
+  .btn:disabled  { opacity:.45; cursor:not-allowed; }
+  .hint { font-size:.82rem; color:#aaa; margin-top:.3rem; }
+  #save-msg { font-size:.85rem; margin-top:.4rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>ปรับเทียบกริด</h1>
+</div>
+
+<div class="cal-wrap">
+
+  <!-- ── Canvas area ── -->
+  <div>
+    <div class="canvas-box" id="canvas-box">
+      <img id="bg-img" src="" alt="" style="display:none;">
+      <canvas id="overlay"></canvas>
+    </div>
+    <p class="hint" id="hint-text">โหลดภาพก่อน แล้วคลิก 4 มุมของกริด: บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย</p>
+  </div>
+
+  <!-- ── Controls ── -->
+  <div class="controls">
+
+    <div class="status-box">
+      <div><strong>ถาดที่ใช้งาน:</strong> {{ active_tray or "ยังไม่ได้เลือก" }}</div>
+      <div><strong>ปรับเทียบล่าสุด:</strong> {{ grid_date or "ยังไม่ได้ปรับเทียบ" }}</div>
+      {% if last_scan_at %}<div><strong>สแกนล่าสุด:</strong> {{ last_scan_at[:19] }}</div>{% endif %}
+    </div>
+
+    <button class="btn btn-secondary" onclick="loadLatest()">โหลดภาพล่าสุด</button>
+    <label class="btn btn-secondary" style="text-align:center;">
+      อัปโหลดภาพ
+      <input type="file" accept="image/*" style="display:none;" onchange="loadFile(this)">
+    </label>
+
+    <hr style="border-color:#444;">
+
+    <button class="btn btn-secondary" onclick="resetCorners()">รีเซ็ตมุม</button>
+    <button class="btn btn-secondary" id="btn-restore" onclick="restoreGrid()">โหลดกริดที่บันทึกไว้</button>
+    <button class="btn btn-success"   id="btn-save" onclick="saveGrid()" disabled>บันทึกกริด</button>
+    <div id="save-msg"></div>
+
+    <div class="hint">
+      <strong>วิธีใช้:</strong><br>
+      1. โหลดภาพถาด<br>
+      2. คลิก 4 มุม (บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย)<br>
+      3. ลากเส้นกริดเพื่อปรับ (ถ้าจำเป็น)<br>
+      4. กด "บันทึกกริด"
+    </div>
+  </div>
+
+</div>
+
+<script>
+const NH = 14, NV = 16;
+let corners    = [];
+let gridPtsArr = null;   // [NH][NV][2] in IMAGE coords
+let hoveredLine = null;  // {type:'h'|'v', idx}
+let dragState   = null;  // {type, idx, lastX, lastY}
+let imgScale    = 1;     // canvas/image display scale
+let imgOffX     = 0, imgOffY = 0;
+
+const canvas  = document.getElementById('overlay');
+const ctx     = canvas.getContext('2d');
+const bgImg   = document.getElementById('bg-img');
+const hintEl  = document.getElementById('hint-text');
+const btnSave = document.getElementById('btn-save');
+
+// ── Image loading ─────────────────────────────────────────────────────────────
+
+function loadLatest() {
+  fetch('/api/latest-capture').then(r => r.json()).then(d => {
+    if (d.url) setImage(d.url);
+    else alert('ยังไม่มีภาพในระบบ');
+  });
+}
+
+function loadFile(input) {
+  if (!input.files[0]) return;
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  fetch('/api/upload-capture', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(d => { if (d.url) setImage(d.url); else alert('อัปโหลดไม่สำเร็จ'); })
+    .catch(() => alert('อัปโหลดไม่สำเร็จ'));
+}
+
+function setImage(src) {
+  bgImg.onload = () => {
+    bgImg.style.display = 'block';
+    const maxW = 900, maxH = 600;
+    imgScale = Math.min(maxW / bgImg.naturalWidth, maxH / bgImg.naturalHeight, 1);
+    const w = Math.round(bgImg.naturalWidth  * imgScale);
+    const h = Math.round(bgImg.naturalHeight * imgScale);
+    bgImg.style.width  = w + 'px';
+    bgImg.style.height = h + 'px';
+    canvas.width  = w;
+    canvas.height = h;
+    resetCorners();
+    drawAll();
+  };
+  bgImg.src = src;
+}
+
+// ── Coordinate helpers ────────────────────────────────────────────────────────
+
+// Convert canvas pixel → image pixel
+function canvasToImg(cx, cy) {
+  return [cx / imgScale, cy / imgScale];
+}
+// Convert image pixel → canvas pixel
+function imgToCanvas(ix, iy) {
+  return [ix * imgScale, iy * imgScale];
+}
+
+// ── Grid math ─────────────────────────────────────────────────────────────────
+
+function lerp2(a, b, t) {
+  return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+}
+
+function initGrid() {
+  const [tl, tr, br, bl] = corners;  // image coords
+  gridPtsArr = [];
+  for (let r = 0; r < NH; r++) {
+    const row = [];
+    for (let c = 0; c < NV; c++) {
+      const tC = c / (NV - 1), tR = r / (NH - 1);
+      const top = lerp2(tl, tr, tC);
+      const bot = lerp2(bl, br, tC);
+      row.push(lerp2(top, bot, tR));
+    }
+    gridPtsArr.push(row);
+  }
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────────
+
+function drawAll() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (gridPtsArr) {
+    // Horizontal lines
+    for (let r = 0; r < NH; r++) {
+      const isHov = hoveredLine && hoveredLine.type === 'h' && hoveredLine.idx === r;
+      ctx.beginPath();
+      ctx.strokeStyle = isHov ? '#ffcc00' : (r === 0 ? '#ff6655' : '#00e5ff');
+      ctx.lineWidth   = isHov ? 2.5 : 1.2;
+      for (let c = 0; c < NV; c++) {
+        const [px, py] = imgToCanvas(...gridPtsArr[r][c]);
+        c === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    // Vertical lines
+    for (let c = 0; c < NV; c++) {
+      const isHov = hoveredLine && hoveredLine.type === 'v' && hoveredLine.idx === c;
+      ctx.beginPath();
+      ctx.strokeStyle = isHov ? '#ffcc00' : (c === 0 ? '#ff6655' : '#00e5ff');
+      ctx.lineWidth   = isHov ? 2.5 : 1.2;
+      for (let r = 0; r < NH; r++) {
+        const [px, py] = imgToCanvas(...gridPtsArr[r][c]);
+        r === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // Corner markers
+  corners.forEach(([ix, iy], i) => {
+    const [cx, cy] = imgToCanvas(ix, iy);
+    ctx.beginPath();
+    ctx.arc(cx, cy, 6, 0, 2 * Math.PI);
+    ctx.fillStyle = '#ff0';
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillText(i + 1, cx - 4, cy + 4);
+  });
+}
+
+// ── Line hover detection ──────────────────────────────────────────────────────
+
+function ptToSegDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
+}
+
+function findHoveredLine(cx, cy) {
+  if (!gridPtsArr) return null;
+  const THRESH = 8;
+  // Horizontal
+  for (let r = 0; r < NH; r++) {
+    for (let c = 0; c < NV - 1; c++) {
+      const [ax, ay] = imgToCanvas(...gridPtsArr[r][c]);
+      const [bx, by] = imgToCanvas(...gridPtsArr[r][c + 1]);
+      if (ptToSegDist(cx, cy, ax, ay, bx, by) < THRESH) return {type: 'h', idx: r};
+    }
+  }
+  // Vertical
+  for (let c = 0; c < NV; c++) {
+    for (let r = 0; r < NH - 1; r++) {
+      const [ax, ay] = imgToCanvas(...gridPtsArr[r][c]);
+      const [bx, by] = imgToCanvas(...gridPtsArr[r + 1][c]);
+      if (ptToSegDist(cx, cy, ax, ay, bx, by) < THRESH) return {type: 'v', idx: c};
+    }
+  }
+  return null;
+}
+
+// ── Mouse events ──────────────────────────────────────────────────────────────
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+
+  if (gridPtsArr) {
+    const line = findHoveredLine(cx, cy);
+    if (line) {
+      dragState = {...line, lastX: cx, lastY: cy};
+      return;
+    }
+  }
+
+  if (corners.length < 4) {
+    corners.push(canvasToImg(cx, cy));
+    if (corners.length === 4) {
+      initGrid();
+      btnSave.disabled = false;
+      hintEl.textContent = 'ลากเส้นเพื่อปรับกริด แล้วกด "บันทึกกริด"';
+    } else {
+      const labels = ['บนซ้าย', 'บนขวา', 'ล่างขวา', 'ล่างซ้าย'];
+      hintEl.textContent = `คลิกที่ ${labels[corners.length]} (${corners.length}/4)`;
+    }
+    drawAll();
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+
+  if (dragState) {
+    const dx = (cx - dragState.lastX) / imgScale;
+    const dy = (cy - dragState.lastY) / imgScale;
+    dragState.lastX = cx; dragState.lastY = cy;
+
+    if (dragState.type === 'h') {
+      for (let c = 0; c < NV; c++) {
+        gridPtsArr[dragState.idx][c][1] += dy;
+      }
+    } else {
+      for (let r = 0; r < NH; r++) {
+        gridPtsArr[r][dragState.idx][0] += dx;
+      }
+    }
+    drawAll();
+    return;
+  }
+
+  if (gridPtsArr) {
+    const prev = hoveredLine ? hoveredLine.type + hoveredLine.idx : null;
+    hoveredLine = findHoveredLine(cx, cy);
+    const curr = hoveredLine ? hoveredLine.type + hoveredLine.idx : null;
+    canvas.style.cursor = hoveredLine ? 'grab' : 'crosshair';
+    if (prev !== curr) drawAll();
+  }
+});
+
+canvas.addEventListener('mouseup', () => { dragState = null; });
+canvas.addEventListener('mouseleave', () => { dragState = null; });
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+
+function resetCorners() {
+  corners = []; gridPtsArr = null; hoveredLine = null; dragState = null;
+  btnSave.disabled = true;
+  hintEl.textContent = 'คลิก 4 มุมของกริด: บนซ้าย → บนขวา → ล่างขวา → ล่างซ้าย';
+  drawAll();
+}
+
+function restoreGrid() {
+  fetch('/api/settings/grid-corners').then(r => r.json()).then(d => {
+    if (!d.corners) { alert('ยังไม่มีข้อมูลกริดที่บันทึกไว้'); return; }
+    corners = d.corners;
+    if (d.grid_pts) {
+      gridPtsArr = d.grid_pts;
+    } else {
+      initGrid();
+    }
+    btnSave.disabled = false;
+    hintEl.textContent = 'โหลดกริดที่บันทึกไว้ — ลากเส้นเพื่อปรับ หรือกด "บันทึกกริด"';
+    drawAll();
+  });
+}
+
+function saveGrid() {
+  if (!gridPtsArr) { alert('กรุณาเลือก 4 มุมก่อน'); return; }
+  btnSave.disabled = true;
+  const msgEl = document.getElementById('save-msg');
+  msgEl.textContent = 'กำลังบันทึก...';
+
+  const fd = new FormData();
+  fd.append('corners',  JSON.stringify(corners));
+  fd.append('grid_pts', JSON.stringify(gridPtsArr));
+
+  fetch('/settings/grid', {method: 'POST', body: fd})
+    .then(r => r.json())
+    .then(d => {
+      if (d.status === 'ok') {
+        msgEl.style.color = '#4caf50';
+        msgEl.textContent = '✓ บันทึกแล้ว: ' + d.calibration_date;
+      } else {
+        msgEl.style.color = '#e74c3c';
+        msgEl.textContent = 'ผิดพลาด: ' + JSON.stringify(d);
+      }
+      btnSave.disabled = false;
+    })
+    .catch(err => {
+      msgEl.style.color = '#e74c3c';
+      msgEl.textContent = 'ข้อผิดพลาด: ' + err;
+      btnSave.disabled = false;
+    });
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+canvas.style.cursor = 'crosshair';
+{% if latest_capture %}
+setImage('{{ latest_capture }}');
+{% endif %}
+</script>
+{% endblock %}
