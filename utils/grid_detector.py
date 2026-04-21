@@ -40,7 +40,7 @@ class GridDetectionResult:
 
 # Grid constants matching the physical tray layout
 _H_LINES = 14    # horizontal grid lines
-_V_LINES = 17    # vertical grid lines
+_V_LINES = 16    # vertical grid lines (15 col spans; ZZ excluded from calibration area)
 _ROWS    = 13    # sample rows (lines 1–13 → spans 1–13, span 0 = reference)
 _COLS    = 15    # sample columns (lines 1–15 → spans 1–15, span 0 = ZZ dead zone)
 

@@ -216,11 +216,11 @@ def _grid_pts_to_result(grid_pts_list):
     sample_centres = [
         (int(gp[hi][vi][0]), int(gp[hi][vi][1]))
         for hi in range(1, 14)
-        for vi in range(1, 16)
+        for vi in range(0, 15)
     ]
 
     ref_centres = []
-    for vi in range(1, 16):
+    for vi in range(0, 15):
         xs = [gp[r][c][0] for r in (0, 1) for c in (vi, vi + 1)]
         ys = [gp[r][c][1] for r in (0, 1) for c in (vi, vi + 1)]
         ref_centres.append((int(sum(xs) / 4), int(sum(ys) / 4)))

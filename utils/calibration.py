@@ -50,7 +50,7 @@ from configs.config import (
 # Physical grid: "16 columns × 14 rows of lines (forming 15×13 cells)" per CLAUDE.md.
 # 14 horizontal lines → 13 cell rows (row 0 = ref, rows 1-12 = samples)
 # 17 vertical lines  → 16 cell columns (col 0 = ZZ, cols 1-15 = data)
-_N_VLINES = 17   # 17 vertical lines → 16 cell columns
+_N_VLINES = 16   # 16 vertical lines → 15 cell columns (ZZ excluded from calibration area)
 _N_HLINES = 14   # 14 horizontal lines → 13 cell rows (was 15; removed unused row 13)
 
 
