@@ -180,38 +180,46 @@ class _YoloInference:
             imgsz=self._input_size,
             conf=cfg.model_conf,
             iou=cfg.model_iou,
+            max_det=cfg.model_max_det,
             device="cpu",
             verbose=False,
         )
 
+        box_min = cfg.model_box_min_px
+        box_max = cfg.model_box_max_px
+
         boxes_640: list[list[float]] = []
         n_padding_rejected = 0
+        n_size_rejected    = 0
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
+                bw, bh = x2 - x1, y2 - y1
+
+                # Discard boxes outside the configured size range (640-space)
+                if bw < box_min or bh < box_min or bw > box_max or bh > box_max:
+                    n_size_rejected += 1
+                    continue
+
                 cx_640 = (x1 + x2) / 2
                 cy_640 = (y1 + y2) / 2
-                # Discard detections whose center is inside a padding zone
+                # Discard detections whose center falls in the white padding zone
                 if not (content_x1 <= cx_640 <= content_x2 and
                         content_y1 <= cy_640 <= content_y2):
                     n_padding_rejected += 1
-                    logger.debug(
-                        "Padding-zone detection discarded: center=({:.0f},{:.0f}) "
-                        "content=[{},{},{},{}] conf={:.2f}",
-                        cx_640, cy_640, content_x1, content_y1, content_x2, content_y2,
-                        float(box.conf[0]),
-                    )
                     continue
+
                 boxes_640.append([x1, y1, x2, y2, float(box.conf[0]), int(box.cls[0])])
 
-        if n_padding_rejected:
-            logger.info("YOLO: {} padding-zone false positive(s) discarded", n_padding_rejected)
+        logger.info(
+            "YOLO raw={} kept={} size_drop={} pad_drop={} "
+            "(image {}×{}, scale={:.4f}, pad_x={}, pad_y={})",
+            sum(len(r.boxes) for r in results),
+            len(boxes_640), n_size_rejected, n_padding_rejected,
+            w_img, h_img, scale, pad_x, pad_y,
+        )
 
         boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y)
-        logger.debug(
-            "YOLO detections: {} kept (image {}×{}, scale={:.4f}, pad_x={}, pad_y={})",
-            len(boxes_orig), w_img, h_img, scale, pad_x, pad_y,
-        )
         return img, boxes_orig
 
 
@@ -294,14 +302,20 @@ def _match_detections_to_slots(
 
     centers = np.array(slot_centers, dtype=np.float32)   # (N, 2)
 
-    # Estimate matching threshold from minimum pairwise slot distance
+    # Compute matching threshold: half the minimum inter-slot spacing.
+    # Use pairwise distances between ALL slot pairs (not just consecutive) to
+    # find the true minimum spacing, which prevents cross-slot false claims.
     if len(centers) > 1:
-        diffs = centers[1:] - centers[:-1]
-        dists = np.linalg.norm(diffs, axis=1)
-        min_spacing = float(np.percentile(dists[dists > 0], 10)) if dists.any() else 50.0
+        # Use only nearest-neighbor distances (cheap: sort each row, take col 1)
+        from scipy.spatial import cKDTree
+        tree = cKDTree(centers)
+        nn_dists, _ = tree.query(centers, k=2)   # k=2: self + nearest neighbour
+        min_spacing = float(np.median(nn_dists[:, 1]))
     else:
         min_spacing = 50.0
-    threshold = min_spacing * 0.6
+    threshold = min_spacing * 0.75   # allow up to 75% of nearest-slot spacing
+    logger.info("Slot matching: {} boxes vs {} slots  threshold={:.0f}px",
+                len(boxes_orig), len(slot_centers), threshold)
 
     claimed: set[int] = set()
     # Sort boxes by descending confidence so higher-confidence detections win ties
@@ -335,6 +349,8 @@ def _match_detections_to_slots(
             "box": [x1, y1, x2, y2],
         }
 
+    logger.info("Slot matching: {} / {} boxes matched to slots",
+                len(hits), len(boxes_orig))
     return hits
 
 
@@ -681,9 +697,11 @@ async def analyze(file: UploadFile = File(...)):
         },
         "duplicate_slots":     [],
         "wrong_color_slots":   [
-            {"slot_id": str(r["position_index"]),
-             "expected": _expected_level_from_position(r["position_index"]),
-             "actual":   r["color_result"]}
+            {"slot_id":    str(r["position_index"]),
+             "slot_label": layout_map.get(str(r["position_index"]),
+                           f"R{(r['position_index']-1)//15+1:02d}C{(r['position_index']-1)%15+1:02d}"),
+             "expected":   _expected_level_from_position(r["position_index"]),
+             "actual":     r["color_result"]}
             for r in error_slots
         ],
         "raw_detection_count": len(boxes_orig),
@@ -1361,9 +1379,11 @@ async def api_upload(file: UploadFile = File(...)):
         },
         "duplicate_slots":     [],
         "wrong_color_slots":   [
-            {"slot_id": str(r["position_index"]),
-             "expected": _expected_level_from_position(r["position_index"]),
-             "actual":   r["color_result"]}
+            {"slot_id":    str(r["position_index"]),
+             "slot_label": layout_map.get(str(r["position_index"]),
+                           f"R{(r['position_index']-1)//15+1:02d}C{(r['position_index']-1)%15+1:02d}"),
+             "expected":   _expected_level_from_position(r["position_index"]),
+             "actual":     r["color_result"]}
             for r in error_slots
         ],
         "raw_detection_count": len(boxes_orig),

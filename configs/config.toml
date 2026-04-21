@@ -86,28 +86,28 @@ glare_min_valid_px = 10    # Min non-glare pixels required to use masked median
 # COLOR ANALYSIS
 # =============================================================================
 [color_analysis]
-inner_crop_px     = 15    # Pixels to shrink from each side of bottle crop
-delta_e_threshold = 15.0  # Legacy — kept for reference; confidence now uses margin
+inner_crop_px      = 15    # Pixels to shrink from each side of bottle crop
+delta_e_threshold  = 15.0  # Legacy — kept for reference; confidence now uses margin
 confidence_margin  = 3.0   # second_best_ΔE − best_ΔE must exceed this for 'Confident'
 presence_threshold = 15.0  # Max ΔE to nearest reference level to confirm bottle present
                             # Background paper scores >>15; real bottles score <15
 contrast_threshold = 12.0  # Min ΔE to white paper — below this = ghost (old pipeline)
-ghost_de_threshold  = 8.0   # Stricter ΔE to white paper for YOLO path anti-ghosting
+ghost_de_threshold  = 8.0  # Stricter ΔE to white paper for YOLO path anti-ghosting
 ref_inner_crop_px  = 25    # Larger inner crop for reference bottles (ignores red ring edge)
-color_levels      = 5     # Number of distinct color levels (L0-L4)
-refs_per_level    = 3     # Reference bottles per level in reference row
+color_levels       = 5     # Number of distinct color levels (L0-L4)
+refs_per_level     = 3     # Reference bottles per level in reference row
 
 # =============================================================================
 # GRID CONFIGURATION
 # =============================================================================
 [grid]
-config_file    = "grid_config.json"
+config_file     = "grid_config.json"
 color_json_file = "color.json"
-cols           = 16               # 16 columns of lines (col 0 = ZZ dead zone)
-rows           = 14               # 14 rows of lines (row 0 = reference, 1-12 = samples)
-groups         = ["A1", "A2", "A3", "A4"]
-slots_per_group = 9               # Slots 1-9 per group
-levels         = [0, 1, 2, 3, 4]
+cols            = 16               # 16 columns of lines (col 0 = ZZ dead zone)
+rows            = 14               # 14 rows of lines (row 0 = reference, 1-12 = samples)
+groups          = ["A1", "A2", "A3", "A4"]
+slots_per_group = 9                # Slots 1-9 per group
+levels          = [0, 1, 2, 3, 4]
 
 # =============================================================================
 # NETWORK / HOTSPOT
@@ -138,7 +138,7 @@ chat_id = "-1003801438507"
 [yolo]
 model_path          = "models/best.pt"
 imgsz               = 640
-conf_threshold      = 0.40
+conf_threshold      = 0.25       # Lowered from 0.40 — matches YOLO default validation threshold
 iou_threshold       = 0.45       # NMS IoU threshold
 augment             = false      # TTA disabled — lowers confidence scores on fixed-angle camera
 snapshots           = 1          # One snapshot is sufficient for YOLO bottle detection
@@ -146,8 +146,8 @@ snapshot_delay_ms   = 200        # Milliseconds between snapshots (unused with s
 exposure_variation  = 0.15       # ±15% ExposureTime variation (unused with snapshots=1)
 consensus_min_votes = 1          # Must match snapshots value
 consensus_iou       = 0.50       # IoU threshold for matching boxes across snapshots
-box_min_px          = 15         # Min box width & height in 640px space — calibrated for full-grid ROI (~32px bottles)
-box_max_px          = 60         # Max box width & height in 640px space
+box_min_px          = 10         # Min box side in 640px space for full-image letterbox
+box_max_px          = 120        # Max box side in 640px space (raised from 60 for full-image scale)
 slot_max_dist_ratio = 0.60       # Max distance from slot center as fraction of slot radius
 clahe_clip_limit    = 2.0        # CLAHE clip for pre-inference enhancement
 clahe_tile_size     = 8          # CLAHE tile grid size (NxN)
@@ -159,12 +159,6 @@ roi_padding_px      = 10         # Padding (px) added around grid corners for RO
 # Each value is pixels trimmed FROM that edge of the full frame:
 #   y1 = top              y2 = frame_height − bottom
 #   x1 = left             x2 = frame_width  − right
-#
-# If a margin would make x2 ≤ x1 or y2 ≤ y1 (margin larger than the frame),
-# that side falls back to the frame boundary (no crop on that side).
-#
-# Coordinate translation: detect_once() automatically adds (x1, y1) back to
-# every returned bounding box so all downstream code stays in full-frame space.
 # =============================================================================
 [sample_roi]
 top    = 220    # trim reference row from top
@@ -176,15 +170,15 @@ right  = 800    # if > frame width − left, no right-side crop is applied
 # SYSTEM SAFETY
 # =============================================================================
 [system]
-watchdog_timeout_sec = 60   # Max seconds per processing cycle (increased for YOLO multi-snapshot)
+watchdog_timeout_sec = 60   # Max seconds per processing cycle
 
 # =============================================================================
 # U-NET GRID SEGMENTATION
 # =============================================================================
 [unet]
-model_path     = "models/unet_grid.pt"   # Trained U-Net weights (must be provided)
-input_size     = 640                      # Network input width/height
-mask_threshold = 0.5                     # Binary threshold on sigmoid output
+model_path     = "models/unet_grid.pt"
+input_size     = 640
+mask_threshold = 0.5
 
 # =============================================================================
 # LOGGING / DEBUG

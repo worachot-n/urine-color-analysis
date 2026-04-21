@@ -119,10 +119,13 @@ class Settings(BaseSettings):
                               _mdl.get("path", "models/best.pt"))
     model_input_size: int   = _t.get("yolo", {}).get("imgsz",
                               _mdl.get("input_size", 640))
-    model_conf:       float = _t.get("yolo", {}).get("conf_threshold",
-                              _mdl.get("confidence_threshold", 0.25))
-    model_iou:        float = _t.get("yolo", {}).get("iou_threshold",
-                              _mdl.get("iou_threshold", 0.45))
+    model_conf:        float = _t.get("yolo", {}).get("conf_threshold",
+                               _mdl.get("confidence_threshold", 0.25))
+    model_iou:         float = _t.get("yolo", {}).get("iou_threshold",
+                               _mdl.get("iou_threshold", 0.45))
+    model_box_min_px:  int   = _t.get("yolo", {}).get("box_min_px",  10)
+    model_box_max_px:  int   = _t.get("yolo", {}).get("box_max_px", 120)
+    model_max_det:     int   = 500
 
     # ── Persistence ─────────────────────────────────────────────────────────
     database_path:  str = _t.get("debug", {}).get("db_path",
