@@ -2,7 +2,7 @@
 
 A distributed vision system for automated urine sample analysis using AI.
 A **Raspberry Pi 4B** captures and undistorts images, controls status hardware, and POSTs to a server.
-A **remote Ubuntu server** runs U-Net grid detection + YOLO inference, performs CIE Lab color classification, stores results in PostgreSQL, and hosts the web dashboard.
+A **remote Ubuntu server** runs YOLO inference, performs CIE Lab color classification, stores results in PostgreSQL, and hosts the web dashboard. The grid is calibrated once manually and saved to the database.
 Communication is secured via HTTPS (Cloudflare Tunnel) with a shared API key.
 
 ---
@@ -16,9 +16,9 @@ Button press (GPIO 24)                     POST /analyze
   → Relay Yellow ON (processing)             → Fetch active tray from DB
   → picamera2 capture (4608 × 2592)          → ROI crop (skips ref row + dead zone)
   → CameraUndistorter.undistort_frame()      → letterbox to 640 × 640 (white)
-  → HTTPS POST + X-Auth-Token  ─────────►   → GridDetector: U-Net → 195 slot centres
+  → HTTPS POST + X-Auth-Token  ─────────►   → Load grid_json from active tray (DB)
   → TM1637 spinner animation               → YOLO: bottle detection → slot matching
-  → LCD "Analyzing..."                       → K-means CIE Lab color classification
+  → LCD "Analyzing..."                       → Live CIE Lab color ref from ref row
   → parse JSON response        ◄─────────   → Wrong-zone validation → error slots
   → update LCD + TM1637 count              → Visual log saved to logs/img/
   → scroll error coords on LCD             → Telegram report (Thai) sent
@@ -28,8 +28,8 @@ Button press (GPIO 24)                     POST /analyze
 
 - Pi performs lens undistortion locally before uploading (focus locked via `camera_params.yaml`)
 - Server requires an **active tray** to be selected via the `/trays` management page
-- Grid is detected dynamically per frame using a U-Net + ResNet-34 model (`unet_grid.pt`)
-- YOLO boxes are matched to the 195 U-Net intersection centres by proximity
+- Grid is calibrated once via `/settings` (4-corner click → bilinear interpolation → saved to `grid_json` in DB)
+- YOLO boxes are matched to the 195 calibrated slot centres loaded from the active tray's `grid_json`
 - Color reference is extracted live from the reference row (row 0) of each capture — no `color.json` needed
 - Dashboard renders an interactive CSS grid sized to the active tray's `rows × cols`
 - Tunnel via Cloudflare for public HTTPS access from the Pi
@@ -44,7 +44,7 @@ urine-color-analysis/
 ├── main.py                         # Entry point — --role client | server
 │
 ├── app/
-│   ├── server_app.py               # FastAPI — U-Net, YOLO, PostgreSQL, dashboard, tray API
+│   ├── server_app.py               # FastAPI — YOLO, PostgreSQL, dashboard, tray API, grid calibration
 │   ├── client_app.py               # Pi loop — undistort, GPIO, relay, LCD, TM1637, HTTP POST
 │   ├── shared/
 │   │   ├── config.py               # pydantic-settings (config.toml + settings.yaml + .env)
@@ -303,7 +303,8 @@ Returns the most recent session with tray dimensions for the dashboard grid:
 
 ```
 trays            — one row per physical tray
-  id, tray_name, is_active, rows, cols, total_slots, layout_json, created_at
+  id, tray_name, is_active, rows, cols, total_slots, layout_json, grid_json, created_at
+  grid_json: {calibration_date, corners, grid_pts[14][17][2], sample_centres×195, ref_centres×15, grid_spacing}
 
 scan_sessions    — one row per scan event
   id, tray_id, scanned_at, color_0…color_4, error_count, is_clean,
@@ -342,9 +343,12 @@ Server: cv2.imdecode() → full BGR
         ▼  letterbox_white_padding(640)   [white fill, not black]
         640 × 640 padded image
         │
-        ▼  GridDetector.detect_intersections()
-        U-Net → binary mask → skeletonize → HoughLinesP
-        → 195 (x,y) intersection centres (row-major, in 640-space)
+        ▼  Load grid from active tray grid_json (DB)
+        _grid_pts_to_result() → 195 sample centres + 15 ref centres
+        (HTTP 400 if tray is uncalibrated)
+        │
+        ▼  build_reference_baseline() on ref row
+        Live CIE Lab standard per color level (L0–L4) — no color.json
         │
         ▼  YOLO inference → scale_coordinates()
         Bottle boxes in full-image space
@@ -352,7 +356,7 @@ Server: cv2.imdecode() → full BGR
         ▼  _match_detections_to_slots()
         Each box → nearest position_index (1–195)
         │
-        ▼  K-means CIE Lab classification (color.json)
+        ▼  CIE Lab classification via live baseline
         level 0-4 per occupied slot
         │
         ▼  Wrong-zone validation
@@ -381,20 +385,19 @@ The `/dashboard` grid automatically resizes to the active tray's `rows × cols` 
 
 ## Grid Calibration
 
-1. Navigate to `http://<server>:8000/settings` → **Grid Calibration** tab
-2. Upload a photo of the physical grid
-3. Click 4 outer corners: **TL → TR → BR → BL**
-4. Click **Compute Grid** → server calculates 195 slot polygons
-5. Save → writes `grid_config.json`
+1. Navigate to `http://<server>:8000/settings`
+2. Load the latest capture or upload a tray photo
+3. Click 4 outer corners: **TL → TR → BR → BL** (in order)
+4. Optionally drag grid lines to fine-tune alignment
+5. Click **บันทึกกริด** → server saves 195 slot centres + 15 ref centres to `trays.grid_json` in DB
+
+> The calibration must be done once per tray before scanning. `/analyze` returns HTTP 400 if the active tray is uncalibrated.
 
 ---
 
-## Color Reference Calibration
+## Color Reference
 
-1. Navigate to `/settings` → **Color Reference** tab
-2. Upload a photo with all 5 reference levels present
-3. Server extracts Lab values → shows 5 colour swatches
-4. Click **Save** → writes `color.json`
+No manual color calibration needed. The reference row (row 0 of the tray, 15 reference bottles in L0–L4 groups) is sampled live from every capture using `build_reference_baseline()`. This self-calibrates per lighting condition automatically.
 
 ---
 

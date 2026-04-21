@@ -1,15 +1,13 @@
 """
 Server-side FastAPI application — Ubuntu / any Linux host (V2).
 
-V2 changes vs V1:
-  • PostgreSQL (via DATABASE_URL) with 4 normalized tables:
-      trays, scan_sessions, test_slots, people
-  • Phase A : ArUco DICT_4X4_50 marker → tray ID + rotation
-  • Phase B/C: U-Net segmentation → skeletonize → line-fit → 195 slot centres
-  • Phase D : YOLO bottle detection + K-means Lab colour classification
-  • Phase E : Duplicate-slot + wrong-colour-zone validation
-  • Dashboard: interactive 13×15 grid with blinking error slots
-  • New endpoints: GET /api/latest, GET /api/sessions
+Pipeline per scan:
+  • Active tray selected via Tray Management UI
+  • Grid loaded from trays.grid_json (calibrated once via /settings, bilinear interpolation)
+  • YOLO bottle detection → slot matching (195 calibrated centres)
+  • Live CIE Lab colour baseline from reference row of each capture
+  • Wrong-colour-zone validation
+  • Dashboard: interactive rows×cols grid
 
 Install:
     uv sync --extra server --extra common
@@ -68,6 +66,7 @@ class Tray(_Base):
     dimension_info = Column(String, default="13x15")
     created_at     = Column(DateTime, default=datetime.utcnow)
     layout_json    = Column(JSON, nullable=True)   # {"1": "A01", "2": "A02", ...}
+    grid_json      = Column(JSON, nullable=True)   # {calibration_date, corners, grid_pts, sample_centres, ref_centres, grid_spacing}
 
     sessions       = relationship("ScanSession", back_populates="tray")
 
@@ -207,6 +206,33 @@ def _normalize_layout_map(layout_json, cols: int = 15) -> dict[str, str]:
                     result[str(pos)] = str(label)
         return result
     return {}
+
+
+def _grid_pts_to_result(grid_pts_list):
+    """Convert [[14][17][2]] bilinear grid → GridDetectionResult (same shape as U-Net output)."""
+    from utils.grid_detector import GridDetectionResult
+    gp = np.array(grid_pts_list)   # shape (14, 17, 2)
+
+    sample_centres = [
+        (int(gp[hi][vi][0]), int(gp[hi][vi][1]))
+        for hi in range(1, 14)
+        for vi in range(1, 16)
+    ]
+
+    ref_centres = []
+    for vi in range(1, 16):
+        xs = [gp[r][c][0] for r in (0, 1) for c in (vi, vi + 1)]
+        ys = [gp[r][c][1] for r in (0, 1) for c in (vi, vi + 1)]
+        ref_centres.append((int(sum(xs) / 4), int(sum(ys) / 4)))
+
+    if len(sample_centres) >= 2:
+        row1 = np.array(sample_centres[:15], dtype=np.float32)
+        diffs = np.linalg.norm(np.diff(row1, axis=0), axis=1)
+        grid_spacing = float(np.median(diffs)) if len(diffs) else 50.0
+    else:
+        grid_spacing = 50.0
+
+    return GridDetectionResult(sample_centres, ref_centres, grid_spacing)
 
 
 def _expected_level_from_position(position_index: int) -> int:
@@ -424,6 +450,7 @@ def _run_migrations() -> None:
 
     migrations = [
         ("trays", "layout_json",    json_t),
+        ("trays", "grid_json",      json_t),
         ("trays", "tray_name",      "VARCHAR"),
         ("trays", "is_active",      bool_t),
         ("trays", "rows",           "INTEGER DEFAULT 13"),
@@ -476,10 +503,6 @@ async def _lifespan(app: FastAPI):
     Path(cfg.visual_log_dir).mkdir(parents=True, exist_ok=True)
     _cleanup_old_logs(Path(cfg.visual_log_dir), max_age_days=30)
     app.state.yolo = _YoloInference()
-
-    from utils.grid_detector import GridDetector
-    app.state.grid_detector = GridDetector(cfg.unet_model_path)
-
     logger.success("Server V2 startup complete — {}:{}", cfg.server_host, cfg.server_port)
     yield
     logger.info("Server shutting down")
@@ -528,9 +551,8 @@ async def analyze(file: UploadFile = File(...)):
     """
     V2 analysis pipeline (active-tray driven):
       Requires an active tray selected via the Tray Management UI.
-      Phase A: ArUco detection (informational only)
-      Phase B/C: U-Net → skeleton → slot centres
-      Phase D: YOLO → slot matching → K-means colour classification
+      Phase B/C: Load calibrated grid from DB (manual corner calibration)
+      Phase D: YOLO → slot matching → live colour baseline from reference row
       Phase E: wrong-colour-zone validation
       DB: insert ScanSession + TestSlot rows linked to the active tray
     """
@@ -547,10 +569,17 @@ async def analyze(file: UploadFile = File(...)):
                 detail="กรุณาเลือกถาดก่อนสแกน (No active tray selected)",
             )
         active_tray_id = active_tray.id
+        tray_grid_json = active_tray.grid_json
         layout_map: dict[str, str] = _normalize_layout_map(
             active_tray.layout_json, cols=active_tray.cols or 15
         )
         tray_name = active_tray.tray_name or f"Tray-{active_tray.id}"
+
+    if not tray_grid_json:
+        raise HTTPException(
+            status_code=400,
+            detail="กรุณาปรับเทียบกริดก่อนสแกน (Grid not calibrated for this tray)",
+        )
 
     now      = datetime.utcnow()
     image_id = str(uuid.uuid4())
@@ -571,12 +600,8 @@ async def analyze(file: UploadFile = File(...)):
         if img_full is None:
             raise ValueError("Invalid image data")
 
-        # Phase B/C
-        grid_result  = app.state.grid_detector.detect_intersections(
-            img_full,
-            input_size=cfg.unet_input_size,
-            mask_threshold=cfg.unet_mask_threshold,
-        )
+        # Load grid from DB calibration
+        grid_result  = _grid_pts_to_result(tray_grid_json["grid_pts"])
         slot_centers = grid_result.sample_centres
 
         # Build live colour baseline from reference row
@@ -591,6 +616,8 @@ async def analyze(file: UploadFile = File(...)):
         slot_hits     = _match_detections_to_slots(boxes_orig, slot_centers)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("V2 inference failed")
         raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
@@ -1062,16 +1089,102 @@ async def api_sessions(tray_id: int = None, from_date: str = None, to_date: str 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     with _Session() as session:
-        active_tray = session.query(Tray).filter_by(is_active=True).first()
-        last_scan   = session.query(ScanSession).order_by(ScanSession.scanned_at.desc()).first()
+        tray      = session.query(Tray).filter_by(is_active=True).first()
+        last_scan = session.query(ScanSession).order_by(ScanSession.scanned_at.desc()).first()
+        tray_name = tray.tray_name if tray else None
+        grid_date = tray.grid_json.get("calibration_date") if tray and tray.grid_json else None
+
+    latest_capture = None
+    captures_dir = Path(cfg.captures_dir)
+    if captures_dir.exists():
+        imgs = sorted(captures_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if imgs:
+            latest_capture = f"/static/captures/{imgs[0].name}"
+
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
         context={
-            "active_tray":  active_tray.tray_name if active_tray else None,
-            "last_scan_at": last_scan.scanned_at.isoformat() if last_scan else None,
+            "active_tray":    tray_name,
+            "grid_date":      grid_date,
+            "last_scan_at":   last_scan.scanned_at.isoformat() if last_scan else None,
+            "latest_capture": latest_capture,
         },
     )
+
+
+@app.get("/api/latest-capture")
+async def api_latest_capture():
+    captures_dir = Path(cfg.captures_dir)
+    if captures_dir.exists():
+        imgs = sorted(captures_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if imgs:
+            return {"url": f"/static/captures/{imgs[0].name}"}
+    return {"url": None}
+
+
+@app.get("/api/settings/grid-corners")
+async def api_grid_corners():
+    with _Session() as session:
+        tray = session.query(Tray).filter_by(is_active=True).first()
+        if tray and tray.grid_json:
+            gj = tray.grid_json
+            return {
+                "corners":          gj.get("corners"),
+                "calibration_date": gj.get("calibration_date"),
+                "grid_pts":         gj.get("grid_pts"),
+            }
+    return {"corners": None, "calibration_date": None, "grid_pts": None}
+
+
+@app.post("/settings/grid")
+async def settings_grid(
+    file: UploadFile = File(None),
+    corners: str = Form(...),
+    grid_pts: str = Form(None),
+):
+    try:
+        corner_list = json.loads(corners)
+        if len(corner_list) != 4:
+            raise ValueError("Exactly 4 corners required")
+
+        if grid_pts:
+            gp_list = json.loads(grid_pts)
+            gp_np   = np.array(gp_list, dtype=np.float64)
+        else:
+            from utils.calibration import _corners_to_grid_pts
+            gp_np   = _corners_to_grid_pts(corner_list)
+            gp_list = gp_np.tolist()
+
+        result           = _grid_pts_to_result(gp_list)
+        calibration_date = datetime.utcnow().strftime("%Y-%m-%d")
+        new_grid_json    = {
+            "calibration_date": calibration_date,
+            "corners":          corner_list,
+            "grid_pts":         gp_list,
+            "sample_centres":   result.sample_centres,
+            "ref_centres":      result.ref_centres,
+            "grid_spacing":     result.grid_spacing,
+        }
+
+        with _Session() as session:
+            tray = session.query(Tray).filter_by(is_active=True).first()
+            if tray is None:
+                raise HTTPException(status_code=400, detail="No active tray — select a tray first")
+            tray.grid_json = new_grid_json
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(tray, "grid_json")
+            session.commit()
+            tray_id = tray.id
+
+        logger.success("Grid calibrated — tray_id={}, date={}", tray_id, calibration_date)
+        return {"status": "ok", "calibration_date": calibration_date}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("settings/grid failed")
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ─── Test page ────────────────────────────────────────────────────────────────
@@ -1089,6 +1202,12 @@ async def api_test_upload(file: UploadFile = File(...)):
     img_bytes = await file.read()
     if not img_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
+
+    with _Session() as session:
+        tray = session.query(Tray).filter_by(is_active=True).first()
+        test_grid_json = tray.grid_json if tray else None
+    if not test_grid_json:
+        raise HTTPException(status_code=400, detail="กรุณาปรับเทียบกริดก่อนทดสอบ (Grid not calibrated)")
 
     test_dir = Path(cfg.captures_dir).parent / "test"
     test_dir.mkdir(parents=True, exist_ok=True)
@@ -1111,11 +1230,7 @@ async def api_test_upload(file: UploadFile = File(...)):
         if img_full is None:
             raise ValueError("Invalid image data")
 
-        grid_result  = app.state.grid_detector.detect_intersections(
-            img_full,
-            input_size=cfg.unet_input_size,
-            mask_threshold=cfg.unet_mask_threshold,
-        )
+        grid_result  = _grid_pts_to_result(test_grid_json["grid_pts"])
         slot_centers = grid_result.sample_centres
 
         from utils.color_analysis import build_reference_baseline

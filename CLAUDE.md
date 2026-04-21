@@ -7,12 +7,12 @@ Read this file before modifying any file in this repository.
 
 ## Project Overview
 
-A distributed urine sample analysis system. Bottles of collected urine are placed on a physical grid tray. A camera captures the grid; a U-Net model segments grid lines to locate 195 slot centres; YOLO detects bottles in those slots; CIE Lab color analysis classifies each bottle's hydration level (L0–L4). Results are stored in PostgreSQL (SQLite for dev), shown on an interactive web dashboard, and reported via Telegram.
+A distributed urine sample analysis system. Bottles of collected urine are placed on a physical grid tray. The tray grid is calibrated once manually (4-corner click → bilinear interpolation → saved to DB). Per scan: YOLO detects bottles in the 195 calibrated slot centres; CIE Lab color analysis classifies each bottle's hydration level (L0–L4) using a live reference row baseline extracted from every capture. Results are stored in PostgreSQL (SQLite for dev), shown on an interactive web dashboard, and reported via Telegram.
 
 | Role | Hardware | Responsibility |
 |------|----------|----------------|
 | **Client** | Raspberry Pi 4B | Undistort frame, capture, trigger via GPIO, control relay + LCD + TM1637, POST to server |
-| **Server** | Ubuntu PC | FastAPI, U-Net grid detection, YOLO inference (PyTorch), color classification, PostgreSQL, web dashboard |
+| **Server** | Ubuntu PC | FastAPI, manual grid calibration (bilinear), YOLO inference (PyTorch), live CIE Lab color classification, PostgreSQL, web dashboard |
 
 Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 
@@ -24,9 +24,8 @@ Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 |-------|----------------|
 | Package manager | `uv` (never `pip install`) |
 | Server framework | FastAPI + Uvicorn |
-| Grid segmentation | `segmentation_models_pytorch` — U-Net + ResNet-34 backbone |
+| Grid calibration | Manual 4-corner click → bilinear interpolation → saved as `grid_json` in DB |
 | Bottle detection | PyTorch / `ultralytics` YOLO — **not OpenVINO** |
-| Line fitting | `scikit-image` (skeletonize), `scipy` (ndimage), OpenCV Hough |
 | Image processing | OpenCV (`cv2`) + Pillow (Thai text rendering) |
 | Database | SQLAlchemy + PostgreSQL (SQLite fallback via `DATABASE_URL`) |
 | Web templates | Jinja2 (base: `layout.html`) |
@@ -48,7 +47,7 @@ Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 urine-color-analysis/
 ├── main.py                         # CLI entry — --role client | server
 ├── app/
-│   ├── server_app.py               # FastAPI app — U-Net, YOLO, color, DB, dashboard, API
+│   ├── server_app.py               # FastAPI app — YOLO, grid calibration, color, DB, dashboard, API
 │   ├── client_app.py               # Pi loop — GPIO, relay, camera, undistort, LCD, TM1637, POST
 │   ├── shared/
 │   │   ├── config.py               # Settings class (pydantic-settings)
@@ -66,15 +65,15 @@ urine-color-analysis/
 │           ├── captures/           # Annotated JPEGs served at /static/captures/
 │           └── test/               # Test-upload results at /static/test/
 ├── utils/
-│   ├── grid_detector.py            # GridDetector — U-Net → skeleton → 195 intersections
+│   ├── grid_detector.py            # GridDetectionResult dataclass (kept; GridDetector class unused)
 │   ├── camera_undistort.py         # CameraUndistorter — lens correction + focus lock
 │   ├── yolo_detector.py            # YoloBottleDetector
 │   ├── color_analysis.py           # CIE Lab, Delta E, build_kmeans_centroids()
 │   ├── grid.py                     # GridConfig — slot polygons, find_slot_for_circle()
 │   └── calibration.py              # Grid calibration helpers
 ├── models/
-│   ├── unet.py                     # U-Net model definition (smp.Unet + ResNet-34)
-│   ├── unet_grid.pt                # U-Net trained weights (git-ignored)
+│   ├── unet.py                     # U-Net model definition (unused — kept for reference)
+│   ├── unet_grid.pt                # U-Net trained weights (unused — not required at startup)
 │   └── best.pt                     # YOLO weights (git-ignored)
 ├── bot/
 │   └── telegram_bot.py             # Legacy helpers (Telegram logic now inline in server_app.py)
@@ -185,11 +184,13 @@ JPEG bytes
   ▼ letterbox_white_padding(640)                 # white fill — NOT black
   640 × 640 padded image
   │
-  ▼ GridDetector.detect_intersections()          # utils/grid_detector.py
-  │   Phase B: U-Net (ResNet-34 backbone) → 640×640 binary mask
-  │   Phase C: skeletonize → HoughLinesP → H-lines + V-lines
-  │            → 195 (x,y) intersection centres, sorted row-major
-  195 slot centres (in 640-space) → scaled back to full-image coords
+  ▼ Load grid_json from active tray (DB)          # server_app.py
+  │   _grid_pts_to_result(tray.grid_json["grid_pts"])
+  │   → GridDetectionResult: 195 sample_centres + 15 ref_centres
+  │   HTTP 400 raised if tray.grid_json is None (uncalibrated)
+  │
+  ▼ build_reference_baseline(img_full, ref_positions)  # utils/color_analysis.py
+  Live CIE Lab standard per color level (L0–L4) from reference row — no color.json
   │
   ▼ YOLO inference                               # utils/yolo_detector.py
   bounding boxes in 640-space
@@ -257,6 +258,7 @@ class Tray(_Base):
     dimension_info = Column(String, default="13x15")
     created_at     = Column(DateTime, default=datetime.utcnow)
     layout_json    = Column(JSON, nullable=True)   # {"1": "A01", "2": "A02", ...}
+    grid_json      = Column(JSON, nullable=True)   # {calibration_date, corners, grid_pts[14][17][2], sample_centres×195, ref_centres×15, grid_spacing}
 
 class ScanSession(_Base):
     __tablename__ = "scan_sessions"
@@ -463,22 +465,27 @@ calibration:
 
 ---
 
-## U-Net Grid Detector
+## Grid Calibration
 
-`models/unet.py` — `build_model(weights_path)`:
-- Architecture: `smp.Unet(encoder_name="resnet34", encoder_weights="imagenet", in_channels=3, classes=1, activation="sigmoid")`
-- Input: 640×640 RGB image
-- Output: 640×640 sigmoid mask (grid lines ≈ 1)
+Grid detection is manual — no U-Net at runtime.
 
-`utils/grid_detector.py` — `GridDetector`:
+**One-time calibration flow (`/settings` page):**
+1. User loads a tray capture and clicks 4 corners (TL→TR→BR→BL) on the canvas.
+2. JS `initGrid()` computes a 14×17 bilinear grid point array matching `_corners_to_grid_pts()` in Python.
+3. User optionally drags H/V lines to fine-tune; the adjusted `grid_pts` array is POSTed.
+4. `POST /settings/grid` calls `_grid_pts_to_result(grid_pts)` and saves the result to `trays.grid_json`.
+
+**Per-scan grid loading (`/analyze`, `/api/test-upload`):**
 ```python
-gd = GridDetector("models/unet_grid.pt")
-centres = gd.detect_intersections(img_bgr, input_size=640)  # → list[tuple[int,int]], len=195
+tray_grid_json = active_tray.grid_json   # read inside DB session
+if not tray_grid_json:
+    raise HTTPException(400, "กรุณาปรับเทียบกริดก่อนสแกน")
+result = _grid_pts_to_result(tray_grid_json["grid_pts"])
+# result.sample_centres → 195 (x,y) in full-image coords
+# result.ref_centres    → 15  (x,y) in full-image coords
 ```
 
-Pipeline: resize → U-Net inference → threshold → `skimage.skeletonize` → `cv2.HoughLinesP` → cluster H/V lines → `np.polyfit` per line → all intersections → filter to 195 → sort row-major.
-
-Startup: `FileNotFoundError` with clear message if weights missing.
+`utils/grid_detector.py` retains the `GridDetectionResult` dataclass (shared between calibration and future uses) but `GridDetector` class is not instantiated at startup.
 
 ---
 
@@ -508,9 +515,10 @@ main.py --role server
         ├── Base.metadata.create_all()  — creates new tables (trays, scan_sessions, …)
         ├── _cleanup_old_logs()      — delete log images older than 30 days
         ├── _YoloInference.load()    — load best.pt once into app.state.yolo
-        ├── GridDetector(cfg.unet_model_path)   — load U-Net weights
-        └── routes registered:
+        └── routes registered:       (no U-Net loaded — grid read from DB per scan)
               POST /analyze, GET /dashboard, GET /trays, GET /api/trays, …
+              GET /settings, POST /settings/grid, GET /api/latest-capture,
+              GET /api/settings/grid-corners
 ```
 
 ### Client
@@ -545,7 +553,7 @@ main.py --role client
 6. Camera (`picam2`) must be closed in a `try/finally` inside `_capture_image()`.
 7. DB sessions must use context manager (`with Session() as session:`).
 8. `_run_migrations()` wraps every `ALTER TABLE` in `try/except` — safe on repeated startup.
-9. `GridDetector.__init__` raises `FileNotFoundError` with a clear message if `unet_grid.pt` is missing.
+9. `/analyze` raises HTTP 400 with a clear Thai message if `active_tray.grid_json` is None (uncalibrated tray).
 
 ---
 
@@ -575,6 +583,7 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 - Do not use `pip install` — always `uv add` or edit `pyproject.toml` then `uv sync`
 - Do not import `picamera2` or `RPi.GPIO` in `server_app.py`
 - Do not import `openvino` — the project uses PyTorch / ultralytics
+- Do not instantiate `GridDetector` at startup — U-Net is not used; grid is loaded from `trays.grid_json` in DB
 - Do not hardcode pin numbers, thresholds, or file paths — read from `cfg`
 - Do not use black padding in `letterbox_white_padding` — must be white `(255, 255, 255)`
 - Do not run inference on the Pi — the Pi only captures + undistorts + POSTs
@@ -600,8 +609,8 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 | `_render_annotated_canvas(img, slots, layout_map, …)` | `app/shared/processor.py` | Draw overlays; labels only on error slots |
 | `save_visual_log(img, slots, …, layout_map)` | `app/shared/processor.py` | Save annotated JPEG to disk |
 | `generate_visual_report(img, slots, …, layout_map)` | `app/shared/processor.py` | Return annotated JPEG bytes |
-| `GridDetector.detect_intersections(img_bgr)` | `utils/grid_detector.py` | U-Net → 195 (x,y) slot centres |
-| `build_model(weights_path)` | `models/unet.py` | Load smp.Unet + ResNet-34 weights |
+| `_grid_pts_to_result(grid_pts_list)` | `app/server_app.py` | Convert 14×17 bilinear grid → GridDetectionResult (195 sample + 15 ref centres) |
+| `_build_ref_positions(ref_centres, spacing)` | `app/server_app.py` | Map 15 ref centres → `{level: [(cx,cy,r),...]}` for baseline extraction |
 | `CameraUndistorter(yaml_path, capture_size)` | `utils/camera_undistort.py` | Pre-compute remap maps |
 | `CameraUndistorter.undistort_frame(frame)` | `utils/camera_undistort.py` | cv2.remap + ROI crop |
 | `lock_focus_picamera2(picam2, focus_value)` | `utils/camera_undistort.py` | Set AfMode=Manual + LensPosition |
