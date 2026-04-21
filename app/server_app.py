@@ -955,6 +955,9 @@ async def api_latest():
         if scan is None:
             return {"session": None, "tray": None, "slots": []}
 
+        _layout_map = _normalize_layout_map(
+            scan.tray.layout_json, cols=scan.tray.cols or 15
+        ) if scan.tray else {}
         tray_data = {
             "id":        scan.tray.id,
             "tray_name": scan.tray.tray_name,
@@ -980,6 +983,7 @@ async def api_latest():
                 "position_index": s.position_index,
                 "color_result":   s.color_result,
                 "is_error":       s.is_error,
+                "slot_label":     _layout_map.get(str(s.position_index)),
             }
             for s in sorted(scan.slots, key=lambda x: x.position_index)
         ]
@@ -1558,12 +1562,16 @@ async def api_upload(file: UploadFile = File(...)):
 
     wrong_color_items = [
         {
-            "slot_id":  "R{:02d}C{:02d}".format(
-                (r["position_index"] - 1) // 15 + 1,
-                (r["position_index"] - 1) % 15  + 1,
+            "slot_id":    str(r["position_index"]),
+            "slot_label": layout_map.get(
+                str(r["position_index"]),
+                "R{:02d}C{:02d}".format(
+                    (r["position_index"] - 1) // 15 + 1,
+                    (r["position_index"] - 1) % 15  + 1,
+                ),
             ),
-            "expected": _expected_level_from_position(r["position_index"]),
-            "actual":   r["color_result"],
+            "expected":   _expected_level_from_position(r["position_index"]),
+            "actual":     r["color_result"],
         }
         for r in error_slots
     ]
