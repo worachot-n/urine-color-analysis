@@ -188,6 +188,27 @@ class _YoloInference:
 
 # ─── V2 analysis helpers ──────────────────────────────────────────────────────
 
+def _normalize_layout_map(layout_json, cols: int = 15) -> dict[str, str]:
+    """Convert layout_json (dict or 2D list) → {str(position_index): label}.
+
+    The DB stores layout_json as a 2D list [row_idx][col_idx]; the annotation
+    layer needs it as a flat dict keyed by position_index string.
+    """
+    if not layout_json:
+        return {}
+    if isinstance(layout_json, dict):
+        return {str(k): str(v) for k, v in layout_json.items()}
+    if isinstance(layout_json, list):
+        result: dict[str, str] = {}
+        for row_idx, row in enumerate(layout_json):
+            if isinstance(row, list):
+                for col_idx, label in enumerate(row):
+                    pos = row_idx * cols + col_idx + 1
+                    result[str(pos)] = str(label)
+        return result
+    return {}
+
+
 def _expected_level_from_position(position_index: int) -> int:
     """
     Derive expected colour level (0-4) from position_index (1-195).
@@ -526,7 +547,9 @@ async def analyze(file: UploadFile = File(...)):
                 detail="กรุณาเลือกถาดก่อนสแกน (No active tray selected)",
             )
         active_tray_id = active_tray.id
-        layout_map: dict[str, str] = active_tray.layout_json or {}
+        layout_map: dict[str, str] = _normalize_layout_map(
+            active_tray.layout_json, cols=active_tray.cols or 15
+        )
         tray_name = active_tray.tray_name or f"Tray-{active_tray.id}"
 
     now      = datetime.utcnow()

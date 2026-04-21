@@ -19,6 +19,7 @@ GRANT ALL ON SCHEMA public TO "user";
 -- Tables
 -- =============================================================================
 
+-- 1. สร้างตาราง People (Master)
 CREATE TABLE IF NOT EXISTS people (
     id           SERIAL PRIMARY KEY,
     full_name    VARCHAR NOT NULL,
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS people (
 );
 CREATE INDEX IF NOT EXISTS ix_people_personnel_id ON people (personnel_id);
 
+-- 2. สร้างตาราง Trays
 CREATE TABLE IF NOT EXISTS trays (
     id             SERIAL PRIMARY KEY,
     tray_name      VARCHAR,
@@ -39,6 +41,14 @@ CREATE TABLE IF NOT EXISTS trays (
     layout_json    JSONB
 );
 
+-- บังคับให้ Active ได้ทีละอัน
+CREATE UNIQUE INDEX IF NOT EXISTS uq_trays_single_active
+    ON trays (is_active)
+    WHERE is_active = TRUE;
+
+-- ==================================================
+
+-- 3. สร้าง Scan Sessions
 CREATE TABLE IF NOT EXISTS scan_sessions (
     id                   SERIAL PRIMARY KEY,
     tray_id              INTEGER NOT NULL REFERENCES trays(id),
@@ -53,9 +63,8 @@ CREATE TABLE IF NOT EXISTS scan_sessions (
     error_count          INTEGER DEFAULT 0,
     is_clean             BOOLEAN DEFAULT TRUE
 );
-CREATE INDEX IF NOT EXISTS ix_scan_sessions_tray_id    ON scan_sessions (tray_id);
-CREATE INDEX IF NOT EXISTS ix_scan_sessions_scanned_at ON scan_sessions (scanned_at);
 
+-- 4. สร้าง Test Slots (ตารางที่เชื่อมโยงทุกอย่าง)
 CREATE TABLE IF NOT EXISTS test_slots (
     id             SERIAL PRIMARY KEY,
     session_id     INTEGER NOT NULL REFERENCES scan_sessions(id),
@@ -64,9 +73,3 @@ CREATE TABLE IF NOT EXISTS test_slots (
     is_error       BOOLEAN DEFAULT FALSE,
     person_id      INTEGER REFERENCES people(id)
 );
-CREATE INDEX IF NOT EXISTS ix_test_slots_session_id ON test_slots (session_id);
-
--- Only one tray may be active at a time
-CREATE UNIQUE INDEX IF NOT EXISTS uq_trays_single_active
-    ON trays (is_active)
-    WHERE is_active = TRUE;
