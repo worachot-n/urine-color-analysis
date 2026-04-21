@@ -271,17 +271,49 @@
           aria-label="เมนูหลัก"
         >
           {% set _a_dash = request.url.path in ['/', '/dashboard'] %}
-          <a href="/dashboard" class="{% if _a_dash %}active{% endif %}" {% if _a_dash %}aria-current="page"{% endif %}>ผลการตรวจ</a>
+          <a
+            href="/dashboard"
+            class="{% if _a_dash %}active{% endif %}"
+            {%
+            if
+            _a_dash
+            %}aria-current="page"
+            {%
+            endif
+            %}
+            >ผลการตรวจ</a
+          >
 
-          {% set _a_trend = request.url.path == '/trend' %}
-          <a href="/trend" class="{% if _a_trend %}active{% endif %}" {% if _a_trend %}aria-current="page"{% endif %}>การวิเคราะห์</a>
+          <!--           {% set _a_trend = request.url.path == '/trend' %}
+          <a href="/trend" class="{% if _a_trend %}active{% endif %}" {% if _a_trend %}aria-current="page"{% endif %}>การวิเคราะห์</a> -->
 
           {% set _a_settings = request.url.path == '/settings' %}
-          <a href="/settings" class="{% if _a_settings %}active{% endif %}" {% if _a_settings %}aria-current="page"{% endif %}>การตั้งค่า</a>
+          <a
+            href="/settings"
+            class="{% if _a_settings %}active{% endif %}"
+            {%
+            if
+            _a_settings
+            %}aria-current="page"
+            {%
+            endif
+            %}
+            >การตั้งค่า</a
+          >
 
           {% set _a_trays = request.url.path == '/trays' %}
-          <a href="/trays" class="{% if _a_trays %}active{% endif %}" {% if _a_trays %}aria-current="page"{% endif %}>จัดการถาด</a>
-
+          <a
+            href="/trays"
+            class="{% if _a_trays %}active{% endif %}"
+            {%
+            if
+            _a_trays
+            %}aria-current="page"
+            {%
+            endif
+            %}
+            >จัดการถาด</a
+          >
         </div>
 
         <button

@@ -1603,7 +1603,10 @@ async def api_test_upload(file: UploadFile = File(...)):
 
     with _Session() as session:
         tray = session.query(Tray).filter_by(is_active=True).first()
-        test_grid_json = tray.grid_json if tray else None
+        test_grid_json   = tray.grid_json    if tray else None
+        test_layout_json = tray.layout_json  if tray else None
+        test_tray_cols   = (tray.cols or 15) if tray else 15
+    layout_map: dict[str, str] = _normalize_layout_map(test_layout_json, cols=test_tray_cols)
     if not test_grid_json:
         raise HTTPException(status_code=400, detail="กรุณาปรับเทียบกริดก่อนทดสอบ (Grid not calibrated)")
 
@@ -1706,12 +1709,16 @@ async def api_test_upload(file: UploadFile = File(...)):
 
     wrong_color_items = [
         {
-            "slot_id":  "R{:02d}C{:02d}".format(
-                (r["position_index"] - 1) // 15 + 1,
-                (r["position_index"] - 1) % 15  + 1,
+            "slot_id":    str(r["position_index"]),
+            "slot_label": layout_map.get(
+                str(r["position_index"]),
+                "R{:02d}C{:02d}".format(
+                    (r["position_index"] - 1) // 15 + 1,
+                    (r["position_index"] - 1) % 15  + 1,
+                ),
             ),
-            "expected": _expected_level_from_position(r["position_index"]),
-            "actual":   r["color_result"],
+            "expected":   _expected_level_from_position(r["position_index"]),
+            "actual":     r["color_result"],
         }
         for r in error_slots
     ]

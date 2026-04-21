@@ -517,7 +517,7 @@
     var rows = '';
     wcs.forEach(function (e) {
       rows += '<tr>' +
-        '<td>' + esc(e.slot_id)  + '</td>' +
+        '<td>' + esc((e.slot_label || e.slot_id) + ' สี ' + e.expected + ' (' + (e.slot_label || e.slot_id) + '_' + e.expected + ')') + '</td>' +
         '<td>' + esc(e.expected) + '</td>' +
         '<td>' + esc(e.actual)   + '</td>' +
         '<td class="badge-wrong">สีผิด</td>' +
