@@ -690,13 +690,14 @@ async def analyze(file: UploadFile = File(...)):
     }
 
     # Save raw image to captures_dir — used by /api/latest-capture for grid calibration.
-    # Raw image → captures_dir (for grid calibration via /api/latest-capture)
     cv2.imwrite(str(thumb_path), img_full, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
-    # Annotated image → separate static file (dashboard + Telegram)
+    # Annotated image — calibrated bilinear grid + detections (dashboard + Telegram)
     from app.shared.processor import _render_annotated_canvas
+    _raw_grid_pts = tray_grid_json.get("grid_pts")
     annotated_canvas = _render_annotated_canvas(
-        img_full, validation_results_compat, None, slot_centers, layout_map
+        img_full, validation_results_compat, None, slot_centers, layout_map,
+        grid_pts=_raw_grid_pts,
     )
     annotated_path = captures / f"{image_id}_annotated.jpg"
     annotated_url  = f"/static/captures/{image_id}_annotated.jpg"
@@ -711,6 +712,7 @@ async def analyze(file: UploadFile = File(...)):
             filepath=log_path,
             slot_centers=slot_centers,
             layout_map=layout_map,
+            grid_pts=_raw_grid_pts,
         )
     except Exception as exc:
         logger.warning("save_visual_log failed (non-critical): {}", exc)
@@ -1370,13 +1372,15 @@ async def api_upload(file: UploadFile = File(...)):
     # Raw image → captures_dir (used by /api/latest-capture for grid calibration)
     cv2.imwrite(str(thumb_path), img_full, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
-    # Annotated image → separate static file for UI display and Telegram
+    # Annotated image — calibrated bilinear grid + detections (UI + Telegram)
     from app.shared.processor import _render_annotated_canvas
-    annotated_canvas  = _render_annotated_canvas(
-        img_full, validation_results_compat, None, slot_centers, layout_map
+    _raw_grid_pts    = tray_grid_json.get("grid_pts")
+    annotated_canvas = _render_annotated_canvas(
+        img_full, validation_results_compat, None, slot_centers, layout_map,
+        grid_pts=_raw_grid_pts,
     )
-    annotated_path    = captures / f"{image_id}_annotated.jpg"
-    annotated_url     = f"/static/captures/{image_id}_annotated.jpg"
+    annotated_path   = captures / f"{image_id}_annotated.jpg"
+    annotated_url    = f"/static/captures/{image_id}_annotated.jpg"
     cv2.imwrite(str(annotated_path), annotated_canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
     try:
@@ -1387,6 +1391,7 @@ async def api_upload(file: UploadFile = File(...)):
             filepath=log_path,
             slot_centers=slot_centers,
             layout_map=layout_map,
+            grid_pts=_raw_grid_pts,
         )
     except Exception as exc:
         logger.warning("save_visual_log failed (non-critical): {}", exc)
@@ -1573,6 +1578,7 @@ async def api_test_upload(file: UploadFile = File(...)):
             filepath=log_path,
             slot_centers=slot_centers,
             layout_map={},
+            grid_pts=test_grid_json.get("grid_pts"),
         )
     except Exception as exc:
         logger.warning("Test visual log failed: {}", exc)

@@ -138,22 +138,10 @@ def scale_coordinates(
 # ─── Visual logging ───────────────────────────────────────────────────────────
 
 # BGR drawing constants
-_C_GRID_LINE  = (100, 100, 100)   # thin grey — 13×15 grid lines
+_C_GRID_LINE  = (100, 100, 100)   # thin grey — calibrated bilinear grid
 _C_BOX        = (0,   220,   0)   # bright green — detection bounding box
 _C_LABEL      = (0,   255, 255)   # bright yellow — slot coordinate label
 _C_LABEL_DARK = (0,     0,   0)   # black — label shadow
-
-# Zone-divider BGR colors (4 thick vertical lines creating 5 color zones)
-# Ordered: L0/L1, L1/L2, L2/L3, L3/L4
-_C_ZONE_DIVIDERS = [
-    (255, 255,   0),   # Cyan    — L0 / L1 boundary (after col 3)
-    (255,   0, 255),   # Magenta — L1 / L2 boundary (after col 6)
-    (0,   255, 255),   # Yellow  — L2 / L3 boundary (after col 9)
-    (0,   140, 255),   # Orange  — L3 / L4 boundary (after col 12)
-]
-
-# Zone-divider positions: divider i sits between col (i+1)*3 and (i+1)*3+1 (1-based)
-_ZONE_DIVIDER_AFTER_COLS = [3, 6, 9, 12]   # zero-based col index of the LEFT col
 
 
 def _pos_to_label(pos_key: str) -> str:
@@ -172,50 +160,47 @@ def _pos_to_label(pos_key: str) -> str:
         return str(pos_key)
 
 
-def _build_grid_lines(
-    slot_centers: list[tuple[int, int]],
-) -> tuple[list[int], list[int], int, int, int, int]:
+def _draw_calibrated_grid(
+    canvas: np.ndarray,
+    grid_pts: list,
+    color: tuple = _C_GRID_LINE,
+    thickness: int = 1,
+) -> None:
     """
-    Derive 14 horizontal and 16 vertical grid line positions from 195 slot centres.
+    Draw the bilinear calibration grid onto *canvas* in-place.
 
-    Returns:
-        h_lines  — sorted list of 14 y-coordinates (top border … bottom border)
-        v_lines  — sorted list of 16 x-coordinates (left border … right border)
-        x_min, y_min, x_max, y_max  — grid bounding box
+    grid_pts is the [NH][NV][2] array stored in grid_json — identical structure
+    to the JS gridPtsArr used in the /settings page canvas.  NH horizontal
+    polylines and NV vertical polylines are drawn, producing the same visual as
+    the calibration preview.
+
+    Matches the settings page JS logic exactly:
+        for r in 0..NH: polyline over gp[r][0..NV]
+        for c in 0..NV: polyline over gp[0..NH][c]
     """
-    centers = np.array(slot_centers)              # (195, 2)
+    gp = np.array(grid_pts, dtype=np.float32)   # (NH, NV, 2)
+    if gp.ndim != 3 or gp.shape[2] != 2:
+        return
+    nh, nv = gp.shape[:2]
 
-    # Row y-centres: mean y across 15 columns for each of 13 rows
-    row_ys = [int(centers[r * 15:(r + 1) * 15, 1].mean()) for r in range(13)]
-    # Col x-centres: mean x across 13 rows for each of 15 columns
-    col_xs = [int(centers[c::15, 0].mean()) for c in range(15)]
+    # Horizontal lines — one polyline per row
+    for r in range(nh):
+        pts = gp[r, :, :].astype(np.int32).reshape((-1, 1, 2))
+        cv2.polylines(canvas, [pts], isClosed=False, color=color, thickness=thickness)
 
-    # Half-spacings for border lines
-    row_half = max((row_ys[1] - row_ys[0]) // 2, 20) if len(row_ys) > 1 else 20
-    col_half = max((col_xs[1] - col_xs[0]) // 2, 20) if len(col_xs) > 1 else 20
-
-    h_lines = [row_ys[0] - row_half]
-    for i in range(len(row_ys) - 1):
-        h_lines.append((row_ys[i] + row_ys[i + 1]) // 2)
-    h_lines.append(row_ys[-1] + row_half)
-
-    v_lines = [col_xs[0] - col_half]
-    for i in range(len(col_xs) - 1):
-        v_lines.append((col_xs[i] + col_xs[i + 1]) // 2)
-    v_lines.append(col_xs[-1] + col_half)
-
-    return (
-        h_lines, v_lines,
-        v_lines[0], h_lines[0], v_lines[-1], h_lines[-1],
-    )
+    # Vertical lines — one polyline per column
+    for c in range(nv):
+        pts = gp[:, c, :].astype(np.int32).reshape((-1, 1, 2))
+        cv2.polylines(canvas, [pts], isClosed=False, color=color, thickness=thickness)
 
 
 def _render_annotated_canvas(
     image: np.ndarray,
     validation_results: dict,
-    grid_cfg,
+    grid_cfg,                                          # unused — kept for call-site compat
     slot_centers: "list[tuple[int,int]] | None" = None,
     layout_map: "dict[str,str] | None" = None,
+    grid_pts: "list | None" = None,
 ) -> np.ndarray:
     """
     Draw annotation layers onto *image* and return a 50%-scaled canvas.
@@ -224,45 +209,48 @@ def _render_annotated_canvas(
     Never modifies the original array.
 
     Layers (bottom → top):
-      1. 13×15 grid — thin grey lines derived from slot_centers (if provided)
-      2. Zone dividers — 4 thick colored vertical lines (every 3 columns)
-      3. Green bounding rectangle per detected bottle
-      4. Coordinate label "A01"–"M15" in bright yellow, above each box
+      1. Calibrated bilinear grid from grid_pts (mirrors /settings page exactly).
+         Falls back to slot-centre-derived lines when grid_pts is unavailable.
+      2. Green bounding rectangle per detected bottle.
+      3. Coordinate label "A01"–"M15" in bright yellow, only on error slots.
     """
     canvas = image.copy()
     h, w   = canvas.shape[:2]
     slots  = validation_results.get("slots", {})
 
     sc  = max(w, h) / 1920.0
-    lw  = max(1, int(sc * 1.5))    # thin grid line width
+    lw  = max(1, int(sc * 1.5))    # grid line width
     blw = max(3, int(sc * 4))      # bounding box line width
-    zlw = max(6, int(sc * 8))      # zone divider line width
     fsc = max(0.8, sc * 0.85)      # cv2 font scale
     ftk = max(2, int(sc * 2))      # cv2 font thickness
 
-    # ── 1. 13×15 grid lines ───────────────────────────────────────────────
-    if slot_centers and len(slot_centers) == 195:
-        h_lines, v_lines, gx0, gy0, gx1, gy1 = _build_grid_lines(slot_centers)
-
-        # Horizontal lines
+    # ── 1. Calibrated grid ────────────────────────────────────────────────
+    if grid_pts is not None:
+        # Primary: bilinear grid from /settings calibration (same as canvas overlay)
+        _draw_calibrated_grid(canvas, grid_pts, color=_C_GRID_LINE, thickness=lw)
+    elif slot_centers and len(slot_centers) == 195:
+        # Fallback: approximate grid from slot centres (no zone dividers)
+        centers = np.array(slot_centers, dtype=np.float32)
+        row_ys  = [int(centers[r * 15:(r + 1) * 15, 1].mean()) for r in range(13)]
+        col_xs  = [int(centers[c::15, 0].mean()) for c in range(15)]
+        row_half = max((row_ys[1] - row_ys[0]) // 2, 20) if len(row_ys) > 1 else 20
+        col_half = max((col_xs[1] - col_xs[0]) // 2, 20) if len(col_xs) > 1 else 20
+        gx0 = col_xs[0] - col_half
+        gx1 = col_xs[-1] + col_half
+        gy0 = row_ys[0] - row_half
+        gy1 = row_ys[-1] + row_half
+        h_lines = ([row_ys[0] - row_half] +
+                   [(row_ys[i] + row_ys[i + 1]) // 2 for i in range(len(row_ys) - 1)] +
+                   [row_ys[-1] + row_half])
+        v_lines = ([col_xs[0] - col_half] +
+                   [(col_xs[i] + col_xs[i + 1]) // 2 for i in range(len(col_xs) - 1)] +
+                   [col_xs[-1] + col_half])
         for y in h_lines:
             cv2.line(canvas, (gx0, y), (gx1, y), _C_GRID_LINE, lw)
-
-        # Vertical lines (thin)
         for x in v_lines:
             cv2.line(canvas, (x, gy0), (x, gy1), _C_GRID_LINE, lw)
 
-        # ── 2. Zone dividers (thick colored) ─────────────────────────────
-        # v_lines[0] = left border, v_lines[1..15] = between-col lines, v_lines[16] = right border
-        # Divider after col C (0-based): v_lines[C + 1]
-        for div_idx, after_col in enumerate(_ZONE_DIVIDER_AFTER_COLS):
-            line_idx = after_col + 1           # index into v_lines (1-based between-col)
-            if line_idx < len(v_lines):
-                x = v_lines[line_idx]
-                color = _C_ZONE_DIVIDERS[div_idx]
-                cv2.line(canvas, (x, gy0), (x, gy1), color, zlw)
-
-    # ── 3. Bounding boxes (all detections) + labels (error slots only) ────
+    # ── 2. Bounding boxes (all detections) + labels (error slots only) ────
     for pos_key, hit in slots.items():
         cx = hit.get("cx", 0)
         cy = hit.get("cy", 0)
@@ -271,10 +259,9 @@ def _render_annotated_canvas(
         x1, y1 = cx - r, cy - r
         x2, y2 = cx + r, cy + r
 
-        # Green bounding rectangle for every detected bottle
         cv2.rectangle(canvas, (x1, y1), (x2, y2), _C_BOX, blw)
 
-        # ── 4. Label only error slots ─────────────────────────────────────
+        # ── 3. Label only error slots ─────────────────────────────────────
         if not (hit.get("wrong_color", False) or hit.get("duplicate", False)):
             continue
 
@@ -298,16 +285,14 @@ def save_visual_log(
     jpeg_quality: int = 90,
     slot_centers: "list[tuple[int,int]] | None" = None,
     layout_map: "dict[str,str] | None" = None,
+    grid_pts: "list | None" = None,
 ) -> None:
-    """
-    Render the annotated diagnostic image and save to *filepath* as JPEG.
-
-    slot_centers: optional list of 195 (x, y) tuples from GridDetector (V2).
-    layout_map: optional {position_index_str: label} from tray.layout_json.
-    """
+    """Render the annotated diagnostic image and save to *filepath* as JPEG."""
     if image is None or image.size == 0:
         return
-    out = _render_annotated_canvas(image, validation_results, grid_cfg, slot_centers, layout_map)
+    out = _render_annotated_canvas(
+        image, validation_results, grid_cfg, slot_centers, layout_map, grid_pts
+    )
     Path(filepath).parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(filepath), out, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
 
@@ -319,15 +304,13 @@ def generate_visual_report(
     jpeg_quality: int = 90,
     slot_centers: "list[tuple[int,int]] | None" = None,
     layout_map: "dict[str,str] | None" = None,
+    grid_pts: "list | None" = None,
 ) -> bytes:
-    """
-    Render the annotated diagnostic image and return raw JPEG bytes (for Telegram).
-
-    slot_centers: optional list of 195 (x, y) tuples from GridDetector (V2).
-    layout_map: optional {position_index_str: label} from tray.layout_json.
-    """
+    """Render the annotated diagnostic image and return raw JPEG bytes (for Telegram)."""
     if image is None or image.size == 0:
         return b""
-    out = _render_annotated_canvas(image, validation_results, grid_cfg, slot_centers, layout_map)
+    out = _render_annotated_canvas(
+        image, validation_results, grid_cfg, slot_centers, layout_map, grid_pts
+    )
     ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
     return buf.tobytes() if ok else b""
