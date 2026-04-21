@@ -750,9 +750,8 @@ async def analyze(file: UploadFile = File(...)):
     error_count = len(error_slots)
 
     color_counts: dict[int, int] = {i: 0 for i in range(5)}
-    for lvl in classified.values():
-        if lvl is not None:
-            color_counts[lvl] = color_counts.get(lvl, 0) + 1
+    for pos_idx in slot_hits:
+        color_counts[_expected_level_from_position(pos_idx)] += 1
 
     # Build validation_results for annotation (error slots get labels)
     validation_results_compat: dict = {
@@ -1447,9 +1446,8 @@ async def api_upload(file: UploadFile = File(...)):
     error_count = len(error_slots)
 
     color_counts: dict[int, int] = {i: 0 for i in range(5)}
-    for lvl in classified.values():
-        if lvl is not None:
-            color_counts[lvl] = color_counts.get(lvl, 0) + 1
+    for pos_idx in slot_hits:
+        color_counts[_expected_level_from_position(pos_idx)] += 1
 
     validation_results_compat: dict = {
         "slots": {
@@ -1666,9 +1664,8 @@ async def api_test_upload(file: UploadFile = File(...)):
     error_slots = [r for r in slot_rows if r["is_error"]]
     count       = len(slot_hits)
     color_counts: dict[int, int] = {i: 0 for i in range(5)}
-    for lvl in classified.values():
-        if lvl is not None:
-            color_counts[lvl] = color_counts.get(lvl, 0) + 1
+    for pos_idx in slot_hits:
+        color_counts[_expected_level_from_position(pos_idx)] += 1
 
     # Save annotated visual log
     try:
