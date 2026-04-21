@@ -144,10 +144,11 @@ class _YoloInference:
         self._input_size = cfg.model_input_size
         logger.success("YOLO model loaded — {}", cfg.model_path)
 
-    def detect_raw(self, img_bytes: bytes) -> tuple[np.ndarray, list[list[float]]]:
+    def detect_raw(self, img_bytes: bytes) -> "tuple[np.ndarray, list[list[float]]]":
         """
-        Decode JPEG, crop ROI, run YOLO, return (full_image, boxes_in_full_image_space).
-
+        Decode JPEG, letterbox full image to 640×640, run YOLO.
+        Returns (full_image, boxes_in_full_image_space).
+        No ROI crop — matches training pre-processing (full frame).
         boxes format: [[x1, y1, x2, y2, conf, cls], ...]
         """
         nparr = np.frombuffer(img_bytes, np.uint8)
@@ -155,15 +156,7 @@ class _YoloInference:
         if img is None:
             raise ValueError("cv2.imdecode returned None — invalid image data")
 
-        roi, roi_x1, roi_y1 = crop_sample_roi(
-            img,
-            top=cfg.sample_roi_top,
-            bottom=cfg.sample_roi_bottom,
-            left=cfg.sample_roi_left,
-            right=cfg.sample_roi_right,
-        )
-
-        padded, scale, pad_x, pad_y = letterbox_white_padding(roi, self._input_size)
+        padded, scale, pad_x, pad_y = letterbox_white_padding(img, self._input_size)
 
         results = self._model.predict(
             source=padded,
@@ -180,7 +173,7 @@ class _YoloInference:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 boxes_640.append([x1, y1, x2, y2, float(box.conf[0]), int(box.cls[0])])
 
-        boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y, roi_x1, roi_y1)
+        boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y)
         logger.debug("YOLO raw detections: {} boxes", len(boxes_orig))
         return img, boxes_orig
 
@@ -233,6 +226,25 @@ def _grid_pts_to_result(grid_pts_list):
         grid_spacing = 50.0
 
     return GridDetectionResult(sample_centres, ref_centres, grid_spacing)
+
+
+def _scale_grid_result(result, grid_json: dict, img: np.ndarray):
+    """Scale slot centres from calibration image space → current image space."""
+    from utils.grid_detector import GridDetectionResult
+    calib_w = grid_json.get("image_width",  0)
+    calib_h = grid_json.get("image_height", 0)
+    th, tw  = img.shape[:2]
+    if not calib_w or not calib_h or (calib_w == tw and calib_h == th):
+        return result
+    sx = tw / calib_w
+    sy = th / calib_h
+    logger.debug("Grid scale: calib={}x{} → img={}x{} (sx={:.3f}, sy={:.3f})",
+                 calib_w, calib_h, tw, th, sx, sy)
+    return GridDetectionResult(
+        sample_centres=[(int(x * sx), int(y * sy)) for x, y in result.sample_centres],
+        ref_centres=   [(int(x * sx), int(y * sy)) for x, y in result.ref_centres],
+        grid_spacing=  result.grid_spacing * (sx + sy) / 2,
+    )
 
 
 def _expected_level_from_position(position_index: int) -> int:
@@ -602,6 +614,7 @@ async def analyze(file: UploadFile = File(...)):
 
         # Load grid from DB calibration
         grid_result  = _grid_pts_to_result(tray_grid_json["grid_pts"])
+        grid_result  = _scale_grid_result(grid_result, tray_grid_json, img_full)
         slot_centers = grid_result.sample_centres
 
         # Build live colour baseline from reference row
@@ -1166,6 +1179,8 @@ async def settings_grid(
     file: UploadFile = File(None),
     corners: str = Form(...),
     grid_pts: str = Form(None),
+    img_width: int = Form(0),
+    img_height: int = Form(0),
 ):
     try:
         corner_list = json.loads(corners)
@@ -1189,6 +1204,8 @@ async def settings_grid(
             "sample_centres":   result.sample_centres,
             "ref_centres":      result.ref_centres,
             "grid_spacing":     result.grid_spacing,
+            "image_width":      img_width,
+            "image_height":     img_height,
         }
 
         with _Session() as session:
@@ -1268,6 +1285,7 @@ async def api_upload(file: UploadFile = File(...)):
             raise ValueError("Invalid image data")
 
         grid_result  = _grid_pts_to_result(tray_grid_json["grid_pts"])
+        grid_result  = _scale_grid_result(grid_result, tray_grid_json, img_full)
         slot_centers = grid_result.sample_centres
 
         from utils.color_analysis import build_reference_baseline
@@ -1463,6 +1481,7 @@ async def api_test_upload(file: UploadFile = File(...)):
             raise ValueError("Invalid image data")
 
         grid_result  = _grid_pts_to_result(test_grid_json["grid_pts"])
+        grid_result  = _scale_grid_result(grid_result, test_grid_json, img_full)
         slot_centers = grid_result.sample_centres
 
         from utils.color_analysis import build_reference_baseline

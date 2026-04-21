@@ -322,8 +322,10 @@ function saveGrid() {
   msgEl.textContent = 'กำลังบันทึก...';
 
   const fd = new FormData();
-  fd.append('corners',  JSON.stringify(corners));
-  fd.append('grid_pts', JSON.stringify(gridPtsArr));
+  fd.append('corners',   JSON.stringify(corners));
+  fd.append('grid_pts',  JSON.stringify(gridPtsArr));
+  fd.append('img_width',  String(bgImg.naturalWidth));
+  fd.append('img_height', String(bgImg.naturalHeight));
 
   fetch('/settings/grid', {method: 'POST', body: fd})
     .then(r => r.json())

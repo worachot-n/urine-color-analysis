@@ -14,6 +14,8 @@ GRANT ALL PRIVILEGES ON DATABASE urine_db TO "user";
 
 -- 3. Schema privileges
 GRANT ALL ON SCHEMA public TO "user";
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "user";
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "user";
 
 -- =============================================================================
 -- Tables
