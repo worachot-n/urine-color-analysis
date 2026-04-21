@@ -179,10 +179,18 @@ right  = 800    # if > frame width − left, no right-side crop is applied
 watchdog_timeout_sec = 60   # Max seconds per processing cycle (increased for YOLO multi-snapshot)
 
 # =============================================================================
+# U-NET GRID SEGMENTATION
+# =============================================================================
+[unet]
+model_path     = "models/unet_grid.pt"   # Trained U-Net weights (must be provided)
+input_size     = 640                      # Network input width/height
+mask_threshold = 0.5                     # Binary threshold on sigmoid output
+
+# =============================================================================
 # LOGGING / DEBUG
 # =============================================================================
 [debug]
 enabled = true
 log_dir = "logs/"          # Text logs directory
 img_dir = "logs/img/"      # Annotated scan images
-db_path = "logs/scan_results.db"  # SQLite database
+db_path = "logs/scan_results.db"  # SQLite fallback (used when DATABASE_URL is unset)

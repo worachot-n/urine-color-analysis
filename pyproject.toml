@@ -14,6 +14,8 @@ common = [
     "loguru",
     "numpy",
     "pyyaml",
+    "Pillow>=10.0",
+    "psutil>=5.9",
 ]
 pi = [
     # Hardware packages only available on Raspberry Pi (64-bit ARM Linux).
@@ -24,19 +26,21 @@ pi = [
     "raspberrypi-tm1637 ; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "rpi-lcd            ; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "smbus2>=0.4.3      ; sys_platform == 'linux' and platform_machine == 'aarch64'",
-    "Pillow>=10.0",
-    "psutil>=5.9",
 ]
 server = [
     "fastapi",
     "uvicorn[standard]",
     "opencv-python",
     "sqlalchemy",
+    "psycopg2-binary",
     "jinja2",
     "python-multipart",
     "ultralytics>=8.4.24",
-    "psutil>=5.9",
-    "Pillow>=10.0",
+    "scikit-image>=0.21",
+    "scipy>=1.11",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "segmentation-models-pytorch>=0.3",
 ]
 
 [dependency-groups]

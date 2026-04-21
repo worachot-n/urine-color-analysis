@@ -1,0 +1,309 @@
+{% extends "layout.html" %}
+
+{% block title %}จัดการถาดตรวจ — การตรวจวัดสีปัสสาวะ{% endblock %}
+
+{% block head %}
+<style>
+  .trays-wrap { max-width: 960px; margin: 0 auto; padding: 0 20px 48px; }
+
+  /* ── Active banner ─────────────────────────────────────────────────── */
+  .active-banner {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+    background: #0d2a0d; border: 1px solid var(--green);
+    border-radius: 12px; padding: 14px 20px; margin-bottom: 28px;
+  }
+  .active-banner .ab-label { color: var(--muted); font-size: .85rem; }
+  .active-banner .ab-name  { color: var(--green); font-size: 1.25rem; font-weight: 800; }
+  .active-banner .ab-none  { color: #ef5350; font-size: 1.1rem; font-weight: 700; }
+  .active-banner a { color: var(--muted); font-size: .8rem; text-decoration: underline; }
+
+  /* ── Tray cards grid ────────────────────────────────────────────────── */
+  .tray-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px; margin-bottom: 36px;
+  }
+  .tray-card {
+    background: #112211; border: 2px solid var(--border);
+    border-radius: 12px; padding: 18px;
+    display: flex; flex-direction: column; gap: 10px;
+    transition: border-color .15s;
+  }
+  .tray-card.is-active { border-color: var(--green); }
+  .tray-card-head {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+  }
+  .tray-name { font-size: 1.05rem; font-weight: 700; word-break: break-word; }
+  .badge-active {
+    background: var(--green); color: #000;
+    font-size: .7rem; font-weight: 700;
+    border-radius: 20px; padding: 2px 10px; white-space: nowrap; flex-shrink: 0;
+  }
+  .tray-meta { color: var(--muted); font-size: .8rem; line-height: 1.7; }
+  .tray-meta span { display: block; }
+
+  .tray-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .tray-actions button {
+    flex: 1; min-width: 70px;
+    border: none; border-radius: 7px; padding: 6px 8px;
+    font-family: 'Sarabun', sans-serif; font-size: .8rem; font-weight: 700;
+    cursor: pointer; transition: background .15s;
+  }
+  .btn-activate { background: var(--green); color: #000; }
+  .btn-activate:hover { background: var(--green-h); }
+  .btn-activate:disabled { background: #1a3a1a; color: var(--muted); cursor: default; }
+  .btn-edit { background: #1565c0; color: #fff; }
+  .btn-edit:hover { background: #1976d2; }
+  .btn-delete { background: #3a1010; color: #ef9a9a; border: 1px solid #5a1a1a; }
+  .btn-delete:hover { background: #5a1010; }
+  .btn-delete:disabled { opacity: .4; cursor: default; }
+
+  /* ── Create / Edit form card ─────────────────────────────────────────── */
+  .form-card {
+    background: #112211; border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px;
+  }
+  .form-card h2 { font-size: 1rem; font-weight: 700; margin-bottom: 16px; color: var(--green); }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 540px) { .form-row { grid-template-columns: 1fr; } }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  .form-group label { font-size: .8rem; color: var(--muted); font-weight: 600; }
+  .form-group input {
+    background: #0d1a0d; border: 1px solid var(--border); border-radius: 7px;
+    padding: 8px 12px; color: var(--text);
+    font-family: 'Sarabun', sans-serif; font-size: .9rem;
+  }
+  .form-group input:focus { outline: none; border-color: var(--green); }
+  .form-hint { font-size: .75rem; color: var(--muted); margin-top: 2px; }
+  .form-actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+  .form-actions button { padding: 9px 24px; border-radius: 8px; border: none; cursor: pointer;
+    font-family: 'Sarabun', sans-serif; font-weight: 700; font-size: .9rem; }
+  .btn-submit { background: var(--green); color: #000; }
+  .btn-submit:hover { background: var(--green-h); }
+  .btn-cancel { background: #1a2a1a; color: var(--muted); border: 1px solid var(--border); }
+  .btn-cancel:hover { color: var(--text); }
+
+  /* ── Toast ───────────────────────────────────────────────────────────── */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1e3a1e; border: 1px solid var(--green);
+    border-radius: 8px; padding: 10px 22px;
+    font-size: .9rem; color: var(--green); font-weight: 600;
+    opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 999;
+  }
+  #toast.err { background: #3a1010; border-color: #ef5350; color: #ef5350; }
+  #toast.show { opacity: 1; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>จัดการถาดตรวจ</h1>
+</div>
+
+<div class="trays-wrap">
+
+  <!-- Active tray banner -->
+  <div class="active-banner" id="active-banner">
+    <div>
+      <div class="ab-label">ถาดที่ใช้งานอยู่</div>
+      <div id="active-name" class="ab-none">ยังไม่ได้เลือกถาด</div>
+    </div>
+    <a href="/dashboard">ดูผลการตรวจ →</a>
+  </div>
+
+  <!-- Tray cards -->
+  <div class="tray-grid" id="tray-grid">
+    <div style="color:var(--muted);font-size:.9rem;padding:20px;">กำลังโหลด...</div>
+  </div>
+
+  <!-- Create / Edit form -->
+  <div class="form-card">
+    <h2 id="form-title">+ สร้างถาดใหม่</h2>
+    <input type="hidden" id="edit-id" value="">
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>ชื่อถาด *</label>
+        <input type="text" id="f-name" placeholder="เช่น ถาดหน่วยที่ 1" maxlength="80">
+      </div>
+    </div>
+
+    <div class="form-row" style="margin-top:12px;">
+      <div class="form-group">
+        <label>จำนวนแถว (Rows)</label>
+        <input type="number" id="f-rows" value="13" min="1" max="30">
+        <span class="form-hint">ค่าเริ่มต้น 13</span>
+      </div>
+      <div class="form-group">
+        <label>จำนวนคอลัมน์ (Cols)</label>
+        <input type="number" id="f-cols" value="15" min="1" max="30">
+        <span class="form-hint">ค่าเริ่มต้น 15</span>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn-submit" onclick="submitForm()">บันทึก</button>
+      <button class="btn-cancel" id="btn-cancel" style="display:none;" onclick="cancelEdit()">ยกเลิก</button>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let _trays = [];
+
+  function toast(msg, isErr = false) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'show' + (isErr ? ' err' : '');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('show'), 2800);
+  }
+
+  async function loadTrays() {
+    try {
+      const resp = await fetch('/api/trays');
+      _trays = await resp.json();
+      renderTrays();
+    } catch (e) {
+      toast('โหลดข้อมูลไม่สำเร็จ', true);
+    }
+  }
+
+  function renderTrays() {
+    const grid = document.getElementById('tray-grid');
+    const activeTray = _trays.find(t => t.is_active);
+
+    // Update banner
+    const nameEl = document.getElementById('active-name');
+    if (activeTray) {
+      nameEl.className = 'ab-name';
+      nameEl.textContent = activeTray.tray_name;
+    } else {
+      nameEl.className = 'ab-none';
+      nameEl.textContent = 'ยังไม่ได้เลือกถาด';
+    }
+
+    if (_trays.length === 0) {
+      grid.innerHTML = '<div style="color:var(--muted);font-size:.9rem;padding:20px;">ยังไม่มีถาด — กรุณาสร้างถาดใหม่</div>';
+      return;
+    }
+
+    grid.innerHTML = _trays.map(t => `
+      <div class="tray-card ${t.is_active ? 'is-active' : ''}" id="card-${t.id}">
+        <div class="tray-card-head">
+          <div class="tray-name">${esc(t.tray_name)}</div>
+          ${t.is_active ? '<span class="badge-active">ใช้งานอยู่</span>' : ''}
+        </div>
+        <div class="tray-meta">
+          <span>ขนาด: ${t.rows} × ${t.cols} ช่อง</span>
+          <span>สร้างเมื่อ: ${t.created_at ? new Date(t.created_at).toLocaleDateString('th-TH') : '—'}</span>
+        </div>
+        <div class="tray-actions">
+          <button class="btn-activate" onclick="activateTray(${t.id})"
+            ${t.is_active ? 'disabled' : ''}>
+            ${t.is_active ? '✓ ใช้งานอยู่' : 'เลือกใช้งาน'}
+          </button>
+          <button class="btn-edit" onclick="editTray(${t.id})">แก้ไข</button>
+          <button class="btn-delete" onclick="deleteTray(${t.id})"
+            ${t.is_active ? 'disabled title="ไม่สามารถลบถาดที่ใช้งานอยู่"' : ''}>ลบ</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function activateTray(id) {
+    try {
+      const r = await fetch(`/api/trays/${id}/activate`, { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json()).detail);
+      toast('เปลี่ยนถาดที่ใช้งานสำเร็จ');
+      await loadTrays();
+    } catch (e) {
+      toast(String(e), true);
+    }
+  }
+
+  function editTray(id) {
+    const t = _trays.find(x => x.id === id);
+    if (!t) return;
+    document.getElementById('edit-id').value = id;
+    document.getElementById('f-name').value  = t.tray_name || '';
+    document.getElementById('f-rows').value  = t.rows;
+    document.getElementById('f-cols').value  = t.cols;
+    document.getElementById('form-title').textContent = `แก้ไขถาด: ${t.tray_name}`;
+    document.getElementById('btn-cancel').style.display = '';
+    document.getElementById('f-name').focus();
+    document.getElementById('f-name').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function cancelEdit() {
+    document.getElementById('edit-id').value  = '';
+    document.getElementById('f-name').value   = '';
+    document.getElementById('f-rows').value   = '13';
+    document.getElementById('f-cols').value   = '15';
+    document.getElementById('form-title').textContent = '+ สร้างถาดใหม่';
+    document.getElementById('btn-cancel').style.display = 'none';
+  }
+
+  async function submitForm() {
+    const name   = document.getElementById('f-name').value.trim();
+    const rows   = parseInt(document.getElementById('f-rows').value) || 13;
+    const cols   = parseInt(document.getElementById('f-cols').value) || 15;
+    const editId = document.getElementById('edit-id').value;
+
+    if (!name) { toast('กรุณาระบุชื่อถาด', true); return; }
+
+    const body = {
+      tray_name: name,
+      rows, cols,
+    };
+
+    try {
+      let resp;
+      if (editId) {
+        resp = await fetch(`/api/trays/${editId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        resp = await fetch('/api/trays', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+      if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
+      toast(editId ? 'อัพเดทถาดสำเร็จ' : 'สร้างถาดใหม่สำเร็จ');
+      cancelEdit();
+      await loadTrays();
+    } catch (e) {
+      toast(String(e), true);
+    }
+  }
+
+  async function deleteTray(id) {
+    if (!confirm('ยืนยันการลบถาดนี้?')) return;
+    try {
+      const r = await fetch(`/api/trays/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json()).detail);
+      toast('ลบถาดสำเร็จ');
+      await loadTrays();
+    } catch (e) {
+      toast(String(e), true);
+    }
+  }
+
+  loadTrays();
+</script>
+{% endblock %}

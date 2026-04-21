@@ -179,6 +179,14 @@ def run_client(server_url: str) -> None:
 def _on_button_press(lcd, tms: list, GPIO, server_url: str) -> None:
     import requests
 
+    # Stop any previous error-coord scroll before starting a new scan
+    prev_scroll = getattr(_on_button_press, "_scroll_stop", None)
+    if prev_scroll is not None:
+        prev_scroll.set()
+        _on_button_press._scroll_stop = None
+    _lcd_line(lcd, "", 3)
+    _lcd_line(lcd, "", 4)
+
     _relay(GPIO, "processing")   # Yellow ON — stays on through entire scan
     _lcd(lcd, "Capturing...", "")
     _tm_all(tms, 8888)
@@ -268,30 +276,69 @@ def _on_button_press(lcd, tms: list, GPIO, server_url: str) -> None:
     count         = data.get("total_physical_count", data.get("count", 0))
     color_summary: dict = data.get("summary", data.get("color_summary", {}))
     errors:       dict = data.get("errors", {})
-    dup_n  = len(errors.get("duplicate_slots",  []))
-    wc_n   = len(errors.get("wrong_color_slots", []))
+    aruco_id             = data.get("aruco_id")
+    error_count          = data.get("error_count", 0)
+
+    # V2: wrong_color_slots is a list of "R01C05" coordinate strings
+    wc_coords: list[str] = errors.get("wrong_color_slots", [])
+    dup_n  = len(errors.get("duplicate_slots", []))
+    wc_n   = len(wc_coords)
+
+    # LCD line 1: tray ID + count
+    tray_str = str(aruco_id) if aruco_id is not None else "?"
+    lcd_line1 = f"Tray:{tray_str} N:{count}"
 
     # Show per-level counts: H0→L0, H1→L1, H2→L2, H3→L3, H4→L4
     _tm_levels(tms, color_summary)
+
+    # Clear lines 3-4 before result display
+    _lcd_line(lcd, "", 3)
+    _lcd_line(lcd, "", 4)
 
     if dup_n > 0 or wc_n > 0:
         parts = []
         if dup_n: parts.append(f"Dup:{dup_n}")
         if wc_n:  parts.append(f"WC:{wc_n}")
         logger.warning(
-            "Scan errors — count={}, {} | latency={:.2f}s",
-            count, " ".join(parts), elapsed,
+            "Scan errors — count={}, aruco={}, {} | latency={:.2f}s",
+            count, aruco_id, " ".join(parts), elapsed,
         )
         _relay(GPIO, "error")
-        _lcd(lcd, f"Count: {count}", (" ".join(parts))[:16])
+        _lcd(lcd, lcd_line1, (" ".join(parts))[:16])
+
+        # Start scrolling error coordinates on LCD line 3 in a daemon thread.
+        # The scroll stops when stop_spin (already set above) is replaced by a
+        # new stop event that we fire at the start of the NEXT button press.
+        # We store it on the thread itself so the button handler can find it.
+        scroll_stop = threading.Event()
+        scroll_thread = threading.Thread(
+            target=_lcd_scroll, args=(lcd, wc_coords, scroll_stop), daemon=True
+        )
+        scroll_thread.stop_event = scroll_stop
+        # Stop previous scroll if still running (previous scan)
+        prev = getattr(_on_button_press, "_scroll_stop", None)
+        if prev is not None:
+            prev.set()
+        _on_button_press._scroll_stop = scroll_stop
+        scroll_thread.start()
+
     else:
         color_str = "  ".join(f"{k}:{v}" for k, v in color_summary.items())
         logger.success(
-            "Result OK — count={}, colors={}, latency={:.2f}s",
-            count, color_summary, elapsed,
+            "Result OK — count={}, aruco={}, colors={}, latency={:.2f}s",
+            count, aruco_id, color_summary, elapsed,
         )
+        # Stop any previous scroll
+        prev = getattr(_on_button_press, "_scroll_stop", None)
+        if prev is not None:
+            prev.set()
+        _on_button_press._scroll_stop = None
         _relay(GPIO, "idle")
-        _lcd(lcd, f"Count: {count}", color_str[:16] or "No color data")
+        _lcd(lcd, lcd_line1, color_str[:16] or "No color data")
+
+
+# Attribute slot for the active scroll-stop event (set by _on_button_press)
+_on_button_press._scroll_stop = None
 
 
 # ─── Camera capture ───────────────────────────────────────────────────────────
@@ -461,6 +508,44 @@ def _lcd(lcd, line1: str, line2: str) -> None:
         lcd.text(line2[:16], 2)
     except Exception as exc:
         logger.warning("LCD write failed: {}", exc)
+
+
+def _lcd_line(lcd, text: str, line: int) -> None:
+    """Write *text* to a single LCD line (1-4)."""
+    if lcd is None:
+        return
+    try:
+        lcd.text(text[:16], line)
+    except Exception as exc:
+        logger.warning("LCD line {} write failed: {}", line, exc)
+
+
+def _lcd_scroll(lcd, error_coords: list[str], stop_event: threading.Event) -> None:
+    """
+    Scroll a list of error coordinates across LCD line 3 at 200 ms per shift.
+
+    Runs until stop_event is set.  Displays static text if total string < 16 chars.
+    Format: "ERR @ R01C05  R03C12  " (repeating scroll)
+    """
+    if not error_coords:
+        return
+    sep     = "  "
+    payload = sep.join(error_coords) + sep
+    msg     = "ERR @ " + payload
+
+    if len(msg) <= 16:
+        # Short enough to display statically
+        _lcd_line(lcd, msg, 3)
+        _lcd_line(lcd, "", 4)
+        return
+
+    # Scroll continuously
+    pos = 0
+    while not stop_event.is_set():
+        window = (msg * 2)[pos:pos + 16]
+        _lcd_line(lcd, window, 3)
+        pos = (pos + 1) % len(msg)
+        stop_event.wait(0.2)
 
 
 def _lcd_delayed(lcd, stop_event: threading.Event, line1: str, line2: str, delay: float) -> None:

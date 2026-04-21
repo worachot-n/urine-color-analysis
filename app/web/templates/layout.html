@@ -270,60 +270,20 @@
           role="navigation"
           aria-label="เมนูหลัก"
         >
-          <a
-            href="/dashboard"
-            class="{% if request.url.path in ['/', '/dashboard'] %}active{% endif %}"
-            {%
-            if
-            request.url.path
-            in
-            ['/', '/dashboard']
-            %}aria-current="page"
-            {%
-            endif
-            %}
-          >
-            ผลการตรวจ
-          </a>
-          <a
-            href="/trend"
-            class="{% if request.url.path == '/trend' %}active{% endif %}"
-            {%
-            if
-            request.url.path == "/trend"
-            %}aria-current = "page"
-            {%
-            endif
-            %}
-          >
-            การวิเคราะห์
-          </a>
-          <a
-            href="/settings"
-            class="{% if request.url.path == '/settings' %}active{% endif %}"
-            {%
-            if
-            request.url.path == "/settings"
-            %}aria-current = "page"
-            {%
-            endif
-            %}
-          >
-            การตั้งค่า
-          </a>
-          <a
-            href="/test"
-            class="{% if request.url.path == '/test' %}active{% endif %}"
-            {%
-            if
-            request.url.path == "/test"
-            %}aria-current = "page"
-            {%
-            endif
-            %}
-          >
-            ทดสอบระบบ
-          </a>
+          {% set _a_dash = request.url.path in ['/', '/dashboard'] %}
+          <a href="/dashboard" class="{% if _a_dash %}active{% endif %}" {% if _a_dash %}aria-current="page"{% endif %}>ผลการตรวจ</a>
+
+          {% set _a_trend = request.url.path == '/trend' %}
+          <a href="/trend" class="{% if _a_trend %}active{% endif %}" {% if _a_trend %}aria-current="page"{% endif %}>การวิเคราะห์</a>
+
+          {% set _a_settings = request.url.path == '/settings' %}
+          <a href="/settings" class="{% if _a_settings %}active{% endif %}" {% if _a_settings %}aria-current="page"{% endif %}>การตั้งค่า</a>
+
+          {% set _a_trays = request.url.path == '/trays' %}
+          <a href="/trays" class="{% if _a_trays %}active{% endif %}" {% if _a_trays %}aria-current="page"{% endif %}>จัดการถาด</a>
+
+          {% set _a_test = request.url.path == '/test' %}
+          <a href="/test" class="{% if _a_test %}active{% endif %}" {% if _a_test %}aria-current="page"{% endif %}>ทดสอบระบบ</a>
         </div>
 
         <button

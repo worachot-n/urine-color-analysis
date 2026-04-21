@@ -4,99 +4,194 @@
 
 {% block head %}
 <style>
-  /* ── Dashboard-specific styles ──────────────────────────────────── */
-  .main-grid {
-    display: grid;
-    grid-template-columns: 1fr 420px;
-    gap: 20px;
-    max-width: 1200px;
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  .dash-wrap {
+    max-width: 1280px;
     margin: 0 auto;
-    padding: 0 20px 32px;
+    padding: 0 20px 40px;
   }
-  @media (max-width: 860px) { .main-grid { grid-template-columns: 1fr; } }
 
-  /* Image viewer */
-  .image-panel {
+  /* ── Top info bar ────────────────────────────────────────────────────── */
+  .info-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .info-chips { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .chip {
     background: #112211;
     border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    display: flex; align-items: center; justify-content: center;
-    min-height: 340px;
+    border-radius: 20px;
+    padding: 5px 14px;
+    font-size: .85rem;
+    color: var(--text);
   }
-  .image-panel img { width: 100%; height: 100%; object-fit: contain; display: block; }
-  .image-panel .no-img {
-    color: var(--muted); font-size: 1rem;
-    padding: 40px; text-align: center;
-  }
-
-  /* Right column */
-  .right-col { display: flex; flex-direction: column; gap: 16px; }
-
-  .top-bar {
-    display: flex; align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap; gap: 10px;
-  }
-  .timestamp { font-size: .9rem; color: var(--muted); }
-  .timestamp strong { color: var(--text); }
+  .chip strong { color: var(--green); }
+  .chip-err strong { color: #ef5350; }
+  .chip-ok  strong { color: #66bb6a; }
   .btn-update {
     background: var(--green); color: #000;
     font-family: 'Sarabun', sans-serif;
-    font-weight: 700; font-size: 1rem;
+    font-weight: 700; font-size: .95rem;
     border: none; border-radius: 8px;
-    padding: 8px 22px; cursor: pointer;
+    padding: 7px 20px; cursor: pointer;
     transition: background .15s;
   }
   .btn-update:hover { background: var(--green-h); }
 
-  /* Color summary cards */
-  .color-cards { display: flex; flex-direction: column; gap: 10px; }
-  .color-card {
+  /* ── Main 2-column layout ────────────────────────────────────────────── */
+  .dash-main {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 24px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .dash-main { grid-template-columns: 1fr; }
+  }
+
+  /* ── Grid panel ──────────────────────────────────────────────────────── */
+  .grid-panel {
+    background: #0a1a0a;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    overflow-x: auto;
+  }
+  .grid-panel h2 {
+    font-size: .9rem;
+    color: var(--muted);
+    margin-bottom: 12px;
+    font-weight: 600;
+  }
+
+  /* Slot grid — columns/rows set dynamically by JS */
+  .slot-grid {
+    gap: 3px;
+    display: none;
+  }
+  @media (max-width: 700px) {
+    .slot-grid { --cell: 26px; }
+  }
+
+  .slot {
+    width: 36px; height: 36px;
+    border-radius: 4px;
+    background: #1a1a1a;
+    border: 2px solid transparent;
+    cursor: default;
+    transition: filter .15s;
+    position: relative;
+  }
+  @media (max-width: 700px) { .slot { width: 26px; height: 26px; } }
+  .slot:hover { filter: brightness(1.3); z-index: 1; }
+
+  /* Filled slot colors */
+  .slot[data-level="0"] { background: #C1B7A9; }
+  .slot[data-level="1"] { background: #A39371; }
+  .slot[data-level="2"] { background: #978365; }
+  .slot[data-level="3"] { background: #755429; }
+  .slot[data-level="4"] { background: #50311B; }
+
+  /* Error blink */
+  .slot.is-error {
+    border-color: #ef5350;
+    animation: blink-border 1s step-end infinite;
+  }
+  @keyframes blink-border {
+    0%, 100% { border-color: #ef5350; }
+    50%       { border-color: transparent; }
+  }
+
+  /* Tooltip */
+  .slot[title]:hover::after {
+    content: attr(title);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1e3a1e;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: .75rem;
+    white-space: nowrap;
+    color: var(--text);
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  /* Column level zone headers */
+  .col-labels {
+    display: grid;
+    gap: 3px;
+    margin-bottom: 4px;
+  }
+  .col-label {
+    text-align: center;
+    font-size: .65rem;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  /* Color zone bracket lines */
+  .zone-labels {
+    display: flex;
+    margin-bottom: 6px;
+  }
+
+  /* ── Side panel ──────────────────────────────────────────────────────── */
+  .side-panel { display: flex; flex-direction: column; gap: 16px; }
+
+  /* Image thumbnail */
+  .thumb-panel {
+    background: #112211;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 160px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .thumb-panel img { width: 100%; display: block; object-fit: contain; }
+  .thumb-panel .no-img { color: var(--muted); font-size: .85rem; padding: 24px; text-align: center; }
+
+  /* Color legend cards */
+  .legend-card {
     background: #112211;
     border: 1px solid var(--border);
     border-radius: 10px;
-    display: flex; align-items: stretch;
     overflow: hidden;
-    transition: filter .15s;
   }
-  .color-card:hover { filter: brightness(1.12); }
-  .cc-swatch {
-    width: 88px; flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-weight: 800; font-size: 1rem;
-    letter-spacing: .02em;
+  .legend-card h3 { font-size: .85rem; font-weight: 700; padding: 10px 14px 8px; border-bottom: 1px solid var(--border); }
+  .legend-rows { display: flex; flex-direction: column; }
+  .legend-row {
+    display: flex; align-items: center;
+    padding: 8px 14px; gap: 12px;
+    border-bottom: 1px solid #162216;
   }
-  .cc-s0 { background: #C1B7A9; color: #3d2a18; }
-  .cc-s1 { background: #A39371; color: #3d2a18; }
-  .cc-s2 { background: #978365; color: #3d2a18; }
-  .cc-s3 { background: #755429; color: #ffffff; }
-  .cc-s4 { background: #50311B; color: #ffffff; }
-  .cc-count {
-    flex: 1; text-align: center;
-    font-size: 2.2rem; font-weight: 800; line-height: 1;
-    padding: 14px 0; align-self: center;
+  .legend-row:last-child { border-bottom: none; }
+  .legend-swatch {
+    width: 28px; height: 28px;
+    border-radius: 5px; flex-shrink: 0;
   }
-  .cc-unit {
-    font-size: 1rem; font-weight: 600;
-    color: rgba(255,255,255,.75); flex-shrink: 0;
-    min-width: 48px; text-align: center; align-self: center;
-  }
+  .legend-label { font-size: .85rem; flex: 1; }
+  .legend-count { font-size: 1.2rem; font-weight: 800; min-width: 30px; text-align: right; }
 
-  /* Error table */
-  .error-section h3 { font-size: 1rem; font-weight: 700; margin-bottom: 10px; }
-  .error-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
-  .error-table thead tr { background: #00838f; }
-  .error-table th { padding: 8px 12px; font-weight: 700; text-align: center; }
-  .error-table tbody tr:nth-child(odd)  { background: #0f2a0f; }
-  .error-table tbody tr:nth-child(even) { background: #142e14; }
-  .error-table td {
-    padding: 7px 12px; text-align: center;
-    border-bottom: 1px solid var(--border);
+  /* Error list */
+  .error-card {
+    background: #1a0808;
+    border: 1px solid #5a1a1a;
+    border-radius: 10px;
+    padding: 12px 14px;
   }
-  .badge-wrong { color: #ffa726; font-weight: 700; }
-  .badge-dup   { color: #ef5350; font-weight: 700; }
-  .no-errors   { color: var(--muted); font-size: .85rem; padding: 12px 0; text-align: center; }
+  .error-card h3 { font-size: .85rem; font-weight: 700; color: #ef5350; margin-bottom: 8px; }
+  .error-list { font-size: .82rem; color: #ffb3b3; line-height: 1.8; }
+  .no-errors { font-size: .85rem; color: var(--muted); }
+
+  /* Loading overlay */
+  #loading-msg { text-align: center; color: var(--muted); padding: 40px; font-size: .9rem; }
 </style>
 {% endblock %}
 
@@ -105,83 +200,239 @@
   <h1>การตรวจวัดสีปัสสาวะทหารใหม่</h1>
 </div>
 
-<div class="main-grid">
+<div class="dash-wrap">
 
-  <!-- Left: latest capture -->
-  <div class="image-panel">
-    {% if latest_image %}
-      <img src="{{ latest_image }}" alt="ภาพการตรวจล่าสุด">
-    {% else %}
-      <div class="no-img">ยังไม่มีภาพ<br>กดปุ่มที่ Raspberry Pi เพื่อสแกน</div>
-    {% endif %}
+  <!-- Info bar -->
+  <div class="info-bar">
+    <div class="info-chips" id="info-chips">
+      <div class="chip">อัพเดทล่าสุด: <strong id="ts-display">{{ thai_timestamp }}</strong></div>
+      <div class="chip {% if not active_tray_name %}chip-err{% else %}chip-ok{% endif %}">
+        ถาดที่ใช้งาน: <strong id="tray-display">{{ active_tray_name or 'ยังไม่ได้เลือก' }}</strong>
+      </div>
+      <div class="chip">สแกนทั้งหมด: <strong>{{ total_scans }}</strong> ครั้ง</div>
+      <div class="chip" id="error-chip">
+        ข้อผิดพลาด: <strong id="err-count">—</strong>
+      </div>
+    </div>
+    <button class="btn-update" onclick="loadLatest()">อัพเดท</button>
   </div>
 
-  <!-- Right: summary + errors -->
-  <div class="right-col">
+  <!-- Main layout -->
+  <div class="dash-main">
 
-    <div class="top-bar">
-      <div class="timestamp">
-        อัพเดทล่าสุด: <strong>{{ thai_timestamp }}</strong>
+    <!-- Left: interactive grid -->
+    <div class="grid-panel">
+      <h2 id="grid-title">กำลังโหลดข้อมูล...</h2>
+
+      <!-- Zone labels — populated by JS -->
+      <div class="zone-labels" id="zone-labels" style="margin-bottom:4px;"></div>
+
+      <!-- Column number labels — populated by JS -->
+      <div class="col-labels" id="col-labels"></div>
+
+      <!-- Slot grid, populated by JS -->
+      <div id="loading-msg">กำลังโหลดข้อมูล...</div>
+      <div class="slot-grid" id="slot-grid"></div>
+    </div>
+
+    <!-- Right: side panel -->
+    <div class="side-panel">
+
+      <!-- Latest image thumbnail -->
+      <div class="thumb-panel">
+        {% if latest_image %}
+          <img id="latest-img" src="{{ latest_image }}" alt="ภาพการตรวจล่าสุด">
+        {% else %}
+          <div class="no-img">ยังไม่มีภาพ<br>กดปุ่มที่ Raspberry Pi</div>
+        {% endif %}
       </div>
-      <button class="btn-update" onclick="location.reload()">อัพเดท</button>
-    </div>
 
-    <!-- Color cards สี 0–4 -->
-    <div class="color-cards">
-      {% for i in range(5) %}
-        {% set cnt = latest_colors.get("L" ~ i, 0) %}
-        <div class="color-card">
-          <div class="cc-swatch cc-s{{ i }}">สี {{ i }}</div>
-          <div class="cc-count">{{ cnt }}</div>
-          <div class="cc-unit">นาย</div>
+      <!-- Color legend with counts -->
+      <div class="legend-card">
+        <h3>สรุปผลตามสี</h3>
+        <div class="legend-rows" id="legend-rows">
+          {% set colors = ['#C1B7A9','#A39371','#978365','#755429','#50311B'] %}
+          {% for i in range(5) %}
+          <div class="legend-row">
+            <div class="legend-swatch" style="background:{{ colors[i] }};"></div>
+            <div class="legend-label">สี {{ i }}</div>
+            <div class="legend-count" id="cnt-{{ i }}">
+              {{ latest_colors.get('L' ~ i, 0) }}
+            </div>
+          </div>
+          {% endfor %}
         </div>
-      {% endfor %}
+      </div>
+
+      <!-- Error details -->
+      <div class="error-card" id="error-card" style="display:none;">
+        <h3>&#9888; ช่องผิดพลาด</h3>
+        <div class="error-list" id="error-list"></div>
+      </div>
+
     </div>
-
-    <!-- Error table -->
-    <div class="error-section">
-      <h3>ข้อผิดพลาดที่ตรวจพบ</h3>
-      {% set dup_list = latest_errors.get("duplicate_slots",   []) %}
-      {% set wc_list  = latest_errors.get("wrong_color_slots", []) %}
-
-      {% if dup_list or wc_list %}
-      <table class="error-table">
-        <thead>
-          <tr>
-            <th>ช่อง</th><th>สีตามช่อง</th><th>สีตรวจจับ</th><th>หมายเหตุ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for e in wc_list %}
-          <tr>
-            <td>{{ e.slot_id }}</td>
-            <td>{{ e.expected }}</td>
-            <td>{{ e.actual }}</td>
-            <td class="badge-wrong">สีผิด</td>
-          </tr>
-          {% endfor %}
-          {% for d in dup_list %}
-          <tr>
-            <td>{{ d.base }}</td>
-            <td>{{ d.slots | join(", ") }}</td>
-            <td>-</td>
-            <td class="badge-dup">ซ้ำ</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <div class="no-errors">&#10003; ไม่พบข้อผิดพลาด</div>
-      {% endif %}
-    </div>
-
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+  const COLORS = ['#C1B7A9','#A39371','#978365','#755429','#50311B'];
+
+  function posToRowCol(idx, cols) {
+    const row = Math.floor((idx - 1) / cols) + 1;
+    const col = ((idx - 1) % cols) + 1;
+    return [row, col];
+  }
+
+  function expectedLevel(posIdx, cols) {
+    const col = ((posIdx - 1) % cols);  // 0-based col
+    return Math.min(Math.floor(col / 3), 4);
+  }
+
+  function buildGrid(slots, rows, cols) {
+    const grid = document.getElementById('slot-grid');
+    grid.innerHTML = '';
+
+    // Set CSS grid dimensions dynamically
+    const cellSize = window.innerWidth <= 700 ? 26 : 36;
+    grid.style.display = 'grid';
+    grid.style.gridTemplateColumns = `repeat(${cols}, ${cellSize}px)`;
+    grid.style.gridTemplateRows    = `repeat(${rows}, ${cellSize}px)`;
+
+    // Build lookup: position_index → slot data
+    const map = {};
+    for (const s of slots) { map[s.position_index] = s; }
+
+    // Create cells in row-major order
+    for (let r = 1; r <= rows; r++) {
+      for (let c = 1; c <= cols; c++) {
+        const idx  = (r - 1) * cols + c;
+        const slot = map[idx];
+        const cell = document.createElement('div');
+        cell.className = 'slot';
+        cell.dataset.idx = idx;
+
+        if (slot && slot.color_result !== null) {
+          const lvl = slot.color_result;
+          cell.dataset.level = lvl;
+          cell.style.background = COLORS[lvl];
+          if (slot.is_error) cell.classList.add('is-error');
+          cell.title = `R${String(r).padStart(2,'0')}C${String(c).padStart(2,'0')} | สี ${lvl} | ${slot.is_error ? '⚠ ผิดโซน' : '✓ ปกติ'}`;
+        } else {
+          cell.title = `R${String(r).padStart(2,'0')}C${String(c).padStart(2,'0')} | ว่าง`;
+        }
+
+        grid.appendChild(cell);
+      }
+    }
+
+    document.getElementById('loading-msg').style.display = 'none';
+  }
+
+  function buildZoneLabels(cols) {
+    const zoneBar = document.getElementById('zone-labels');
+    zoneBar.innerHTML = '';
+    const zonesCount = Math.ceil(cols / 3);
+    for (let i = 0; i < zonesCount; i++) {
+      const el = document.createElement('div');
+      el.style.cssText = `flex:3;text-align:center;font-size:.7rem;color:var(--muted);font-weight:700;${i < zonesCount - 1 ? 'border-right:1px solid var(--border);' : ''}`;
+      el.textContent = `สี ${i}`;
+      zoneBar.appendChild(el);
+    }
+  }
+
+  function buildColLabels(cols) {
+    const cellSize = window.innerWidth <= 700 ? 26 : 36;
+    const bar = document.getElementById('col-labels');
+    bar.style.gridTemplateColumns = `repeat(${cols}, ${cellSize}px)`;
+    bar.innerHTML = Array.from({length: cols}, (_, i) =>
+      `<div class="col-label">${i + 1}</div>`
+    ).join('');
+  }
+
+  function updateCounters(session) {
+    for (let i = 0; i < 5; i++) {
+      const el = document.getElementById('cnt-' + i);
+      if (el) el.textContent = session['color_' + i] || 0;
+    }
+  }
+
+  function updateErrorPanel(slots, cols) {
+    const errSlots  = slots.filter(s => s.is_error);
+    const chip      = document.getElementById('error-chip');
+    const errCount  = document.getElementById('err-count');
+    const errCard   = document.getElementById('error-card');
+    const errList   = document.getElementById('error-list');
+
+    errCount.textContent = errSlots.length;
+    chip.className = errSlots.length > 0 ? 'chip chip-err' : 'chip chip-ok';
+
+    if (errSlots.length === 0) {
+      errCard.style.display = 'none';
+    } else {
+      errCard.style.display = '';
+      const lines = errSlots.map(s => {
+        const r   = Math.floor((s.position_index - 1) / cols) + 1;
+        const c   = ((s.position_index - 1) % cols) + 1;
+        const exp = Math.min(Math.floor(((s.position_index - 1) % cols) / 3), 4);
+        return `R${String(r).padStart(2,'0')}C${String(c).padStart(2,'0')} — สีที่ตรวจพบ: ${s.color_result} / คาดหวัง: ${exp}`;
+      });
+      errList.innerHTML = lines.join('<br>');
+    }
+  }
+
+  async function loadLatest() {
+    try {
+      const resp = await fetch('/api/latest');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+
+      if (!data.session) {
+        document.getElementById('loading-msg').textContent = 'ยังไม่มีข้อมูลการสแกน';
+        return;
+      }
+
+      // Tray dimensions (default 13×15 if not provided)
+      const rows = (data.tray && data.tray.rows) ? data.tray.rows : 13;
+      const cols = (data.tray && data.tray.cols) ? data.tray.cols : 15;
+
+      // Update active tray display
+      const trayName = data.tray ? (data.tray.tray_name || `Tray-${data.tray.id}`) : 'ยังไม่ได้เลือก';
+      const trayEl = document.getElementById('tray-display');
+      if (trayEl) trayEl.textContent = trayName;
+
+      // Update timestamp
+      const dt = new Date(data.session.scanned_at);
+      const thaiYear = dt.getFullYear() + 543;
+      const tsStr = `${dt.getDate()}/${dt.getMonth()+1}/${thaiYear} เวลา ${String(dt.getHours()).padStart(2,'0')}${String(dt.getMinutes()).padStart(2,'0')}`;
+      document.getElementById('ts-display').textContent = tsStr;
+
+      // Rebuild grid UI for this tray's dimensions
+      buildZoneLabels(cols);
+      buildColLabels(cols);
+      document.getElementById('grid-title').textContent =
+        `ตำแหน่ง ${rows * cols} ช่อง (${rows} แถว × ${cols} คอลัมน์) — โซนสีตามคอลัมน์`;
+
+      if (data.slots)   buildGrid(data.slots, rows, cols);
+      if (data.session) updateCounters(data.session);
+      if (data.slots)   updateErrorPanel(data.slots, cols);
+
+      // Update image if available
+      const imgEl = document.getElementById('latest-img');
+      if (imgEl && data.session.image_raw_path) {
+        imgEl.src = data.session.image_raw_path + '?t=' + Date.now();
+      }
+
+    } catch (e) {
+      console.warn('loadLatest error:', e);
+    }
+  }
+
+  // Load on page open
+  loadLatest();
+
   // Auto-refresh every 30 seconds
-  setTimeout(function () { location.reload(); }, 30000);
+  setInterval(loadLatest, 30000);
 </script>
 {% endblock %}

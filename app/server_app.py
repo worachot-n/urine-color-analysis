@@ -1,15 +1,15 @@
 """
-Server-side FastAPI application — Ubuntu / any Linux host.
+Server-side FastAPI application — Ubuntu / any Linux host (V2).
 
-Responsibilities:
-  - Receive 4608 × 2592 JPEG from Pi via POST /analyze
-  - Validate X-Auth-Token header
-  - Run YOLO inference (PyTorch, singleton loaded at startup)
-  - Perform slot-based color analysis if grid_config.json is present
-  - Detect duplicate-slot and wrong-color-zone errors
-  - Persist result to SQLite + save annotated JPEG to static/captures/
-  - Return JSON: {status, count, color_summary, errors, timestamp, image_id}
-  - Serve /dashboard (Jinja2), /settings (Jinja2), /health, and /static files
+V2 changes vs V1:
+  • PostgreSQL (via DATABASE_URL) with 4 normalized tables:
+      trays, scan_sessions, test_slots, people
+  • Phase A : ArUco DICT_4X4_50 marker → tray ID + rotation
+  • Phase B/C: U-Net segmentation → skeletonize → line-fit → 195 slot centres
+  • Phase D : YOLO bottle detection + K-means Lab colour classification
+  • Phase E : Duplicate-slot + wrong-colour-zone validation
+  • Dashboard: interactive 13×15 grid with blinking error slots
+  • New endpoints: GET /api/latest, GET /api/sessions
 
 Install:
     uv sync --extra server --extra common
@@ -33,113 +33,129 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, text
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy import (
+    Boolean, Column, DateTime, ForeignKey, Integer, JSON, String,
+    create_engine, text,
+)
+from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 
 from app.shared.config import cfg
 from app.shared.processor import (
     crop_sample_roi,
     letterbox_white_padding,
     scale_coordinates,
-    find_slot_conflicts,
-    validate_color_zones,
     save_visual_log,
     generate_visual_report,
 )
 
 
-# ─── Database ────────────────────────────────────────────────────────────────
+# ─── Database models (PostgreSQL) ─────────────────────────────────────────────
 
 class _Base(DeclarativeBase):
     pass
 
 
-class AnalysisResult(_Base):
-    __tablename__ = "results"
+class Tray(_Base):
+    """Physical plaswood plate registry — one row per physical tray."""
+    __tablename__ = "trays"
 
-    id                 = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp          = Column(DateTime, default=datetime.utcnow)
-    count              = Column(Integer)
-    color_json         = Column(String)                  # JSON: {"L0": n, …, "L4": n}
-    image_path         = Column(String)                  # /static/captures/{uuid}.jpg
-    errors_json        = Column(String, nullable=True)   # JSON: {duplicate_slots, wrong_color_slots}
-    log_image_filename = Column(String, nullable=True)   # logs/img/URINE_SCAN_*.jpg
-    detailed_results   = Column(String, nullable=True)   # JSON: per-slot validation detail
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    tray_name      = Column(String, nullable=True)           # human-readable display name
+    is_active      = Column(Boolean, default=False, nullable=False)  # only one active at a time
+    rows           = Column(Integer, default=13)
+    cols           = Column(Integer, default=15)
+    total_slots    = Column(Integer, default=195)
+    dimension_info = Column(String, default="13x15")
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    layout_json    = Column(JSON, nullable=True)   # {"1": "A01", "2": "A02", ...}
+
+    sessions       = relationship("ScanSession", back_populates="tray")
+
+
+class ScanSession(_Base):
+    """One row per scan event — primary source for dashboard queries."""
+    __tablename__ = "scan_sessions"
+
+    id                   = Column(Integer, primary_key=True, autoincrement=True)
+    tray_id              = Column(Integer, ForeignKey("trays.id"), nullable=False, index=True)
+    scanned_at           = Column(DateTime, default=datetime.utcnow, index=True)
+    image_raw_path       = Column(String, nullable=True)
+    image_annotated_path = Column(String, nullable=True)
+    color_0              = Column(Integer, default=0)
+    color_1              = Column(Integer, default=0)
+    color_2              = Column(Integer, default=0)
+    color_3              = Column(Integer, default=0)
+    color_4              = Column(Integer, default=0)
+    error_count          = Column(Integer, default=0)
+    is_clean             = Column(Boolean, default=True)
+
+    tray                 = relationship("Tray", back_populates="sessions")
+    slots                = relationship("TestSlot", back_populates="session")
+
+
+class TestSlot(_Base):
+    """195 rows per scan session — granular slot results for grid UI + identity linking."""
+    __tablename__ = "test_slots"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    session_id     = Column(Integer, ForeignKey("scan_sessions.id"), nullable=False, index=True)
+    position_index = Column(Integer, nullable=False)   # 1-195 row-major
+    color_result   = Column(Integer, nullable=True)    # 0-4; None = empty slot
+    is_error       = Column(Boolean, default=False)
+    person_id      = Column(Integer, ForeignKey("people.id"), nullable=True)
+
+    session        = relationship("ScanSession", back_populates="slots")
+    person         = relationship("People", back_populates="slots")
+
+
+class People(_Base):
+    """Personnel registry — pre-built for future identity integration."""
+    __tablename__ = "people"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    full_name    = Column(String, nullable=False)
+    personnel_id = Column(String, unique=True, index=True)
+    department   = Column(String, nullable=True)
+
+    slots        = relationship("TestSlot", back_populates="person")
 
 
 def _make_engine():
-    db_path = Path(cfg.database_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    db_url = cfg.database_url
+    if db_url.startswith("sqlite"):
+        db_path = Path(db_url.replace("sqlite:///", "", 1))
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return create_engine(db_url, connect_args={"check_same_thread": False})
+    return create_engine(db_url)
 
 
-_engine = _make_engine()
+_engine  = _make_engine()
 _Session = sessionmaker(bind=_engine, autoflush=False)
 
 
 # ─── YOLO inference singleton ─────────────────────────────────────────────────
 
 class _YoloInference:
-    """
-    Wraps a YOLOv8 PyTorch model (.pt).  Loaded once at app startup.
-
-    detect(img_bytes, log_path) → (count, color_summary, annotated, errors, validation_results)
-    """
+    """Wraps a YOLOv8 PyTorch model. Loaded once at startup."""
 
     def __init__(self):
         from ultralytics import YOLO
-
-        model_path = cfg.model_path
-        logger.info("Loading YOLO model: {}", model_path)
-        self._model = YOLO(model_path, task="detect")
+        logger.info("Loading YOLO model: {}", cfg.model_path)
+        self._model      = YOLO(cfg.model_path, task="detect")
         self._input_size = cfg.model_input_size
-        logger.success("YOLO model loaded — {}", model_path)
+        logger.success("YOLO model loaded — {}", cfg.model_path)
 
-    # ------------------------------------------------------------------
-
-    def detect(
-        self,
-        img_bytes: bytes,
-        log_path: "Path | None" = None,
-    ) -> "tuple[int, dict, np.ndarray, dict, dict]":
+    def detect_raw(self, img_bytes: bytes) -> tuple[np.ndarray, list[list[float]]]:
         """
-        Run inference on raw JPEG bytes.
+        Decode JPEG, crop ROI, run YOLO, return (full_image, boxes_in_full_image_space).
 
-        Args:
-            img_bytes:  Raw JPEG bytes from the Pi camera.
-            log_path:   When provided, save_visual_log() writes a full
-                        diagnostic JPEG with bounding boxes, rings, and
-                        Thai text labels.
-
-        Returns (5-tuple):
-            count              — unique occupied slots (or raw box count if no grid)
-            color_summary      — {"L0"…"L4": count}
-            annotated          — simple BGR image (boxes + confidence, for dashboard)
-            errors             — {"duplicate_slots": [...], "wrong_color_slots": [...]}
-            validation_results — per-slot detail dict (see structure below)
-
-        validation_results structure:
-            {
-              "slots": {
-                slot_id: {
-                  "cx": int, "cy": int, "radius": int,
-                  "level": int | None,
-                  "ok": bool,
-                  "wrong_color": bool,
-                  "duplicate": bool,
-                  "expected": int   # only when wrong_color=True
-                }
-              },
-              "duplicate_slots": [...],
-              "wrong_color_slots": [...],
-            }
+        boxes format: [[x1, y1, x2, y2, conf, cls], ...]
         """
         nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError("cv2.imdecode returned None — invalid image data")
 
-        # ── Step 1: crop sample ROI (excludes reference row + dead-zone col) ──
         roi, roi_x1, roi_y1 = crop_sample_roi(
             img,
             top=cfg.sample_roi_top,
@@ -147,17 +163,9 @@ class _YoloInference:
             left=cfg.sample_roi_left,
             right=cfg.sample_roi_right,
         )
-        logger.debug(
-            "ROI crop {}×{} → {}×{} (origin x={} y={})",
-            img.shape[1], img.shape[0],
-            roi.shape[1], roi.shape[0],
-            roi_x1, roi_y1,
-        )
 
-        # ── Step 2: letterbox the ROI to 640×640 with white padding ──────────
         padded, scale, pad_x, pad_y = letterbox_white_padding(roi, self._input_size)
 
-        # ── Step 3: YOLO inference on the ROI-only 640×640 frame ─────────────
         results = self._model.predict(
             source=padded,
             imgsz=self._input_size,
@@ -173,252 +181,193 @@ class _YoloInference:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 boxes_640.append([x1, y1, x2, y2, float(box.conf[0]), int(box.cls[0])])
 
-        # ── Step 4: map back to full-image coords (remove padding → scale → add ROI offset) ──
         boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y, roi_x1, roi_y1)
         logger.debug("YOLO raw detections: {} boxes", len(boxes_orig))
-
-        # ── Slot-based color analysis (requires grid_config.json) ─────────
-        color_summary:     dict[str, int] = {f"L{i}": 0 for i in range(5)}
-        sample_hits:       dict[str, dict] = {}
-        classified_levels: dict[str, int]  = {}
-        errors:            dict             = {}
-        grid_inst                           = None   # reused for visual log
-
-        try:
-            from utils.grid import GridConfig
-            grid_inst = GridConfig()
-            if grid_inst.slot_data:
-                color_summary, sample_hits, classified_levels = _run_color_analysis(
-                    img, boxes_orig, grid_inst
-                )
-                count = len(sample_hits)
-                errors = {
-                    "duplicate_slots":   find_slot_conflicts(sample_hits),
-                    "wrong_color_slots": validate_color_zones(sample_hits, classified_levels),
-                }
-            else:
-                count = len(boxes_orig)
-        except Exception as exc:
-            logger.warning("Color analysis / slot mapping skipped: {}", exc)
-            count = len(boxes_orig)
-
-        # ── Build structured validation_results ───────────────────────────
-        wrong_ids: set[str] = {
-            e["slot_id"] for e in errors.get("wrong_color_slots", [])
-        }
-        dup_ids: set[str] = {
-            s for d in errors.get("duplicate_slots", []) for s in d["slots"]
-        }
-        slots_detail: dict[str, dict] = {}
-        for slot_id, hit in sample_hits.items():
-            is_wc  = slot_id in wrong_ids
-            is_dup = slot_id in dup_ids
-            entry: dict = {
-                "cx":          hit["cx"],
-                "cy":          hit["cy"],
-                "radius":      hit.get("radius", 50),
-                "level":       classified_levels.get(slot_id),
-                "ok":          not is_wc and not is_dup,
-                "wrong_color": is_wc,
-                "duplicate":   is_dup,
-            }
-            if is_wc:
-                wc_entry = next(
-                    (e for e in errors.get("wrong_color_slots", [])
-                     if e["slot_id"] == slot_id), None
-                )
-                if wc_entry:
-                    entry["expected"] = wc_entry["expected"]
-            slots_detail[slot_id] = entry
-
-        validation_results: dict = {
-            "slots":               slots_detail,
-            "duplicate_slots":     errors.get("duplicate_slots",   []),
-            "wrong_color_slots":   errors.get("wrong_color_slots", []),
-            "raw_detection_count": len(boxes_orig),
-        }
-
-        # ── Dashboard thumbnail: simple green boxes + confidence scores ───
-        annotated = img.copy()
-        for box in boxes_orig:
-            x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 220, 0), 3)
-            cv2.putText(
-                annotated, f"{box[4]:.2f}",
-                (x1, max(y1 - 8, 0)),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 220, 0), 2, cv2.LINE_AA,
-            )
-
-        # ── Detailed visual log (bounding boxes + rings + Thai labels) ────
-        if log_path is not None:
-            try:
-                save_visual_log(
-                    image=img,
-                    validation_results=validation_results,
-                    grid_cfg=grid_inst,
-                    filepath=log_path,
-                )
-                logger.debug("Visual log saved → {}", log_path)
-            except Exception as exc:
-                logger.warning("save_visual_log failed: {}", exc)
-
-        return count, color_summary, annotated, errors, validation_results
+        return img, boxes_orig
 
 
-def _run_color_analysis(
-    img: np.ndarray,
-    boxes_orig: list,
-    grid_cfg,
-) -> tuple[dict[str, int], dict[str, dict], dict[str, int]]:
+# ─── V2 analysis helpers ──────────────────────────────────────────────────────
+
+def _expected_level_from_position(position_index: int) -> int:
     """
-    Map detected boxes onto grid slots, classify colors using K-means
-    nearest-centroid assignment in CIE Lab space.
+    Derive expected colour level (0-4) from position_index (1-195).
 
-    Centroid priority
-    -----------------
-    1. color.json  — 5 pre-calibrated centroids, each = mean Lab of the 3
-                     reference bottles for that class (build_kmeans_centroids).
-    2. Live frame  — dynamically sample the reference row in the current image
-                     (build_reference_baseline), used when color.json is absent.
-    3. Fallback    — return empty dicts if neither source yields a baseline.
+    Grid layout: 13 rows × 15 cols, 3 cols per level.
+      cols 1-3  → L0, cols 4-6  → L1, cols 7-9  → L2,
+      cols 10-12→ L3, cols 13-15→ L4
+    """
+    col_idx     = (position_index - 1) % 15          # 0-14
+    return min(col_idx // 3, 4)
+
+
+def _match_detections_to_slots(
+    boxes_orig: list[list[float]],
+    slot_centers: list[tuple[int, int]],
+) -> dict[int, dict]:
+    """
+    Greedy nearest-slot matching.  Each YOLO box claims the closest slot center
+    whose distance < half the minimum inter-slot spacing.
 
     Returns:
-        summary           — {"L0"…"L4": count} per color level
-        sample_hits       — {slot_id: {"cx": int, "cy": int}} for each assigned box
-        classified_levels — {slot_id: level_int} for color-zone validation
+        {position_index: {"cx": int, "cy": int, "radius": int, "box": [x1,y1,x2,y2]}}
+    """
+    if not slot_centers or not boxes_orig:
+        return {}
+
+    centers = np.array(slot_centers, dtype=np.float32)   # (N, 2)
+
+    # Estimate matching threshold from minimum pairwise slot distance
+    if len(centers) > 1:
+        diffs = centers[1:] - centers[:-1]
+        dists = np.linalg.norm(diffs, axis=1)
+        min_spacing = float(np.percentile(dists[dists > 0], 10)) if dists.any() else 50.0
+    else:
+        min_spacing = 50.0
+    threshold = min_spacing * 0.6
+
+    claimed: set[int] = set()
+    # Sort boxes by descending confidence so higher-confidence detections win ties
+    sorted_boxes = sorted(boxes_orig, key=lambda b: -b[4])
+
+    hits: dict[int, dict] = {}
+    for box in sorted_boxes:
+        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+        box_pt = np.array([[cx, cy]], dtype=np.float32)
+
+        dists_to_centers = np.linalg.norm(centers - box_pt, axis=1)
+        nearest_idx      = int(np.argmin(dists_to_centers))
+        min_dist         = float(dists_to_centers[nearest_idx])
+
+        if min_dist > threshold:
+            logger.debug("Box [{},{},{},{}] dropped — nearest slot dist={:.0f}px > {:.0f}px",
+                         x1, y1, x2, y2, min_dist, threshold)
+            continue
+        if nearest_idx in claimed:
+            logger.debug("Box [{},{},{},{}] dropped — slot {} already claimed",
+                         x1, y1, x2, y2, nearest_idx + 1)
+            continue
+
+        claimed.add(nearest_idx)
+        position_index = nearest_idx + 1
+        radius         = max((x2 - x1) // 2, (y2 - y1) // 2)
+        hits[position_index] = {
+            "cx": cx, "cy": cy, "radius": radius,
+            "box": [x1, y1, x2, y2],
+        }
+
+    return hits
+
+
+def _run_color_analysis_v2(
+    img: np.ndarray,
+    slot_hits: dict[int, dict],
+    baseline: dict[int, tuple[float, float, float]] | None = None,
+) -> dict[int, int]:
+    """
+    Classify the colour of each occupied slot.
+
+    Returns:
+        {position_index: level_int}
     """
     from utils.color_analysis import (
         build_kmeans_centroids,
-        build_reference_baseline,
         classify_sample,
         extract_bottle_color,
     )
-    from configs.config import COLOR_JSON_FILE
 
-    summary:           dict[str, int]  = {f"L{i}": 0 for i in range(5)}
-    sample_hits:       dict[str, dict] = {}
-    classified_levels: dict[str, int]  = {}
-
-    # ── Step 1: build K-means centroids ──────────────────────────────────
-    # Primary: load from color.json (3 reference bottles → mean per class)
-    baseline = build_kmeans_centroids(COLOR_JSON_FILE)
+    if baseline is None:
+        from configs.config import COLOR_JSON_FILE
+        baseline = build_kmeans_centroids(COLOR_JSON_FILE)
 
     if not baseline:
-        # Fallback: sample reference row live from this frame
-        logger.debug("color.json centroids unavailable — falling back to live reference extraction")
-        ref_positions = grid_cfg.get_reference_positions()
-        if ref_positions:
-            baseline = build_reference_baseline(img, ref_positions)
+        logger.warning("No colour baseline available — skipping colour classification")
+        return {}
 
-    if not baseline:
-        logger.warning("No color baseline available — skipping color classification")
-        return summary, sample_hits, classified_levels
-
-    logger.debug("Color baseline loaded: {} levels", len(baseline))
-
-    # ── Step 2: two-phase max-overlap bbox assignment ────────────────────
-    # Phase 1 — find the best-fitting slot for every detected box
-    img_h, img_w = img.shape[:2]
-    raw_assignments: list = []   # [(slot_id, overlap_px, x1, y1, x2, y2)]
-
-    for box in boxes_orig:
-        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-
-        slot_id, overlap_px = grid_cfg.assign_bbox(
-            x1, y1, x2, y2, img_shape=(img_h, img_w)
-        )
-        if slot_id is None:
-            logger.debug("Box [{},{},{},{}] dropped — no slot match (IoA < 30%)", x1, y1, x2, y2)
-            continue
-        if slot_id in grid_cfg.reference_slots:
-            logger.debug("Box [{},{},{},{}] → {} (reference row, skipped)", x1, y1, x2, y2, slot_id)
-            continue
-
-        logger.debug("Box [{},{},{},{}] → slot {} (overlap={:.0f}px)", x1, y1, x2, y2, slot_id, overlap_px)
-        raw_assignments.append((slot_id, overlap_px, x1, y1, x2, y2))
-
-    # Phase 2 — greedy assignment sorted by overlap area (largest wins)
-    # When two boxes compete for the same physical base slot, the box with
-    # more overlap area claims it; the other is discarded.
-    raw_assignments.sort(key=lambda a: a[1], reverse=True)
-
-    claimed_bases: set = set()
-
-    for slot_id, overlap_px, x1, y1, x2, y2 in raw_assignments:
-        base = slot_id.split("_")[0]   # physical slot, e.g. "A11_0" → "A11"
-        if base in claimed_bases:
-            logger.debug("Box → {} dropped — physical slot {} already claimed by higher-overlap box", slot_id, base)
-            continue   # physical slot already claimed by a better-fitting box
-
-        claimed_bases.add(base)
-
-        cx     = int((x1 + x2) / 2)
-        cy     = int((y1 + y2) / 2)
-        radius = int((x2 - x1) / 2)
-        sample_hits[slot_id] = {"cx": cx, "cy": cy, "radius": radius}
-
-        # ── Step 3: extract median Lab from bottle centre (inner crop) ────
-        lab = extract_bottle_color(img, cx, cy, radius)
+    classified: dict[int, int] = {}
+    for pos_idx, hit in slot_hits.items():
+        lab = extract_bottle_color(img, hit["cx"], hit["cy"], hit["radius"])
         if lab is None:
             continue
-
-        # ── Step 4: nearest-centroid assignment (≡ K-means assign step) ──
         level, delta_e, confident = classify_sample(lab, baseline)
         if level is not None:
-            classified_levels[slot_id] = level
-            summary[f"L{level}"] = summary.get(f"L{level}", 0) + 1
-            logger.debug(
-                "Slot {} → L{} (ΔE={:.1f}, confident={}, overlap={}px)",
-                slot_id, level, delta_e, confident, overlap_px,
-            )
+            classified[pos_idx] = level
+            logger.debug("Slot {} → L{} (ΔE={:.1f}, confident={})",
+                         pos_idx, level, delta_e, confident)
 
-    return summary, sample_hits, classified_levels
+    return classified
+
+
+def _build_ref_positions(
+    ref_centres: list[tuple[int, int]],
+    grid_spacing: float,
+) -> dict[int, list[tuple[int, int, int]]]:
+    """Map 15 ref centres → {level: [(cx, cy, radius), ...]} for build_reference_baseline.
+
+    Centres are ordered left→right (cols 1-15); 3 per level:
+        i=0,1,2 → level 0 … i=12,13,14 → level 4
+    """
+    radius = max(1, int(grid_spacing / 2))
+    positions: dict[int, list[tuple[int, int, int]]] = {}
+    for i, (cx, cy) in enumerate(ref_centres):
+        positions.setdefault(i // 3, []).append((cx, cy, radius))
+    return positions
+
+
+def _build_slot_rows(
+    slot_hits: dict[int, dict],
+    classified: dict[int, int],
+) -> list[dict]:
+    """
+    Build the 195-element list of slot dicts for DB + JSON response.
+
+    Each dict: {position_index, color_result, is_error}
+    """
+    rows: list[dict] = []
+    for pos_idx in range(1, 196):
+        if pos_idx not in slot_hits:
+            rows.append({"position_index": pos_idx, "color_result": None, "is_error": False})
+            continue
+
+        level    = classified.get(pos_idx)
+        expected = _expected_level_from_position(pos_idx)
+        is_error = (level is not None) and (level != expected)
+        rows.append({
+            "position_index": pos_idx,
+            "color_result":   level,
+            "is_error":       is_error,
+        })
+    return rows
 
 
 # ─── Telegram helpers ─────────────────────────────────────────────────────────
 
 def _build_thai_caption(
     now: datetime,
+    tray_name: str,
     count: int,
-    color_summary: dict,
-    errors: dict,
+    color_counts: dict[int, int],
+    error_count: int,
     server_url: str,
 ) -> str:
-    """
-    Build the Thai-language Telegram photo caption.
-
-    Thai Buddhist year = Gregorian year + 543.
-    Telegram photo captions are capped at 1024 chars; this template
-    stays safely below that even with a full error list.
-    """
     thai_year = now.year + 543
     date_str  = f"{now.day}/{now.month}/{thai_year}"
     time_str  = now.strftime("%H:%M:%S")
 
     lines = [
-        "📊 รายงานการตรวจสีปัสสาวะ",
+        "📊 รายงานการตรวจสีปัสสาวะ (V2)",
         f"🗓 วันที่: {date_str} | ⏱ เวลา: {time_str}",
+        f"🔖 ถาด: {tray_name}",
         "",
         f"✅ ตรวจพบขวดทั้งหมด: {count} ขวด",
         "🎨 สรุปผลตามกลุ่มสี:",
     ]
     for i in range(5):
-        n = color_summary.get(f"L{i}", 0)
-        lines.append(f"  • สี {i}: {n} นาย")
+        lines.append(f"  • สี {i}: {color_counts.get(i, 0)} นาย")
 
-    dup_list = errors.get("duplicate_slots",   [])
-    wc_list  = errors.get("wrong_color_slots", [])
-    if dup_list or wc_list:
-        lines.append("")
-        lines.append("⚠️ ข้อผิดพลาดที่พบ:")
-        for d in dup_list:
-            slots_str = ", ".join(d.get("slots", []))
-            lines.append(f"  • ช่อง {d['base']}: วางซ้ำ ({slots_str})")
-        for wc in wc_list:
-            lines.append(
-                f"  • ช่อง {wc['slot_id']}: สีผิด"
-                f" (คาดสี {wc['expected']} — พบสี {wc['actual']})"
-            )
+    if error_count:
+        lines.append(f"\n⚠️ พบข้อผิดพลาด: {error_count} ช่อง")
 
     dashboard_url = server_url.rstrip("/") + "/dashboard"
     lines.extend(["", f"🔗 ดูรายละเอียดเพิ่มเติม: {dashboard_url}"])
@@ -431,20 +380,7 @@ def _send_telegram_report(
     token: str,
     chat_id: str,
 ) -> None:
-    """
-    Send a JPEG image with a Thai caption via the Telegram Bot API.
-
-    Uses multipart/form-data sendPhoto.  Raises RuntimeError on API failure
-    so the caller can log it without crashing the /analyze endpoint.
-
-    Args:
-        img_bytes:  Raw JPEG bytes (from generate_visual_report or log file).
-        caption:    Up to 1024-char UTF-8 caption string.
-        token:      Telegram bot token (from TELEGRAM_TOKEN in .env).
-        chat_id:    Target chat / group ID (from TELEGRAM_CHAT_ID in .env).
-    """
     import requests as _req
-
     url  = f"https://api.telegram.org/bot{token}/sendPhoto"
     resp = _req.post(
         url,
@@ -453,33 +389,45 @@ def _send_telegram_report(
         timeout=30,
     )
     if not resp.ok:
-        raise RuntimeError(
-            f"Telegram API returned {resp.status_code}: {resp.text[:300]}"
-        )
+        raise RuntimeError(f"Telegram API returned {resp.status_code}: {resp.text[:300]}")
     logger.debug("Telegram report sent to chat_id={}", chat_id)
 
 
-# ─── FastAPI application ──────────────────────────────────────────────────────
+# ─── Maintenance helpers ──────────────────────────────────────────────────────
 
-def _migrate_db() -> None:
-    """Add columns that were introduced after initial deployment."""
-    new_columns = [
-        ("errors_json",        "TEXT"),
-        ("log_image_filename", "TEXT"),
-        ("detailed_results",   "TEXT"),
+def _run_migrations() -> None:
+    """Idempotent ALTER TABLE migrations — safe on repeated startup."""
+    is_pg    = not cfg.database_url.startswith("sqlite")
+    json_t   = "JSONB" if is_pg else "TEXT"
+    bool_t   = "BOOLEAN DEFAULT FALSE" if is_pg else "INTEGER DEFAULT 0"
+
+    migrations = [
+        ("trays", "layout_json",    json_t),
+        ("trays", "tray_name",      "VARCHAR"),
+        ("trays", "is_active",      bool_t),
+        ("trays", "rows",           "INTEGER DEFAULT 13"),
+        ("trays", "cols",           "INTEGER DEFAULT 15"),
     ]
-    with _engine.connect() as conn:
-        for col_name, col_type in new_columns:
-            try:
-                conn.execute(text(f"ALTER TABLE results ADD COLUMN {col_name} {col_type}"))
+    for table, col, col_type in migrations:
+        try:
+            with _engine.connect() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
                 conn.commit()
-                logger.info("DB migration: added column '{}'", col_name)
-            except Exception:
-                pass  # column already exists
+                logger.info("Migration: added {}.{}", table, col)
+        except Exception:
+            pass   # column already exists
+
+
+def _generate_default_layout(rows: int, cols: int) -> dict[str, str]:
+    """Build default {"1": "A01", ...} mapping for a rows×cols tray."""
+    return {
+        str((r - 1) * cols + c): f"{chr(64 + r)}{c:02d}"
+        for r in range(1, rows + 1)
+        for c in range(1, cols + 1)
+    }
 
 
 def _cleanup_old_logs(log_dir: Path, max_age_days: int = 30) -> None:
-    """Delete visual log JPEGs older than *max_age_days* days."""
     if not log_dir.exists():
         return
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
@@ -496,40 +444,44 @@ def _cleanup_old_logs(log_dir: Path, max_age_days: int = 30) -> None:
         logger.info("Cleanup: removed {} visual log(s) older than {} days", deleted, max_age_days)
 
 
+# ─── FastAPI lifespan ─────────────────────────────────────────────────────────
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # ── Startup ──────────────────────────────────────────────────────────
+    # Startup
     _Base.metadata.create_all(_engine)
-    _migrate_db()
+    _run_migrations()
     Path(cfg.captures_dir).mkdir(parents=True, exist_ok=True)
     Path(cfg.visual_log_dir).mkdir(parents=True, exist_ok=True)
     _cleanup_old_logs(Path(cfg.visual_log_dir), max_age_days=30)
     app.state.yolo = _YoloInference()
-    logger.success("Server startup complete — listening on {}:{}", cfg.server_host, cfg.server_port)
+
+    from utils.grid_detector import GridDetector
+    app.state.grid_detector = GridDetector(cfg.unet_model_path)
+
+    logger.success("Server V2 startup complete — {}:{}", cfg.server_host, cfg.server_port)
     yield
-    # ── Shutdown ─────────────────────────────────────────────────────────
     logger.info("Server shutting down")
 
 
-app = FastAPI(title="Urine Analysis API", version="0.3.0", lifespan=_lifespan)
+# ─── FastAPI app ──────────────────────────────────────────────────────────────
 
-# Static files (captured annotated images)
+app = FastAPI(title="Urine Analysis API", version="2.0.0", lifespan=_lifespan)
+
 _static_dir = Path(cfg.captures_dir)
 _static_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(_static_dir.parent)), name="static")
 
-# Project-level assets (logo, favicon)
 _assets_dir = Path(__file__).resolve().parent.parent / "assets"
 if _assets_dir.exists():
     app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
 
-# Jinja2 templates
 _templates_dir = Path(__file__).parent / "web" / "templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
 templates.env.filters["fromjson"] = json.loads
 
 
-# ─── Auth dependency ──────────────────────────────────────────────────────────
+# ─── Auth ─────────────────────────────────────────────────────────────────────
 
 async def _require_auth(x_auth_token: str = Header(..., alias="X-Auth-Token")):
     if x_auth_token != cfg.api_key:
@@ -544,163 +496,457 @@ async def health():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
 
 
-@app.post("/analyze", dependencies=[Depends(_require_auth)])
-async def analyze(file: UploadFile = File(...)):
-    """
-    Accept a JPEG from the Pi, run YOLO inference + slot-based analysis, persist, return JSON.
-    """
-    img_bytes = await file.read()
-    if not img_bytes:
-        raise HTTPException(status_code=400, detail="Empty file")
-
-    # Generate filenames before inference so timestamps match the log record
-    now       = datetime.utcnow()
-    image_id  = str(uuid.uuid4())
-    ts_str    = now.strftime("%Y%m%d_%H%M%S")
-
-    # Dashboard thumbnail  →  /static/captures/{uuid}.jpg
-    captures    = Path(cfg.captures_dir)
-    captures.mkdir(parents=True, exist_ok=True)
-    thumb_path  = captures / f"{image_id}.jpg"
-    static_url  = f"/static/captures/{image_id}.jpg"
-
-    # Detailed visual log  →  logs/img/URINE_SCAN_{timestamp}.jpg
-    log_dir     = Path(cfg.visual_log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path    = log_dir / f"URINE_SCAN_{ts_str}.jpg"
-
-    try:
-        count, color_summary, annotated, errors, validation_results = app.state.yolo.detect(
-            img_bytes, log_path=log_path
-        )
-    except Exception as exc:
-        logger.exception("Inference failed")
-        raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
-
-    # Save dashboard thumbnail
-    cv2.imwrite(str(thumb_path), annotated, [cv2.IMWRITE_JPEG_QUALITY, 88])
-
-    # Build DB-safe detailed_results: strip pixel coords (cx/cy/radius) from slots
-    db_slots = {
-        sid: {k: v for k, v in info.items() if k not in ("cx", "cy", "radius")}
-        for sid, info in validation_results.get("slots", {}).items()
-    }
-    detailed_results_doc = {
-        "slots":             db_slots,
-        "duplicate_slots":   validation_results.get("duplicate_slots",   []),
-        "wrong_color_slots": validation_results.get("wrong_color_slots", []),
-    }
-
-    # Persist to SQLite
-    with _Session() as session:
-        row = AnalysisResult(
-            timestamp=now,
-            count=count,
-            color_json=json.dumps(color_summary),
-            errors_json=json.dumps(errors),
-            image_path=static_url,
-            log_image_filename=str(log_path),
-            detailed_results=json.dumps(detailed_results_doc),
-        )
-        session.add(row)
-        session.commit()
-
-    logger.success(
-        "Analysis done — count={}, colors={}, dups={}, wc={}, log={}",
-        count,
-        color_summary,
-        len(errors.get("duplicate_slots", [])),
-        len(errors.get("wrong_color_slots", [])),
-        log_path.name,
-    )
-
-    # ── Telegram report (non-blocking, non-critical) ──────────────────────
-    if cfg.telegram_token and cfg.telegram_chat_id:
-        try:
-            caption = _build_thai_caption(
-                now=now,
-                count=count,
-                color_summary=color_summary,
-                errors=errors,
-                server_url=cfg.server_url,
-            )
-            # The visual log is always written by detect() above; read it back
-            report_bytes = log_path.read_bytes()
-            _send_telegram_report(
-                img_bytes=report_bytes,
-                caption=caption,
-                token=cfg.telegram_token,
-                chat_id=cfg.telegram_chat_id,
-            )
-        except Exception as exc:
-            logger.warning("Telegram report failed (non-critical): {}", exc)
-
-    return {
-        "status":               "success",
-        "total_physical_count": count,         # unique occupied slots (for TM1637)
-        "count":                count,         # legacy alias
-        "raw_detection_count":  validation_results.get("raw_detection_count", count),
-        "summary":              color_summary, # {"L0": n, …, "L4": n}
-        "color_summary":        color_summary, # legacy alias
-        "errors":               errors,
-        "detailed_results":     detailed_results_doc,
-        "timestamp":            now.isoformat(),
-        "image_id":             image_id,
-    }
-
-
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/dashboard")
 
 
+@app.post("/analyze", dependencies=[Depends(_require_auth)])
+async def analyze(file: UploadFile = File(...)):
+    """
+    V2 analysis pipeline (active-tray driven):
+      Requires an active tray selected via the Tray Management UI.
+      Phase A: ArUco detection (informational only)
+      Phase B/C: U-Net → skeleton → slot centres
+      Phase D: YOLO → slot matching → K-means colour classification
+      Phase E: wrong-colour-zone validation
+      DB: insert ScanSession + TestSlot rows linked to the active tray
+    """
+    img_bytes = await file.read()
+    if not img_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    # Require an active tray
+    with _Session() as session:
+        active_tray = session.query(Tray).filter_by(is_active=True).first()
+        if active_tray is None:
+            raise HTTPException(
+                status_code=400,
+                detail="กรุณาเลือกถาดก่อนสแกน (No active tray selected)",
+            )
+        active_tray_id = active_tray.id
+        layout_map: dict[str, str] = active_tray.layout_json or {}
+        tray_name = active_tray.tray_name or f"Tray-{active_tray.id}"
+
+    now      = datetime.utcnow()
+    image_id = str(uuid.uuid4())
+    ts_str   = now.strftime("%Y%m%d_%H%M%S")
+
+    captures   = Path(cfg.captures_dir)
+    captures.mkdir(parents=True, exist_ok=True)
+    thumb_path = captures / f"{image_id}.jpg"
+    static_url = f"/static/captures/{image_id}.jpg"
+
+    log_dir  = Path(cfg.visual_log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"URINE_SCAN_{ts_str}.jpg"
+
+    try:
+        nparr    = np.frombuffer(img_bytes, np.uint8)
+        img_full = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_full is None:
+            raise ValueError("Invalid image data")
+
+        # Phase B/C
+        grid_result  = app.state.grid_detector.detect_intersections(
+            img_full,
+            input_size=cfg.unet_input_size,
+            mask_threshold=cfg.unet_mask_threshold,
+        )
+        slot_centers = grid_result.sample_centres
+
+        # Build live colour baseline from reference row
+        from utils.color_analysis import build_reference_baseline
+        ref_positions = _build_ref_positions(grid_result.ref_centres, grid_result.grid_spacing)
+        live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
+        if not live_baseline:
+            logger.warning("/analyze: reference row extraction failed — falling back to color.json")
+
+        # Phase D — YOLO raw detection
+        _, boxes_orig = app.state.yolo.detect_raw(img_bytes)
+        slot_hits     = _match_detections_to_slots(boxes_orig, slot_centers)
+        classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
+
+    except Exception as exc:
+        logger.exception("V2 inference failed")
+        raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
+
+    # Phase E — wrong-colour-zone validation (per position_index)
+    slot_rows   = _build_slot_rows(slot_hits, classified)
+    error_slots = [r for r in slot_rows if r["is_error"]]
+    count       = len(slot_hits)
+    error_count = len(error_slots)
+
+    color_counts: dict[int, int] = {i: 0 for i in range(5)}
+    for lvl in classified.values():
+        if lvl is not None:
+            color_counts[lvl] = color_counts.get(lvl, 0) + 1
+
+    # Build validation_results for annotation (error slots get labels)
+    validation_results_compat: dict = {
+        "slots": {
+            str(r["position_index"]): {
+                "cx":          slot_hits[r["position_index"]]["cx"] if r["position_index"] in slot_hits else 0,
+                "cy":          slot_hits[r["position_index"]]["cy"] if r["position_index"] in slot_hits else 0,
+                "radius":      slot_hits[r["position_index"]]["radius"] if r["position_index"] in slot_hits else 30,
+                "level":       r["color_result"],
+                "ok":          not r["is_error"],
+                "wrong_color": r["is_error"],
+                "duplicate":   False,
+            }
+            for r in slot_rows if r["color_result"] is not None
+        },
+        "duplicate_slots":     [],
+        "wrong_color_slots":   [
+            {"slot_id": str(r["position_index"]),
+             "expected": _expected_level_from_position(r["position_index"]),
+             "actual":   r["color_result"]}
+            for r in error_slots
+        ],
+        "raw_detection_count": len(boxes_orig),
+    }
+
+    # Dashboard thumbnail
+    from app.shared.processor import _render_annotated_canvas
+    thumb_canvas = _render_annotated_canvas(
+        img_full, validation_results_compat, None, slot_centers, layout_map
+    )
+    cv2.imwrite(str(thumb_path), thumb_canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
+
+    # Visual log (best-effort)
+    try:
+        save_visual_log(
+            image=img_full,
+            validation_results=validation_results_compat,
+            grid_cfg=None,
+            filepath=log_path,
+            slot_centers=slot_centers,
+            layout_map=layout_map,
+        )
+    except Exception as exc:
+        logger.warning("save_visual_log failed (non-critical): {}", exc)
+
+    # DB write — ScanSession + 195 TestSlots linked to active tray
+    with _Session() as session:
+        scan = ScanSession(
+            tray_id=active_tray_id,
+            scanned_at=now,
+            image_raw_path=static_url,
+            image_annotated_path=str(log_path),
+            color_0=color_counts[0],
+            color_1=color_counts[1],
+            color_2=color_counts[2],
+            color_3=color_counts[3],
+            color_4=color_counts[4],
+            error_count=error_count,
+            is_clean=(error_count == 0),
+        )
+        session.add(scan)
+        session.flush()
+
+        session.bulk_insert_mappings(TestSlot, [
+            {
+                "session_id":     scan.id,
+                "position_index": r["position_index"],
+                "color_result":   r["color_result"],
+                "is_error":       r["is_error"],
+                "person_id":      None,
+            }
+            for r in slot_rows
+        ])
+        session.commit()
+        session_id = scan.id
+
+    logger.success(
+        "Analysis done — tray_id={}, count={}, errors={}, session_id={}",
+        active_tray_id, count, error_count, session_id,
+    )
+
+    # Telegram (non-blocking, non-critical)
+    if cfg.telegram_token and cfg.telegram_chat_id:
+        try:
+            caption = _build_thai_caption(
+                now=now, tray_name=tray_name, count=count,
+                color_counts=color_counts, error_count=error_count,
+                server_url=cfg.server_url,
+            )
+            report_bytes = log_path.read_bytes() if log_path.exists() else None
+            if report_bytes:
+                _send_telegram_report(
+                    img_bytes=report_bytes,
+                    caption=caption,
+                    token=cfg.telegram_token,
+                    chat_id=cfg.telegram_chat_id,
+                )
+        except Exception as exc:
+            logger.warning("Telegram report failed (non-critical): {}", exc)
+
+    # Build error coordinate strings for LCD client
+    error_coords = [
+        "R{:02d}C{:02d}".format(
+            (r["position_index"] - 1) // 15 + 1,
+            (r["position_index"] - 1) % 15  + 1,
+        )
+        for r in error_slots
+    ]
+
+    return {
+        "status":       "success",
+        "session_id":   session_id,
+        "tray_id":      active_tray_id,
+        "tray_name":    tray_name,
+        "count":        count,
+        "total_physical_count": count,
+        "summary": {f"L{i}": color_counts[i] for i in range(5)},
+        "is_clean":      error_count == 0,
+        "error_count":   error_count,
+        "errors": {
+            "duplicate_slots":  [],
+            "wrong_color_slots": error_coords,
+        },
+        "slots":         slot_rows,
+        "timestamp":     now.isoformat(),
+        "image_id":      image_id,
+    }
+
+
+# ─── Dashboard ────────────────────────────────────────────────────────────────
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     with _Session() as session:
-        results = (
-            session.query(AnalysisResult)
-            .order_by(AnalysisResult.timestamp.desc())
-            .limit(50)
-            .all()
+        latest_session = (
+            session.query(ScanSession)
+            .order_by(ScanSession.scanned_at.desc())
+            .first()
         )
-        total_scans = session.execute(text("SELECT COUNT(*) FROM results")).scalar() or 0
+        total_scans  = session.query(ScanSession).count()
+        active_tray  = session.query(Tray).filter_by(is_active=True).first()
 
-    latest_colors: dict[str, int] = {f"L{i}": 0 for i in range(5)}
-    latest_errors: dict           = {}
-    latest_image:  str | None     = None
-    thai_timestamp: str           = "—"
+    latest_colors          = {f"L{i}": 0 for i in range(5)}
+    latest_image: str | None = None
+    thai_timestamp           = "—"
+    active_tray_name         = active_tray.tray_name if active_tray else None
+    active_tray_id_ctx       = active_tray.id if active_tray else None
 
-    if results:
-        r = results[0]
-        latest_image = r.image_path
-        try:
-            latest_colors = json.loads(r.color_json) if r.color_json else latest_colors
-        except Exception:
-            pass
-        try:
-            latest_errors = json.loads(r.errors_json) if r.errors_json else {}
-        except Exception:
-            pass
-        ts = r.timestamp
-        thai_year = ts.year + 543
+    if latest_session:
+        latest_image  = latest_session.image_raw_path
+        latest_colors = {
+            "L0": latest_session.color_0,
+            "L1": latest_session.color_1,
+            "L2": latest_session.color_2,
+            "L3": latest_session.color_3,
+            "L4": latest_session.color_4,
+        }
+        ts = latest_session.scanned_at
+        thai_year      = ts.year + 543
         thai_timestamp = f"{ts.day}/{ts.month}/{thai_year} เวลา {ts.strftime('%H%M')}"
 
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
         context={
-            "results":        results,
-            "total_scans":    total_scans,
-            "latest_image":   latest_image,
-            "latest_colors":  latest_colors,   # {L0..L4: count}
-            "latest_errors":  latest_errors,   # {duplicate_slots, wrong_color_slots}
-            "thai_timestamp": thai_timestamp,
+            "total_scans":      total_scans,
+            "latest_image":     latest_image,
+            "latest_colors":    latest_colors,
+            "thai_timestamp":   thai_timestamp,
+            "active_tray_name": active_tray_name,
+            "active_tray_id":   active_tray_id_ctx,
+            "session_id":       latest_session.id if latest_session else None,
         },
     )
 
 
-# ─── Trend analysis ───────────────────────────────────────────────────────────
+@app.get("/api/latest")
+async def api_latest():
+    """
+    Return the most recent scan session with all 195 slot results.
+    Used by the interactive dashboard grid.
+    """
+    with _Session() as session:
+        scan = (
+            session.query(ScanSession)
+            .order_by(ScanSession.scanned_at.desc())
+            .first()
+        )
+        if scan is None:
+            return {"session": None, "tray": None, "slots": []}
+
+        tray_data = {
+            "id":        scan.tray.id,
+            "tray_name": scan.tray.tray_name,
+            "is_active": scan.tray.is_active,
+            "rows":      scan.tray.rows or 13,
+            "cols":      scan.tray.cols or 15,
+        } if scan.tray else None
+
+        session_data = {
+            "id":         scan.id,
+            "scanned_at": scan.scanned_at.isoformat(),
+            "color_0":    scan.color_0,
+            "color_1":    scan.color_1,
+            "color_2":    scan.color_2,
+            "color_3":    scan.color_3,
+            "color_4":    scan.color_4,
+            "error_count": scan.error_count,
+            "is_clean":   scan.is_clean,
+        }
+
+        slots_data = [
+            {
+                "position_index": s.position_index,
+                "color_result":   s.color_result,
+                "is_error":       s.is_error,
+            }
+            for s in sorted(scan.slots, key=lambda x: x.position_index)
+        ]
+
+    return {"session": session_data, "tray": tray_data, "slots": slots_data}
+
+
+# ─── Tray management page ─────────────────────────────────────────────────────
+
+@app.get("/trays", response_class=HTMLResponse)
+async def trays_page(request: Request):
+    with _Session() as session:
+        trays = session.query(Tray).order_by(Tray.created_at.desc()).all()
+        tray_list = [
+            {
+                "id":        t.id,
+                "tray_name": t.tray_name or f"Tray-{t.id}",
+                "rows":      t.rows or 13,
+                "cols":      t.cols or 15,
+                "is_active": bool(t.is_active),
+                "created_at": t.created_at.strftime("%d/%m/%Y") if t.created_at else "—",
+                "session_count": len(t.sessions),
+            }
+            for t in trays
+        ]
+    return templates.TemplateResponse(
+        request=request,
+        name="trays.html",
+        context={"trays": tray_list},
+    )
+
+
+# ─── Tray CRUD API ────────────────────────────────────────────────────────────
+
+@app.get("/api/trays")
+async def api_trays_list():
+    with _Session() as session:
+        trays = session.query(Tray).order_by(Tray.created_at.desc()).all()
+        return [
+            {
+                "id":        t.id,
+                "tray_name": t.tray_name or f"Tray-{t.id}",
+                "rows":      t.rows or 13,
+                "cols":      t.cols or 15,
+                "is_active": bool(t.is_active),
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            }
+            for t in trays
+        ]
+
+
+@app.post("/api/trays")
+async def api_trays_create(body: dict):
+    tray_name = str(body.get("tray_name", "")).strip() or None
+    rows      = int(body.get("rows", 13))
+    cols      = int(body.get("cols", 15))
+    layout    = body.get("layout_json") or _generate_default_layout(rows, cols)
+
+    with _Session() as session:
+        tray = Tray(
+            tray_name=tray_name,
+            rows=rows,
+            cols=cols,
+            total_slots=rows * cols,
+            dimension_info=f"{rows}x{cols}",
+            layout_json=layout,
+            is_active=False,
+        )
+        session.add(tray)
+        session.commit()
+        session.refresh(tray)
+        result = {
+            "id": tray.id,
+            "tray_name": tray.tray_name or f"Tray-{tray.id}",
+            "rows": tray.rows,
+            "cols": tray.cols,
+            "is_active": bool(tray.is_active),
+        }
+    logger.success("Tray created — id={}, name={}", result["id"], result["tray_name"])
+    return result
+
+
+@app.patch("/api/trays/{tray_id}")
+async def api_trays_update(tray_id: int, body: dict):
+    with _Session() as session:
+        tray = session.query(Tray).filter_by(id=tray_id).first()
+        if tray is None:
+            raise HTTPException(status_code=404, detail="Tray not found")
+
+        if "tray_name" in body:
+            tray.tray_name = str(body["tray_name"]).strip() or None
+        if "rows" in body or "cols" in body:
+            tray.rows = int(body.get("rows", tray.rows or 13))
+            tray.cols = int(body.get("cols", tray.cols or 15))
+            tray.total_slots  = tray.rows * tray.cols
+            tray.dimension_info = f"{tray.rows}x{tray.cols}"
+        if "layout_json" in body:
+            tray.layout_json = body["layout_json"] or _generate_default_layout(
+                tray.rows or 13, tray.cols or 15
+            )
+
+        session.commit()
+        result = {
+            "id": tray.id,
+            "tray_name": tray.tray_name or f"Tray-{tray.id}",
+            "rows": tray.rows,
+            "cols": tray.cols,
+            "is_active": bool(tray.is_active),
+        }
+    logger.info("Tray updated — id={}", tray_id)
+    return result
+
+
+@app.post("/api/trays/{tray_id}/activate")
+async def api_trays_activate(tray_id: int):
+    with _Session() as session:
+        target = session.query(Tray).filter_by(id=tray_id).first()
+        if target is None:
+            raise HTTPException(status_code=404, detail="Tray not found")
+        # Deactivate all, then activate the selected one
+        session.query(Tray).filter(Tray.is_active == True).update(  # noqa: E712
+            {"is_active": False}, synchronize_session=False
+        )
+        target.is_active = True
+        session.commit()
+        result = {
+            "id":        target.id,
+            "tray_name": target.tray_name or f"Tray-{target.id}",
+            "is_active": True,
+        }
+    logger.success("Active tray set — id={}, name={}", result["id"], result["tray_name"])
+    return result
+
+
+@app.delete("/api/trays/{tray_id}")
+async def api_trays_delete(tray_id: int):
+    with _Session() as session:
+        tray = session.query(Tray).filter_by(id=tray_id).first()
+        if tray is None:
+            raise HTTPException(status_code=404, detail="Tray not found")
+        if tray.is_active:
+            raise HTTPException(status_code=409, detail="Cannot delete the active tray")
+        session.delete(tray)
+        session.commit()
+    logger.info("Tray deleted — id={}", tray_id)
+    return {"deleted": tray_id}
+
+
+# ─── Trend ────────────────────────────────────────────────────────────────────
 
 @app.get("/trend", response_class=HTMLResponse)
 async def trend_page(request: Request):
@@ -709,11 +955,6 @@ async def trend_page(request: Request):
 
 @app.get("/api/trend")
 async def api_trend(from_date: str = None, to_date: str = None):
-    """
-    Return historical scan records as JSON for the trend chart.
-
-    from_date / to_date: Thai Buddhist date string "D/M/YYYY" (e.g. "1/1/2569").
-    """
     def _parse_thai(s: str) -> datetime | None:
         try:
             d, m, y = s.strip().split("/")
@@ -722,261 +963,95 @@ async def api_trend(from_date: str = None, to_date: str = None):
             return None
 
     with _Session() as session:
-        query = session.query(AnalysisResult).order_by(AnalysisResult.timestamp.asc())
-
+        query = session.query(ScanSession).order_by(ScanSession.scanned_at.asc())
         if from_date:
             dt = _parse_thai(from_date)
             if dt:
-                query = query.filter(AnalysisResult.timestamp >= dt)
+                query = query.filter(ScanSession.scanned_at >= dt)
         if to_date:
             dt = _parse_thai(to_date)
             if dt:
-                # include the whole day
-                query = query.filter(AnalysisResult.timestamp < dt + timedelta(days=1))
-
+                query = query.filter(ScanSession.scanned_at < dt + timedelta(days=1))
         rows = query.limit(500).all()
 
     records = []
     for r in rows:
-        colors: dict = {}
-        errors: dict = {}
-        try:
-            colors = json.loads(r.color_json) if r.color_json else {}
-        except Exception:
-            pass
-        try:
-            errors = json.loads(r.errors_json) if r.errors_json else {}
-        except Exception:
-            pass
-
-        ts = r.timestamp
+        ts        = r.scanned_at
         thai_year = ts.year + 543
         records.append({
-            "id":         r.id,
-            "timestamp":  ts.isoformat(),
-            "thai_date":  f"{ts.day}/{ts.month}/{thai_year}",
-            "count":      r.count or 0,
-            "colors":     colors,
-            "n_errors":   (
-                len(errors.get("duplicate_slots",  [])) +
-                len(errors.get("wrong_color_slots", []))
-            ),
+            "id":        r.id,
+            "timestamp": ts.isoformat(),
+            "thai_date": f"{ts.day}/{ts.month}/{thai_year}",
+            "count":     (r.color_0 + r.color_1 + r.color_2 + r.color_3 + r.color_4),
+            "colors":    {"L0": r.color_0, "L1": r.color_1, "L2": r.color_2,
+                          "L3": r.color_3, "L4": r.color_4},
+            "n_errors":  r.error_count,
         })
 
     return {"data": records}
+
+
+@app.get("/api/sessions")
+async def api_sessions(tray_id: int = None, from_date: str = None, to_date: str = None,
+                       limit: int = 50, offset: int = 0):
+    """Paginated scan history, optionally filtered by tray_id and date range."""
+    def _parse_thai(s: str) -> datetime | None:
+        try:
+            d, m, y = s.strip().split("/")
+            return datetime(int(y) - 543, int(m), int(d))
+        except Exception:
+            return None
+
+    with _Session() as session:
+        query = session.query(ScanSession).order_by(ScanSession.scanned_at.desc())
+        if tray_id:
+            query = query.filter(ScanSession.tray_id == tray_id)
+        if from_date:
+            dt = _parse_thai(from_date)
+            if dt:
+                query = query.filter(ScanSession.scanned_at >= dt)
+        if to_date:
+            dt = _parse_thai(to_date)
+            if dt:
+                query = query.filter(ScanSession.scanned_at < dt + timedelta(days=1))
+        total = query.count()
+        rows  = query.offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "data": [
+            {
+                "id":          r.id,
+                "tray_id":     r.tray_id,
+                "tray_name":   r.tray.tray_name if r.tray else None,
+                "scanned_at":  r.scanned_at.isoformat(),
+                "count":       r.color_0 + r.color_1 + r.color_2 + r.color_3 + r.color_4,
+                "error_count": r.error_count,
+                "is_clean":    r.is_clean,
+            }
+            for r in rows
+        ],
+    }
 
 
 # ─── Settings ─────────────────────────────────────────────────────────────────
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
-    grid_path  = Path("grid_config.json")
-    color_path = Path("color.json")
-
-    grid_date   = None
-    color_date  = None
-    color_data: dict = {"baseline": {}, "bottles": {}}
-
-    if grid_path.exists():
-        try:
-            d = json.loads(grid_path.read_text())
-            grid_date = d.get("system_metadata", {}).get("calibration_date", "unknown")
-        except Exception:
-            grid_date = "invalid"
-
-    if color_path.exists():
-        try:
-            d = json.loads(color_path.read_text())
-            color_date = d.get("calibration_date", "unknown")
-            color_data = d
-        except Exception:
-            color_date = "invalid"
-
-    # Latest capture image URL
-    latest_capture: str | None = None
-    captures_dir = Path(cfg.captures_dir)
-    if captures_dir.exists():
-        imgs = sorted(captures_dir.glob("*.jpg"),
-                      key=lambda p: p.stat().st_mtime, reverse=True)
-        if imgs:
-            latest_capture = f"/static/captures/{imgs[0].name}"
-
-    # Thai timestamp for grid calibration date
-    thai_grid_date = "ยังไม่ได้ตั้งค่า"
-    if grid_date and grid_date not in ("unknown", "invalid"):
-        try:
-            from datetime import datetime as _dt
-            gd = _dt.strptime(grid_date, "%Y-%m-%d")
-            thai_grid_date = f"{gd.day}/{gd.month}/{gd.year + 543}"
-        except Exception:
-            thai_grid_date = grid_date
-
+    with _Session() as session:
+        active_tray = session.query(Tray).filter_by(is_active=True).first()
+        last_scan   = session.query(ScanSession).order_by(ScanSession.scanned_at.desc()).first()
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
         context={
-            "grid_date":      grid_date,
-            "color_date":     color_date,
-            "color_data":     color_data,
-            "latest_capture": latest_capture,
-            "thai_grid_date": thai_grid_date,
+            "active_tray":  active_tray.tray_name if active_tray else None,
+            "last_scan_at": last_scan.scanned_at.isoformat() if last_scan else None,
         },
     )
 
 
-@app.get("/api/latest-capture")
-async def api_latest_capture():
-    """Return the URL of the most recent captured image."""
-    captures_dir = Path(cfg.captures_dir)
-    if captures_dir.exists():
-        imgs = sorted(captures_dir.glob("*.jpg"),
-                      key=lambda p: p.stat().st_mtime, reverse=True)
-        if imgs:
-            return {"url": f"/static/captures/{imgs[0].name}"}
-    return {"url": None}
-
-
-@app.get("/api/settings/grid-corners")
-async def api_grid_corners():
-    """Return corners, grid_pts, and calibration_date from grid_config.json."""
-    try:
-        d = json.loads(Path("grid_config.json").read_text())
-        meta = d.get("system_metadata", {})
-        return {
-            "corners":          meta.get("corners", None),
-            "calibration_date": meta.get("calibration_date", None),
-            "grid_pts":         meta.get("grid_pts", None),
-        }
-    except Exception:
-        return {"corners": None, "calibration_date": None, "grid_pts": None}
-
-
-@app.post("/settings/grid")
-async def settings_grid(
-    file: UploadFile = File(...),
-    corners: str = Form(...),
-    grid_pts: str = Form(None),
-):
-    """
-    Receive a calibration image + 4 corner coordinates, compute grid polygons,
-    save grid_config.json.
-
-    corners:  JSON [[x,y]×4] TL, TR, BR, BL in original image pixel coords.
-    grid_pts: Optional JSON [14][17][2] — manually-adjusted intersection points
-              from the web line editor.  When supplied, polygons are computed
-              directly from these points instead of uniform bilinear spacing.
-    """
-    try:
-        corner_list = json.loads(corners)
-        if len(corner_list) != 4:
-            raise ValueError("Exactly 4 corners required")
-
-        from utils.calibration import _corners_to_grid_pts, compute_slot_polygons_from_grid, compute_sample_roi
-
-        if grid_pts:
-            # Use manually-adjusted grid from web line editor
-            gp_np = np.array(json.loads(grid_pts), dtype=np.float64)
-        else:
-            gp_np = _corners_to_grid_pts(corner_list)
-
-        reference_slots, slot_data = compute_slot_polygons_from_grid(gp_np)
-        sample_roi = compute_sample_roi(gp_np)
-
-        # Convert numpy arrays to serializable lists
-        def _to_list(obj):
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            if isinstance(obj, dict):
-                return {k: _to_list(v) for k, v in obj.items()}
-            if isinstance(obj, list):
-                return [_to_list(i) for i in obj]
-            return obj
-
-        calibration_date = datetime.utcnow().strftime("%Y-%m-%d")
-        grid_config = {
-            "system_metadata": {
-                "project_name":    "Urine Color Analysis",
-                "grid_dimensions": "16x14 lines",
-                "calibration_date": calibration_date,
-                "corners":         corner_list,
-                "grid_pts":        _to_list(gp_np),
-                "sample_roi":      sample_roi,
-            },
-            "reference_row": {
-                "slots": _to_list(reference_slots),
-            },
-            "main_grid": {
-                "slot_data": _to_list(slot_data),
-            },
-        }
-
-        Path("grid_config.json").write_text(json.dumps(grid_config, indent=2))
-        logger.success("grid_config.json updated via web UI — date={}", calibration_date)
-        return {"status": "ok", "calibration_date": calibration_date}
-
-    except Exception as exc:
-        logger.exception("settings/grid failed")
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-@app.post("/settings/colors")
-async def settings_colors(file: UploadFile = File(...)):
-    """
-    Receive an image containing the reference-row bottles, extract Lab colors
-    for all 5 levels, save color.json.
-
-    Requires grid_config.json to already exist (to know reference positions).
-    """
-    try:
-        from utils.grid import GridConfig
-        from utils.color_analysis import build_reference_baseline, extract_bottle_color
-
-        grid_cfg = GridConfig()
-        ref_positions = grid_cfg.get_reference_positions()
-        if not ref_positions:
-            raise ValueError("grid_config.json has no reference positions — calibrate grid first")
-
-        img_bytes = await file.read()
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError("Invalid image data")
-
-        baseline = build_reference_baseline(img, ref_positions)
-        if not baseline:
-            raise ValueError("Could not extract any reference colors from the image")
-
-        def _lab_to_hex(lab_tuple):
-            L, a, b = [int(round(v)) for v in lab_tuple]
-            lab_pixel = np.array([[[L, a, b]]], dtype=np.uint8)
-            bgr = cv2.cvtColor(lab_pixel, cv2.COLOR_Lab2BGR)[0][0]
-            return "#{:02x}{:02x}{:02x}".format(int(bgr[2]), int(bgr[1]), int(bgr[0]))
-
-        calibration_date = datetime.utcnow().strftime("%Y-%m-%d")
-        color_data: dict = {"calibration_date": calibration_date, "baseline": {}}
-
-        for level, lab_tuple in sorted(baseline.items()):
-            color_data["baseline"][str(level)] = {
-                "lab": list(lab_tuple),
-                "hex": _lab_to_hex(lab_tuple),
-            }
-
-        Path("color.json").write_text(json.dumps(color_data, indent=2))
-        logger.success("color.json updated via web UI — {} levels extracted", len(baseline))
-
-        # Return swatches for preview in the browser
-        swatches = [
-            {"level": lvl, "hex": info["hex"], "lab": info["lab"]}
-            for lvl, info in color_data["baseline"].items()
-        ]
-        return {"status": "ok", "calibration_date": calibration_date, "swatches": swatches}
-
-    except Exception as exc:
-        logger.exception("settings/colors failed")
-        raise HTTPException(status_code=400, detail=str(exc))
-
-
-# ─── Test page ───────────────────────────────────────────────────────────────
+# ─── Test page ────────────────────────────────────────────────────────────────
 
 @app.get("/test", response_class=HTMLResponse)
 async def test_page(request: Request):
@@ -986,35 +1061,21 @@ async def test_page(request: Request):
 @app.post("/api/test-upload")
 async def api_test_upload(file: UploadFile = File(...)):
     """
-    Manual test endpoint — runs the full analysis pipeline on an uploaded image
-    and returns JSON + a URL to the annotated visual-log image.
-
-    Differences from /analyze:
-      • No X-Auth-Token required (browser upload)
-      • Result is NOT persisted to the database
-      • Telegram report is NOT sent
-      • Annotated image saved to app/web/static/test/ (served via /static/test/<uuid>.jpg)
+    Manual test — full V2 pipeline without DB write or Telegram.
     """
     img_bytes = await file.read()
     if not img_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    # Annotated result lives inside the existing /static mount so the browser
-    # can load it directly:  app/web/static/test/{uuid}.jpg → /static/test/{uuid}.jpg
     test_dir = Path(cfg.captures_dir).parent / "test"
     test_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Color-verification save ───────────────────────────────────────────────
-    # Decode the received JPEG with PIL (no BGR/RGB gymnastics) and save it as
-    # test_rgb.jpg.  Open this file in any viewer to confirm the colours look
-    # natural before the OpenCV pipeline touches the image.
     try:
         import io as _io
         from PIL import Image as _PILImage
-        _pil_img = _PILImage.open(_io.BytesIO(img_bytes))
+        _pil_img  = _PILImage.open(_io.BytesIO(img_bytes))
         _rgb_path = test_dir / "test_rgb.jpg"
         _pil_img.save(str(_rgb_path), format="JPEG", quality=95)
-        logger.debug("Color-verification image saved → {}", _rgb_path)
     except Exception as _exc:
         logger.warning("Could not save test_rgb.jpg: {}", _exc)
 
@@ -1022,44 +1083,99 @@ async def api_test_upload(file: UploadFile = File(...)):
     log_path  = test_dir / f"{image_id}.jpg"
 
     try:
-        count, color_summary, _annotated, errors, validation_results = app.state.yolo.detect(
-            img_bytes, log_path=log_path
+        nparr    = np.frombuffer(img_bytes, np.uint8)
+        img_full = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img_full is None:
+            raise ValueError("Invalid image data")
+
+        grid_result  = app.state.grid_detector.detect_intersections(
+            img_full,
+            input_size=cfg.unet_input_size,
+            mask_threshold=cfg.unet_mask_threshold,
         )
+        slot_centers = grid_result.sample_centres
+
+        from utils.color_analysis import build_reference_baseline
+        ref_positions = _build_ref_positions(grid_result.ref_centres, grid_result.grid_spacing)
+        live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
+        if not live_baseline:
+            logger.warning("/api/test-upload: reference row extraction failed — falling back to color.json")
+
+        _, boxes_orig = app.state.yolo.detect_raw(img_bytes)
+        slot_hits     = _match_detections_to_slots(boxes_orig, slot_centers)
+        classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
+
     except Exception as exc:
         logger.exception("Test inference failed")
         raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
 
-    image_url = f"/static/test/{image_id}.jpg"
-    logger.info(
-        "Test upload — count={}, dups={}, wc={}, image={}",
-        count,
-        len(errors.get("duplicate_slots",   [])),
-        len(errors.get("wrong_color_slots", [])),
-        image_id,
-    )
+    slot_rows   = _build_slot_rows(slot_hits, classified)
+    error_slots = [r for r in slot_rows if r["is_error"]]
+    count       = len(slot_hits)
+    color_counts: dict[int, int] = {i: 0 for i in range(5)}
+    for lvl in classified.values():
+        if lvl is not None:
+            color_counts[lvl] = color_counts.get(lvl, 0) + 1
 
-    # Strip pixel coords (cx/cy/radius) from per-slot detail — not needed in browser response
-    detail_slots = {
-        sid: {k: v for k, v in info.items() if k not in ("cx", "cy", "radius")}
-        for sid, info in validation_results.get("slots", {}).items()
-    }
+    # Save annotated visual log
+    try:
+        validation_results_compat = {
+            "slots": {
+                str(r["position_index"]): {
+                    "cx":          slot_hits[r["position_index"]]["cx"] if r["position_index"] in slot_hits else 0,
+                    "cy":          slot_hits[r["position_index"]]["cy"] if r["position_index"] in slot_hits else 0,
+                    "radius":      slot_hits[r["position_index"]]["radius"] if r["position_index"] in slot_hits else 30,
+                    "level":       r["color_result"],
+                    "ok":          not r["is_error"],
+                    "wrong_color": r["is_error"],
+                    "duplicate":   False,
+                }
+                for r in slot_rows if r["color_result"] is not None
+            },
+            "duplicate_slots":   [],
+            "wrong_color_slots": [{"slot_id": str(r["position_index"]),
+                                   "expected": _expected_level_from_position(r["position_index"]),
+                                   "actual": r["color_result"]}
+                                  for r in error_slots],
+            "raw_detection_count": len(boxes_orig),
+        }
+        save_visual_log(
+            image=img_full,
+            validation_results=validation_results_compat,
+            grid_cfg=None,
+            filepath=log_path,
+            slot_centers=slot_centers,
+            layout_map={},
+        )
+    except Exception as exc:
+        logger.warning("Test visual log failed: {}", exc)
+
+    image_url = f"/static/test/{image_id}.jpg"
+    logger.info("Test upload — count={}, errors={}", count, len(error_slots))
+
+    error_coords = [
+        "R{:02d}C{:02d}".format(
+            (r["position_index"] - 1) // 15 + 1,
+            (r["position_index"] - 1) % 15  + 1,
+        )
+        for r in error_slots
+    ]
 
     return {
-        "status":              "success",
-        "count":               count,
-        "raw_detection_count": validation_results.get("raw_detection_count", count),
-        "summary":             color_summary,
-        "errors":              errors,
-        "image_url":           image_url,
-        "detailed_results": {
-            "slots":             detail_slots,
-            "duplicate_slots":   validation_results.get("duplicate_slots",   []),
-            "wrong_color_slots": validation_results.get("wrong_color_slots", []),
+        "status":    "success",
+        "count":     count,
+        "summary":   {f"L{i}": color_counts[i] for i in range(5)},
+        "is_clean":  len(error_slots) == 0,
+        "errors": {
+            "duplicate_slots":  [],
+            "wrong_color_slots": error_coords,
         },
+        "slots":     slot_rows,
+        "image_url": image_url,
     }
 
 
-# ─── Runner (called from main.py) ────────────────────────────────────────────
+# ─── Runner ───────────────────────────────────────────────────────────────────
 
 def run_server():
     import uvicorn

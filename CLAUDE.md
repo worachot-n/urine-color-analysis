@@ -7,12 +7,12 @@ Read this file before modifying any file in this repository.
 
 ## Project Overview
 
-A distributed urine sample analysis system. Bottles of collected urine are placed on a physical grid. A camera captures the grid; a YOLO model detects and counts bottles; CIE Lab color analysis classifies each bottle's hydration level (L0–L4). Results are stored in SQLite, shown on a web dashboard, and reported via Telegram.
+A distributed urine sample analysis system. Bottles of collected urine are placed on a physical grid tray. A camera captures the grid; a U-Net model segments grid lines to locate 195 slot centres; YOLO detects bottles in those slots; CIE Lab color analysis classifies each bottle's hydration level (L0–L4). Results are stored in PostgreSQL (SQLite for dev), shown on an interactive web dashboard, and reported via Telegram.
 
 | Role | Hardware | Responsibility |
 |------|----------|----------------|
-| **Client** | Raspberry Pi 4B | Capture image, trigger via GPIO, control relay + LCD + TM1637, POST to server |
-| **Server** | Ubuntu PC | FastAPI, YOLO inference (PyTorch), color classification, SQLite, web dashboard |
+| **Client** | Raspberry Pi 4B | Undistort frame, capture, trigger via GPIO, control relay + LCD + TM1637, POST to server |
+| **Server** | Ubuntu PC | FastAPI, U-Net grid detection, YOLO inference (PyTorch), color classification, PostgreSQL, web dashboard |
 
 Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 
@@ -24,13 +24,16 @@ Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 |-------|----------------|
 | Package manager | `uv` (never `pip install`) |
 | Server framework | FastAPI + Uvicorn |
-| AI inference | PyTorch / `ultralytics` YOLO — **not OpenVINO** |
+| Grid segmentation | `segmentation_models_pytorch` — U-Net + ResNet-34 backbone |
+| Bottle detection | PyTorch / `ultralytics` YOLO — **not OpenVINO** |
+| Line fitting | `scikit-image` (skeletonize), `scipy` (ndimage), OpenCV Hough |
 | Image processing | OpenCV (`cv2`) + Pillow (Thai text rendering) |
-| Database | SQLAlchemy + SQLite |
+| Database | SQLAlchemy + PostgreSQL (SQLite fallback via `DATABASE_URL`) |
 | Web templates | Jinja2 (base: `layout.html`) |
 | Config | `pydantic-settings` loading `configs/config.toml` + `settings.yaml` + `.env` |
 | Logging | `loguru` — use throughout, **never `print()`** |
-| Pi camera | `picamera2` |
+| Pi camera | `picamera2` (libcamera) |
+| Pi undistortion | `cv2` + `configs/camera_params.yaml` — lens correction on Pi before POST |
 | Pi GPIO | `RPi.GPIO` (BCM mode) |
 | Pi display | `rpi-lcd` (I2C LCD) + `raspberrypi-tm1637` (7-segment) |
 | Pi relay | `RPi.GPIO` outputs — 3-channel active-LOW relay module |
@@ -43,44 +46,49 @@ Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 
 ```
 urine-color-analysis/
-├── main.py                       # CLI entry — --role client | server
+├── main.py                         # CLI entry — --role client | server
 ├── app/
-│   ├── server_app.py             # FastAPI app — YOLO, color, DB, dashboard, settings
-│   ├── client_app.py             # Pi loop — GPIO, relay, camera, LCD, TM1637, POST
+│   ├── server_app.py               # FastAPI app — U-Net, YOLO, color, DB, dashboard, API
+│   ├── client_app.py               # Pi loop — GPIO, relay, camera, undistort, LCD, TM1637, POST
 │   ├── shared/
-│   │   ├── config.py             # Settings class (pydantic-settings)
-│   │   └── processor.py          # crop_sample_roi(), letterbox, scale_coords,
-│   │                             #   visual log, slot validation
+│   │   ├── config.py               # Settings class (pydantic-settings)
+│   │   └── processor.py            # crop_sample_roi(), letterbox, scale_coords, visual log
 │   └── web/
 │       ├── templates/
-│       │   ├── layout.html       # Base template (nav + hamburger, 4 links)
-│       │   ├── dashboard.html    # Extends layout.html — scan history
-│       │   ├── trend.html        # Extends layout.html — historical chart
-│       │   ├── settings.html     # Extends layout.html — two calibration tabs
-│       │   └── test.html         # Extends layout.html — manual upload test page
+│       │   ├── layout.html         # Base template (nav + hamburger, 5 links)
+│       │   ├── dashboard.html      # Interactive dynamic CSS grid (rows×cols from tray)
+│       │   ├── trays.html          # Tray management — create, activate, edit, delete
+│       │   ├── trend.html          # Extends layout.html — historical chart
+│       │   ├── settings.html       # Extends layout.html — two calibration tabs
+│       │   └── test.html           # Extends layout.html — manual upload test page
 │       └── static/
-│           ├── settings.js       # Canvas corner-picker for grid calibration
-│           ├── captures/         # Annotated JPEGs served at /static/captures/
-│           └── test/             # Test-upload results at /static/test/
+│           ├── settings.js         # Canvas corner-picker for grid calibration
+│           ├── captures/           # Annotated JPEGs served at /static/captures/
+│           └── test/               # Test-upload results at /static/test/
 ├── utils/
-│   ├── yolo_detector.py          # YoloBottleDetector
-│   ├── color_analysis.py         # CIE Lab, Delta E, build_kmeans_centroids()
-│   ├── grid.py                   # GridConfig — slot polygons, find_slot_for_circle()
-│   └── calibration.py            # Grid calibration helpers
-├── bot/
-│   └── telegram_bot.py           # Legacy helpers (Telegram logic now inline in server_app.py)
-├── configs/
-│   ├── config.toml               # PRIMARY hardware config — GPIO, camera, relay, YOLO
-│   └── config.py                 # TOML loader used by utils/ directly
-├── settings.yaml                 # Server / model / database fallback config
-├── color.json                    # 5 levels × reference bottles (Lab + hex)
-├── grid_config.json              # 195 slot polygons (generated by /settings/grid)
-├── pyproject.toml                # uv project — extras: common / pi / server
+│   ├── grid_detector.py            # GridDetector — U-Net → skeleton → 195 intersections
+│   ├── camera_undistort.py         # CameraUndistorter — lens correction + focus lock
+│   ├── yolo_detector.py            # YoloBottleDetector
+│   ├── color_analysis.py           # CIE Lab, Delta E, build_kmeans_centroids()
+│   ├── grid.py                     # GridConfig — slot polygons, find_slot_for_circle()
+│   └── calibration.py              # Grid calibration helpers
 ├── models/
-│   └── best.pt                   # YOLO weights (git-ignored)
+│   ├── unet.py                     # U-Net model definition (smp.Unet + ResNet-34)
+│   ├── unet_grid.pt                # U-Net trained weights (git-ignored)
+│   └── best.pt                     # YOLO weights (git-ignored)
+├── bot/
+│   └── telegram_bot.py             # Legacy helpers (Telegram logic now inline in server_app.py)
+├── configs/
+│   ├── config.toml                 # PRIMARY hardware config — GPIO, camera, relay, YOLO, U-Net
+│   ├── camera_params.yaml          # Lens calibration — focus_value, sensor_resolution, K, dist
+│   └── config.py                   # TOML loader used by utils/ directly
+├── settings.yaml                   # Server / model / database fallback config
+├── color.json                      # 5 levels × reference bottles (Lab + hex)
+├── grid_config.json                # 195 slot polygons (generated by /settings/grid)
+├── pyproject.toml                  # uv project — extras: common / pi / server
 └── logs/
-    ├── img/                      # URINE_SCAN_<timestamp>.jpg annotated images
-    └── app_*.log                 # Rotating text logs
+    ├── img/                        # URINE_SCAN_<timestamp>.jpg annotated images
+    └── app_*.log                   # Rotating text logs
 ```
 
 ---
@@ -89,19 +97,19 @@ urine-color-analysis/
 
 **Load order (highest priority last wins):**
 1. `settings.yaml` — server / model / database defaults
-2. `configs/config.toml` — hardware (GPIO, camera, relay); overrides YAML for those sections
-3. `.env` / environment variables — secrets
+2. `configs/config.toml` — hardware (GPIO, camera, relay, U-Net); overrides YAML for those sections
+3. `.env` / environment variables — secrets (`DATABASE_URL`, `API_KEY`, etc.)
 
 **All config is accessed via `cfg` from `app/shared/config.py`:**
 
 ```python
 from app.shared.config import cfg
-cfg.relay_red_pin        # → 21 (from config.toml [gpio.relay].led_red)
-cfg.gpio_trigger_pin     # → 24 (from config.toml [gpio.button].pin)
-cfg.button_debounce_ms   # → 50 (from config.toml [gpio.button].debounce_ms)
-cfg.sample_roi_top       # → 220 (from config.toml [sample_roi].top)
-cfg.model_path           # → "models/best.pt"
-cfg.api_key              # → from .env API_KEY
+cfg.relay_red_pin        # → 21  (config.toml [gpio.relay].led_red)
+cfg.gpio_trigger_pin     # → 24  (config.toml [gpio.button].pin)
+cfg.database_url         # → "postgresql://..."  (env DATABASE_URL)
+cfg.unet_model_path      # → "models/unet_grid.pt"
+cfg.unet_input_size      # → 640
+cfg.unet_mask_threshold  # → 0.5
 ```
 
 **Never hardcode pin numbers, file paths, or thresholds in logic files.**
@@ -129,10 +137,12 @@ Always use `uv`. Never run `pip install`.
 
 ```toml
 # pyproject.toml extras
-common = ["requests", "pydantic-settings", "loguru", "numpy", "pyyaml", "python-dotenv"]
-server = ["fastapi", "uvicorn[standard]", "ultralytics", "opencv-python",
-          "sqlalchemy", "jinja2", "python-multipart", "Pillow", "psutil"]
-pi     = ["picamera2", "RPi.GPIO", "raspberrypi-tm1637", "rpi-lcd", "smbus2", "psutil"]
+common = ["requests", "pydantic-settings", "loguru", "numpy", "pyyaml", "python-dotenv",
+          "Pillow>=10.0", "psutil>=5.9"]
+server = ["fastapi", "uvicorn[standard]", "opencv-python", "sqlalchemy", "psycopg2-binary",
+          "jinja2", "python-multipart", "ultralytics>=8.4.24", "scikit-image>=0.21",
+          "scipy>=1.11", "torch>=2.0", "torchvision>=0.15", "segmentation-models-pytorch>=0.3"]
+pi     = ["picamera2", "RPi.GPIO", "raspberrypi-tm1637", "rpi-lcd", "smbus2"]
 ```
 
 ```bash
@@ -147,90 +157,150 @@ uv sync --extra pi --extra common
 
 ## Image Processing Pipeline
 
+### Pi side (before POST)
+
 ```
-Pi JPEG (4608 × 2592)
+picamera2 raw frame (4608 × 2592, BGR)
   │
-  ▼ crop_sample_roi(top=220, bottom=20, left=200, right=800)
-  ~3608 × 2352 ROI  (roi_x1=200, roi_y1=220)
-  │  Skips reference row (top) and dead-zone column ZZ (left)
+  ▼ CameraUndistorter.undistort_frame()   # utils/camera_undistort.py
+  │   - lock_focus_picamera2() at boot (AfMode=Manual, LensPosition from camera_params.yaml)
+  │   - scale K from sensor_resolution → capture_resolution
+  │   - cv2.remap() with pre-computed maps (alpha=0, no black borders)
+  │   - crop to valid ROI
+  Undistorted JPEG → POST /analyze
+```
+
+### Server side (on receiving POST)
+
+```
+JPEG bytes
   │
-  ▼ letterbox_white_padding()          # white (255,255,255) — NOT black
+  ▼ Fetch active tray from DB (HTTP 400 if none selected)
+  │
+  ▼ cv2.imdecode() → full BGR image
+  │
+  ▼ crop_sample_roi(top, bottom, left, right)    # app/shared/processor.py
+  ROI image  (skips reference row + dead-zone column ZZ)
+  │
+  ▼ letterbox_white_padding(640)                 # white fill — NOT black
   640 × 640 padded image
   │
-  ▼ YOLO (PyTorch / ultralytics)
-  boxes [[x1,y1,x2,y2,conf,cls]] in 640-space
+  ▼ GridDetector.detect_intersections()          # utils/grid_detector.py
+  │   Phase B: U-Net (ResNet-34 backbone) → 640×640 binary mask
+  │   Phase C: skeletonize → HoughLinesP → H-lines + V-lines
+  │            → 195 (x,y) intersection centres, sorted row-major
+  195 slot centres (in 640-space) → scaled back to full-image coords
   │
-  ▼ scale_coordinates(scale, pad_x, pad_y, roi_x1=200, roi_y1=220)
-  boxes in 4608 × 2592 full-image space
-  │  Formula: ox = (x - pad) / scale + roi_offset
+  ▼ YOLO inference                               # utils/yolo_detector.py
+  bounding boxes in 640-space
   │
-  ▼ GridConfig.find_slot_for_circle(cx, cy, radius)
-  slot_id per box ("A25_3") — majority overlap rule (>50%)
+  ▼ scale_coordinates(scale, pad_x, pad_y, roi_x1, roi_y1)
+  boxes in full-image space
   │
-  ▼ build_kmeans_centroids(color.json) → classify_sample(lab, centroids)
-  level 0-4 per slot (K-means nearest centroid in CIE Lab / Delta E76)
+  ▼ _match_detections_to_slots()                 # server_app.py
+  Each YOLO box → nearest grid slot (position_index 1-195)
   │
-  ▼ find_slot_conflicts() + validate_color_zones()
-  errors: {duplicate_slots, wrong_color_slots}
+  ▼ _run_color_analysis_v2()
+  For each occupied slot: extract_bottle_color() → classify_sample()
+  level 0-4 per position_index (K-means nearest centroid in CIE Lab)
   │
-  ▼ _render_annotated_canvas()         # img = full 4608×2592, coords already full-image
-  green box + red/green ring + PIL Thai text
+  ▼ _build_slot_rows()
+  195 TestSlot dicts: {position_index, color_result, is_error}
+  is_error = True when classified level ≠ expected level for that column zone
   │
-  ▼ save_visual_log()   →  logs/img/URINE_SCAN_<ts>.jpg
-  generate_visual_report() → bytes → Telegram sendPhoto
+  ▼ _render_annotated_canvas()                   # app/shared/processor.py
+  green box per bottle + red blink on error slots + layout_json labels
   │
-  ▼ SQLite + return JSON
+  ▼ save_visual_log()  →  logs/img/URINE_SCAN_<ts>.jpg
+  _send_telegram_report()  →  Telegram (Thai caption)
+  │
+  ▼ INSERT ScanSession + 195 TestSlot rows  →  PostgreSQL
+  return JSON response
 ```
 
 ### Why white padding?
-Bottle labels and liquid colours are dark/coloured on white backgrounds. Black padding creates false-contrast edges that confuse the model.
+Bottle labels and liquid colours are dark/coloured on white backgrounds. Black padding creates false-contrast edges that confuse the YOLO model.
 
 ### Why ROI crop before letterbox?
-Focusing the 640×640 pixel budget on the ~3608×2352 sample area (rather than the full 4608×2592 frame) gives denser coverage of sample bottles. The reference row (top 220 px) and dead-zone column ZZ (left 200 px) are never sample locations and waste inference capacity without the crop.
+Focusing the 640×640 pixel budget on the sample area (rather than the full frame) gives denser coverage of bottles. The reference row (top) and dead-zone column ZZ (left) are never sample locations.
 
-### Why slot-based count?
-Raw YOLO box count is unreliable when a bottle is detected multiple times across different zones. `count` = number of unique physical slots occupied.
-
----
-
-## Slot ID Format
-
-`A{group}{slot}_{level}` — e.g. `A25_3`
-- Group: A1–A4 (4 groups, rows 1–3 / 4–6 / 7–9 / 10–12)
-- Slot: 1–9 (within a group)
-- Level: 0–4 (expected hydration level for that grid position)
-
-Physical base slot = everything before `_` → used for duplicate detection.
+### Why position-index instead of slot ID?
+V2 trays have configurable rows × cols. A flat 1-based integer (`row-1)*cols + col`, 1–`rows*cols`) is tray-dimension-agnostic and maps cleanly to a CSS Grid cell index.
 
 ---
 
-## Validation Rules
+## Position Index ↔ Row/Col Mapping
 
-| Rule | Function | Trigger |
-|------|----------|---------|
-| Duplicate slot | `find_slot_conflicts(sample_hits)` | Same base slot assigned in >1 zone |
-| Wrong color zone | `validate_color_zones(sample_hits, classified_levels)` | Bottle's classified level ≠ slot's expected level |
-
-Both functions live in `app/shared/processor.py`. Results are stored in `errors_json` (DB column).
-
----
-
-## Database Schema
-
-```python
-class AnalysisResult(Base):
-    __tablename__ = "results"
-    id               = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp        = Column(DateTime, default=datetime.utcnow)
-    count            = Column(Integer)
-    color_json       = Column(String)    # JSON: {"L0": 3, "L1": 4, ...}
-    image_path       = Column(String)    # /static/captures/<uuid>.jpg
-    errors_json      = Column(String)    # JSON: {duplicate_slots, wrong_color_slots}
-    log_image_filename = Column(String)  # URINE_SCAN_<timestamp>.jpg
-    detailed_results = Column(String)    # JSON: per-slot {level, ok, wrong_color, duplicate}
+```
+row = (position_index - 1) // cols + 1    # 1–rows
+col = (position_index - 1) % cols  + 1    # 1–cols
 ```
 
-New columns are added automatically by `_migrate_db()` at server startup using `ALTER TABLE` — safe on existing databases.
+Expected colour level per slot (5 zones, 3 cols each):
+```
+expected_level = min((col - 1) // 3, 4)   # cols 1-3 → L0 … cols 13-15 → L4
+```
+
+---
+
+## Database Schema (PostgreSQL)
+
+```python
+class Tray(_Base):
+    __tablename__ = "trays"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    tray_name      = Column(String, nullable=True)
+    is_active      = Column(Boolean, default=False, nullable=False)  # only one True at a time
+    rows           = Column(Integer, default=13)
+    cols           = Column(Integer, default=15)
+    total_slots    = Column(Integer, default=195)
+    dimension_info = Column(String, default="13x15")
+    created_at     = Column(DateTime, default=datetime.utcnow)
+    layout_json    = Column(JSON, nullable=True)   # {"1": "A01", "2": "A02", ...}
+
+class ScanSession(_Base):
+    __tablename__ = "scan_sessions"
+    id                   = Column(Integer, primary_key=True, autoincrement=True)
+    tray_id              = Column(Integer, ForeignKey("trays.id"), nullable=False, index=True)
+    scanned_at           = Column(DateTime, default=datetime.utcnow, index=True)
+    image_raw_path       = Column(String, nullable=True)
+    image_annotated_path = Column(String, nullable=True)
+    color_0 … color_4   = Column(Integer, default=0)   # count per level
+    error_count          = Column(Integer, default=0)
+    is_clean             = Column(Boolean, default=True)
+
+class TestSlot(_Base):
+    __tablename__ = "test_slots"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    session_id     = Column(Integer, ForeignKey("scan_sessions.id"), nullable=False, index=True)
+    position_index = Column(Integer, nullable=False)   # 1–(rows×cols), row-major
+    color_result   = Column(Integer, nullable=True)    # 0-4; None = empty slot
+    is_error       = Column(Boolean, default=False)
+    person_id      = Column(Integer, ForeignKey("people.id"), nullable=True)
+
+class People(_Base):
+    __tablename__ = "people"
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    full_name    = Column(String, nullable=False)
+    personnel_id = Column(String, unique=True, index=True)
+    department   = Column(String, nullable=True)
+```
+
+`_run_migrations()` adds new columns via `ALTER TABLE … ADD COLUMN` wrapped in `try/except` — safe on repeated startup. `Base.metadata.create_all()` handles new tables.
+
+---
+
+## Tray Management
+
+Trays are physical plaswood grids. Exactly one tray is marked `is_active=True` at a time.
+`/analyze` rejects the request with HTTP 400 if no tray is active.
+
+**Activation is atomic:** `UPDATE trays SET is_active=False WHERE is_active=True` then set the target to True.
+
+`layout_json` maps position_index strings to display labels. Auto-generated by `_generate_default_layout(rows, cols)` if not supplied:
+```python
+{"1": "A01", "2": "A02", ..., "195": "M15"}   # chr(64+row) + f"{col:02d}"
+```
 
 ---
 
@@ -240,38 +310,85 @@ New columns are added automatically by `_migrate_db()` at server startup using `
 
 **Auth:** `X-Auth-Token: <API_KEY>` header.
 **Request:** `multipart/form-data`, field `file` (JPEG).
+**Precondition:** An active tray must exist (HTTP 400 if none).
 
 **Success response:**
 ```json
 {
-  "status": "success",
-  "count": 12,
+  "status":       "success",
+  "session_id":   42,
+  "tray_id":      3,
+  "tray_name":    "ถาดหน่วยที่ 1",
+  "count":        12,
   "total_physical_count": 12,
-  "summary": {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
-  "color_summary": {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
-  "errors": {
-    "duplicate_slots": [],
-    "wrong_color_slots": []
-  },
-  "detailed_results": {"A11_0": {"level": 0, "ok": true}},
-  "timestamp": "2026-03-24T10:30:00.000000",
-  "image_id": "uuid-string"
+  "summary":      {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
+  "is_clean":     false,
+  "error_count":  2,
+  "errors":       {"duplicate_slots": [], "wrong_color_slots": ["R01C05", "R03C12"]},
+  "slots":        [{"position_index": 1, "color_result": 0, "is_error": false}, ...],
+  "timestamp":    "2026-04-21T10:30:00.000000",
+  "image_id":     "uuid-string"
 }
 ```
 
 **Error response:**
 ```json
-{"status": "error", "message": "Model inference failed: <reason>"}
+{"status": "error", "message": "กรุณาเลือกถาดก่อนสแกน (No active tray selected)"}
 ```
 
-The Pi client reads: `total_physical_count` (fallback: `count`), `summary` (fallback: `color_summary`), `errors`.
+The Pi client reads: `count` (or `total_physical_count`), `summary`, `errors`, `tray_name`.
+
+### `GET /api/latest`
+
+Returns the most recent `ScanSession` with all slot results and tray dimensions:
+```json
+{
+  "tray":    {"id": 3, "tray_name": "ถาดหน่วยที่ 1", "is_active": true, "rows": 13, "cols": 15},
+  "session": {"id": 42, "scanned_at": "...", "color_0": 3, ..., "error_count": 2, "is_clean": false},
+  "slots":   [{"position_index": 1, "color_result": 0, "is_error": false}, ...]
+}
+```
+
+### Tray CRUD API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/trays` | List all trays |
+| `POST` | `/api/trays` | Create tray — body: `{tray_name, rows, cols}` |
+| `PATCH` | `/api/trays/{id}` | Update tray — body: `{tray_name?, rows?, cols?}` |
+| `DELETE` | `/api/trays/{id}` | Delete tray (HTTP 409 if active) |
+| `POST` | `/api/trays/{id}/activate` | Set as active (deactivates all others) |
+
+### Other Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | `{"status": "ok"}` |
+| `GET` | `/dashboard` | Interactive grid dashboard (Jinja2) |
+| `GET` | `/trays` | Tray management page (Jinja2) |
+| `GET` | `/trend` | Historical chart page (Jinja2) |
+| `GET` | `/api/trend` | JSON trend data; query: `from_date`, `to_date` (Thai Buddhist) |
+| `GET` | `/api/sessions` | Session history; query: `tray_id`, `from_date`, `to_date` |
+| `GET` | `/settings` | Calibration UI (grid + color) |
+| `POST` | `/settings/grid` | Recompute `grid_config.json` from 4 corner clicks |
+| `POST` | `/settings/colors` | Save `color.json` from reference row image |
+| `GET` | `/test` | Manual upload test page |
+| `POST` | `/api/test-upload` | Full pipeline — no DB write, no Telegram |
 
 ### `POST /api/test-upload`
 
-**Auth:** None.
-**Request:** `multipart/form-data`, field `file` (JPEG).
-
-Runs the full pipeline — no DB write, no Telegram. Returns `image_url` pointing to the annotated result at `/static/test/<uuid>.jpg`.
+Runs the full pipeline without DB write or Telegram. Returns:
+```json
+{
+  "status":    "success",
+  "count":     12,
+  "summary":   {"L0": 3, ...},
+  "is_clean":  false,
+  "errors":    {"duplicate_slots": [], "wrong_color_slots": ["R01C05"]},
+  "slots":     [...],
+  "image_url": "/static/test/<uuid>.jpg"
+}
+```
 
 ---
 
@@ -298,14 +415,15 @@ Active-LOW: `GPIO.LOW` = relay energised (configurable via `cfg.relay_active_low
 | Uploading | `Uploading...` | `Please wait` | spinning `-   ` |
 | Analyzing (after ~4 s) | `Analyzing...` | `AI running` | spinning |
 | OK result | `Count: N` | colour summary | `000N` |
-| Validation errors | `Count: N` | `Dup:1 WC:2` | `000N` |
+| Error slots | `Count: N` | scrolling `ERR @ R01C05  R03C12` | `000N` |
 | Network error | `ERR: SRV OFF` | `Check network` | `----` |
 | Timeout | `ERR: TIMEOUT` | `Server slow` | `----` |
 | HTTP error | `ERR: HTTP N` | — | `----` |
 | Camera fail | `ERR: CAMERA` | `Capture failed` | `----` |
 | AI error | `ERR: AI FAIL` | — | `----` |
 
-TM1637 spinner uses a daemon thread (`_tm_spin`) cycling `["-   ", " -  ", "  - ", "   -"]` at 250 ms/frame. A separate daemon thread (`_lcd_delayed`) switches LCD to "Analyzing..." after 4 s if the POST has not yet returned.
+TM1637 spinner uses a daemon thread (`_tm_spin`) cycling `["-   ", " -  ", "  - ", "   -"]` at 250 ms/frame.
+LCD line 2 scrolls error coordinates: `f"R{row:02d}C{col:02d}"` for each `is_error=True` slot.
 
 Request timeout: **60 seconds**. Latency is logged at INFO/SUCCESS level using `time.perf_counter()`.
 
@@ -313,43 +431,69 @@ Request timeout: **60 seconds**. Latency is logged at INFO/SUCCESS level using `
 
 ## Visual Logging
 
-Every scan generates `logs/img/URINE_SCAN_<YYYYMMDD_HHMMSS>.jpg` via `save_visual_log()` in `app/shared/processor.py`. The internal helper `_render_annotated_canvas()` draws:
+Every scan generates `logs/img/URINE_SCAN_<YYYYMMDD_HHMMSS>.jpg` via `save_visual_log()` in `app/shared/processor.py`. `_render_annotated_canvas()` draws:
 
-1. Grey polygon outlines for all sample slots
-2. Amber outlines for reference-row slots
-3. **Green bounding rectangle** per detected bottle
-4. **Green ring** (ok) or **Red ring** (wrong color / duplicate) outside the box
-5. Single PIL pass for Thai slot labels + error annotations (BGR→RGB→BGR once)
-6. Amber banner: "แถวอ้างอิง K-means (5 ระดับสี)" above the reference row
+1. Dynamic grid lines computed from 195 slot centres
+2. **Green bounding rectangle** per detected bottle
+3. **Error slot labels** (position label from `layout_json`) — only on `is_error=True` slots
+4. Single PIL pass for Thai text rendering (BGR→RGB→BGR once)
 
 Files older than 30 days are cleaned up at server startup.
 
 ---
 
+## Camera Calibration (Pi side)
+
+`configs/camera_params.yaml` stores intrinsics calibrated at full sensor resolution:
+```yaml
+metadata:
+  focus_value: 1.0                 # diopters ≈ 1/distance_metres; 100 cm → 1.0
+  sensor_resolution: {width: 4608, height: 2592}
+calibration:
+  camera_matrix: {fx, fy, cx, cy}  # at sensor_resolution
+  dist_coeffs: [k1, k2, p1, p2, k3]
+```
+
+`CameraUndistorter` (in `utils/camera_undistort.py`):
+1. Scales K from sensor → capture resolution automatically
+2. Pre-computes `cv2.initUndistortRectifyMap` once at startup (`alpha=0` — no black borders)
+3. `undistort_frame(frame)` = single `cv2.remap()` per frame (real-time safe)
+
+`lock_focus_picamera2()` sets `AfMode=Manual` + `LensPosition=focus_value` on startup to prevent optical centre shifts between frames.
+
+---
+
+## U-Net Grid Detector
+
+`models/unet.py` — `build_model(weights_path)`:
+- Architecture: `smp.Unet(encoder_name="resnet34", encoder_weights="imagenet", in_channels=3, classes=1, activation="sigmoid")`
+- Input: 640×640 RGB image
+- Output: 640×640 sigmoid mask (grid lines ≈ 1)
+
+`utils/grid_detector.py` — `GridDetector`:
+```python
+gd = GridDetector("models/unet_grid.pt")
+centres = gd.detect_intersections(img_bgr, input_size=640)  # → list[tuple[int,int]], len=195
+```
+
+Pipeline: resize → U-Net inference → threshold → `skimage.skeletonize` → `cv2.HoughLinesP` → cluster H/V lines → `np.polyfit` per line → all intersections → filter to 195 → sort row-major.
+
+Startup: `FileNotFoundError` with clear message if weights missing.
+
+---
+
 ## Telegram Reports
 
-`_build_thai_caption()` + `_send_telegram_report()` are inlined in `server_app.py` (the `bot/telegram_bot.py` file is legacy).
+`_build_thai_caption()` + `_send_telegram_report()` are inlined in `server_app.py`.
 
 Report includes:
 - Thai Buddhist calendar year (Gregorian + 543)
+- Active tray name
 - Bottle count per level (L0–L4)
 - Error summary (only shown when errors present)
 - Dashboard URL
 
-Credentials come from `configs/config.toml` `[telegram]` section; overrideable via `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` environment variables / `.env`.
-
----
-
-## Settings UI
-
-`GET /settings` → two-tab page (extends `layout.html`):
-
-| Tab | Function | Endpoint |
-|-----|----------|---------|
-| Grid Calibration | Upload image, click 4 corners on canvas, compute 195 slot polygons | `POST /settings/grid` |
-| Color Reference | Upload image with reference row, extract Lab swatches, save centroids | `POST /settings/colors` |
-
-`app/web/static/settings.js` handles canvas interaction — collects 4 `[x,y]` click points, draws crosshairs, serialises to hidden form field.
+Credentials from `configs/config.toml` `[telegram]` section; overrideable via `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` env vars / `.env`.
 
 ---
 
@@ -359,18 +503,14 @@ Credentials come from `configs/config.toml` `[telegram]` section; overrideable v
 
 ```
 main.py --role server
-  └── server_app.py: create_app()
-        ├── _migrate_db()          — ALTER TABLE for new columns (safe, idempotent)
-        ├── _cleanup_old_logs()    — delete log images older than 30 days
-        ├── _YoloInference.load()  — load best.pt once into app.state.yolo
-        ├── POST /analyze          → detect → classify → validate → log → DB → JSON
-        ├── POST /api/test-upload  → detect → classify → validate → log (no DB / Telegram)
-        ├── GET  /dashboard        → last 50 results
-        ├── GET  /trend            → historical chart page
-        ├── GET  /api/trend        → JSON data for chart (date-range filter)
-        ├── GET  /test             → manual upload test page
-        ├── GET  /settings         → calibration UI
-        └── GET  /health           → {"status": "ok"}
+  └── server_app.py: create_app()  (_lifespan)
+        ├── _run_migrations()        — idempotent ALTER TABLE for each new column
+        ├── Base.metadata.create_all()  — creates new tables (trays, scan_sessions, …)
+        ├── _cleanup_old_logs()      — delete log images older than 30 days
+        ├── _YoloInference.load()    — load best.pt once into app.state.yolo
+        ├── GridDetector(cfg.unet_model_path)   — load U-Net weights
+        └── routes registered:
+              POST /analyze, GET /dashboard, GET /trays, GET /api/trays, …
 ```
 
 ### Client
@@ -378,15 +518,19 @@ main.py --role server
 ```
 main.py --role client
   └── client_app.py: run_client(server_url)
+        ├── CameraUndistorter("configs/camera_params.yaml")  — load calibration
+        ├── lock_focus_picamera2()   — AfMode=Manual, LensPosition from YAML
         ├── GPIO.setmode(BCM)
-        ├── GPIO.setup(trigger_pin, IN, PUD_UP)
-        ├── _relay_setup()         — set relay pins as OUTPUT, all OFF
+        ├── _relay_setup()           — set relay pins as OUTPUT, all OFF
         ├── LCD: "Urine Analyzer / Ready"
         ├── TM1637: 0000
         ├── Relay: Green ON
         └── while True:
               GPIO.wait_for_edge(FALLING, bouncetime=cfg.button_debounce_ms)
               └── _on_button_press()
+                    ├── picam2.capture_array()
+                    ├── undistorter.undistort_frame(raw)
+                    └── requests.post(/analyze, file=jpeg_bytes)
 ```
 
 ---
@@ -395,11 +539,13 @@ main.py --role client
 
 1. `requests.post` must catch `ConnectionError`, `Timeout`, `HTTPError`, and bare `Exception` — never crash the main loop.
 2. Model inference errors → HTTP 500 `{"status": "error", "message": "..."}`.
-3. `GPIO.cleanup()` **must** run in a `finally` block.
-4. `_relay_all_off(GPIO)` must be called before `GPIO.cleanup()`.
-5. Camera (`picam2`) must be closed in a `try/finally` inside `_capture_image()`.
-6. DB sessions must use context manager (`with Session() as session:`).
-7. `_migrate_db()` wraps every `ALTER TABLE` in `try/except` — safe on repeated startup.
+3. Missing active tray → HTTP 400 `{"detail": "กรุณาเลือกถาดก่อนสแกน"}`.
+4. `GPIO.cleanup()` **must** run in a `finally` block.
+5. `_relay_all_off(GPIO)` must be called before `GPIO.cleanup()`.
+6. Camera (`picam2`) must be closed in a `try/finally` inside `_capture_image()`.
+7. DB sessions must use context manager (`with Session() as session:`).
+8. `_run_migrations()` wraps every `ALTER TABLE` in `try/except` — safe on repeated startup.
+9. `GridDetector.__init__` raises `FileNotFoundError` with a clear message if `unet_grid.pt` is missing.
 
 ---
 
@@ -431,7 +577,7 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 - Do not import `openvino` — the project uses PyTorch / ultralytics
 - Do not hardcode pin numbers, thresholds, or file paths — read from `cfg`
 - Do not use black padding in `letterbox_white_padding` — must be white `(255, 255, 255)`
-- Do not run inference on the Pi — the Pi only sends the image
+- Do not run inference on the Pi — the Pi only captures + undistorts + POSTs
 - Do not letterbox the full frame — `crop_sample_roi()` must be called first
 - Do not block the GPIO event loop with long `time.sleep()` — use daemon threads
 - Do not store images outside `app/web/static/captures/` (prod) or `app/web/static/test/` (test) or `logs/img/` (visual logs)
@@ -439,6 +585,8 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 - Do not commit `.env`, `data/`, `models/`, `logs/`, `color.json`, or `grid_config.json`
 - Do not add `_render_annotated_canvas()` drawing logic into `server_app.py` — it belongs in `processor.py`
 - Do not re-implement Telegram in `bot/telegram_bot.py` — the active implementation is inlined in `server_app.py`
+- Do not add ArUco detection — tray identification is handled via the DB active-tray mechanism
+- Do not hardcode grid dimensions (13×15) in dashboard JS — read `tray.rows` / `tray.cols` from `/api/latest`
 
 ---
 
@@ -449,18 +597,20 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 | `crop_sample_roi(img, top, bottom, left, right)` | `app/shared/processor.py` | Crop ROI before letterbox; returns `(roi, x1, y1)` |
 | `letterbox_white_padding(img, 640)` | `app/shared/processor.py` | Resize + white-pad to 640×640 |
 | `scale_coordinates(boxes, scale, px, py, roi_x1, roi_y1)` | `app/shared/processor.py` | Map 640-space boxes back to full-image coords |
-| `find_slot_conflicts(sample_hits)` | `app/shared/processor.py` | Detect duplicate physical slots |
-| `validate_color_zones(sample_hits, levels)` | `app/shared/processor.py` | Detect wrong-level bottles |
-| `_render_annotated_canvas(img, validation_results, grid_cfg)` | `app/shared/processor.py` | Draw overlays, return 50%-scaled canvas |
-| `save_visual_log(img, validation_results, grid_cfg, path)` | `app/shared/processor.py` | Save annotated JPEG to disk |
-| `generate_visual_report(img, validation_results, grid_cfg)` | `app/shared/processor.py` | Return annotated JPEG bytes |
-| `GridConfig.find_slot_for_circle(cx, cy, r)` | `utils/grid.py` | Map detected circle to slot_id |
-| `GridConfig.get_reference_positions()` | `utils/grid.py` | Reference-row slot centres |
-| `parse_slot_id(slot_id)` | `utils/grid.py` | Extract group, slot, expected level |
+| `_render_annotated_canvas(img, slots, layout_map, …)` | `app/shared/processor.py` | Draw overlays; labels only on error slots |
+| `save_visual_log(img, slots, …, layout_map)` | `app/shared/processor.py` | Save annotated JPEG to disk |
+| `generate_visual_report(img, slots, …, layout_map)` | `app/shared/processor.py` | Return annotated JPEG bytes |
+| `GridDetector.detect_intersections(img_bgr)` | `utils/grid_detector.py` | U-Net → 195 (x,y) slot centres |
+| `build_model(weights_path)` | `models/unet.py` | Load smp.Unet + ResNet-34 weights |
+| `CameraUndistorter(yaml_path, capture_size)` | `utils/camera_undistort.py` | Pre-compute remap maps |
+| `CameraUndistorter.undistort_frame(frame)` | `utils/camera_undistort.py` | cv2.remap + ROI crop |
+| `lock_focus_picamera2(picam2, focus_value)` | `utils/camera_undistort.py` | Set AfMode=Manual + LensPosition |
+| `load_params(yaml_path)` | `utils/camera_undistort.py` | Parse camera_params.yaml |
 | `build_kmeans_centroids(path)` | `utils/color_analysis.py` | Load color.json → Lab centroids per class |
 | `classify_sample(lab, centroids)` | `utils/color_analysis.py` | K-means nearest centroid → level 0-4 |
 | `extract_bottle_color(frame, cx, cy, r)` | `utils/color_analysis.py` | Crop + Lab mean from bottle region |
-| `build_reference_baseline(frame, ref_pos, grid_cfg)` | `utils/color_analysis.py` | Live fallback baseline from frame |
+| `_generate_default_layout(rows, cols)` | `app/server_app.py` | Auto-generate layout_json for a new tray |
+| `_expected_level_from_position(position_index)` | `app/server_app.py` | Column-zone → expected colour level |
 
 ---
 

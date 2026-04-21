@@ -64,6 +64,7 @@ _t_tm    = _t_gpio.get("tm1637", {})   # dict of H0-H4 entries
 _t_cam   = _t.get("camera", {})
 _t_tg    = _t.get("telegram", {})
 _t_sroi  = _t.get("sample_roi", {})
+_t_unet  = _t.get("unet", {})
 
 # YAML fallbacks for GPIO (used only when config.toml is absent)
 _y_gpio  = _y.get("gpio",    {})
@@ -167,12 +168,21 @@ class Settings(BaseSettings):
     tm1637_dio: int = _tm_pin("H2", "DIO", _y_disp.get("tm1637_dio", 6))
 
     # ── Sample ROI — config.toml [sample_roi] ──────────────────────────────
-    # Pixels to trim from each edge of the full frame before YOLO letterboxing.
-    # Excludes the reference row (top) and dead-zone column (left) from inference.
     sample_roi_top:    int = _t_sroi.get("top",    0)
     sample_roi_bottom: int = _t_sroi.get("bottom", 0)
     sample_roi_left:   int = _t_sroi.get("left",   0)
     sample_roi_right:  int = _t_sroi.get("right",  0)
+
+    # ── Database — PostgreSQL via DATABASE_URL; SQLite fallback for dev ─────
+    database_url: str = Field(
+        default=f"sqlite:///{_t.get('debug', {}).get('db_path', 'logs/scan_results.db')}",
+        alias="DATABASE_URL",
+    )
+
+    # ── U-Net grid segmentation — config.toml [unet] ────────────────────────
+    unet_model_path:    str   = _t_unet.get("model_path",     "models/unet_grid.pt")
+    unet_input_size:    int   = _t_unet.get("input_size",     512)
+    unet_mask_threshold: float = _t_unet.get("mask_threshold", 0.5)
 
 
 cfg = Settings()

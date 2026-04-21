@@ -1,0 +1,31 @@
+# Camera calibration parameters for Raspberry Pi Camera Module V3
+#
+# Calibrate with a checkerboard at SENSOR resolution (full frame), then store
+# the resulting intrinsics here.  The script will automatically scale fx/fy/cx/cy
+# down to whatever capture resolution you choose at runtime.
+#
+# Focus value range for Pi Cam V3 (8MP IMX708): 0.0 (infinity) – 10.0 (macro ~5 cm)
+# LensPosition is in diopters: value ≈ 1 / distance_metres
+#   100 cm (1.0 m) → ~1.0    ← tray distance
+#    50 cm (0.5 m) → ~2.0
+#    30 cm (0.3 m) → ~3.3
+
+metadata:
+  # Fixed lens position used during calibration — locked on every boot
+  focus_value: 1.0    # ~100 cm working distance
+  # Full sensor dimensions used when you ran cv2.calibrateCamera()
+  sensor_resolution:
+    width:  4608
+    height: 2592
+
+calibration:
+  # Intrinsic matrix parameters (in pixels, at sensor_resolution above)
+  camera_matrix:
+    fx: 3254.7    # Focal length — horizontal
+    fy: 3254.7    # Focal length — vertical
+    cx: 2304.0    # Principal point — horizontal (≈ width / 2)
+    cy: 1296.0    # Principal point — vertical   (≈ height / 2)
+
+  # Distortion coefficients: [k1, k2, p1, p2, k3]
+  # Negative k1 = barrel distortion (typical for wide-angle lenses)
+  dist_coeffs: [-0.1234, 0.0567, -0.0001, 0.0002, -0.0123]
