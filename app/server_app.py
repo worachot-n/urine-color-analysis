@@ -653,8 +653,17 @@ async def analyze(file: UploadFile = File(...)):
     }
 
     # Save raw image to captures_dir — used by /api/latest-capture for grid calibration.
-    # Annotated overlay is written separately to logs/img/ via save_visual_log below.
+    # Raw image → captures_dir (for grid calibration via /api/latest-capture)
     cv2.imwrite(str(thumb_path), img_full, [cv2.IMWRITE_JPEG_QUALITY, 88])
+
+    # Annotated image → separate static file (dashboard + Telegram)
+    from app.shared.processor import _render_annotated_canvas
+    annotated_canvas = _render_annotated_canvas(
+        img_full, validation_results_compat, None, slot_centers, layout_map
+    )
+    annotated_path = captures / f"{image_id}_annotated.jpg"
+    annotated_url  = f"/static/captures/{image_id}_annotated.jpg"
+    cv2.imwrite(str(annotated_path), annotated_canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
     # Visual log (best-effort)
     try:
@@ -675,7 +684,7 @@ async def analyze(file: UploadFile = File(...)):
             tray_id=active_tray_id,
             scanned_at=now,
             image_raw_path=static_url,
-            image_annotated_path=str(log_path),
+            image_annotated_path=str(annotated_path),
             color_0=color_counts[0],
             color_1=color_counts[1],
             color_2=color_counts[2],
@@ -713,7 +722,9 @@ async def analyze(file: UploadFile = File(...)):
                 color_counts=color_counts, error_count=error_count,
                 server_url=cfg.server_url,
             )
-            report_bytes = log_path.read_bytes() if log_path.exists() else None
+            report_bytes = (annotated_path.read_bytes()
+                            if annotated_path.exists()
+                            else (log_path.read_bytes() if log_path.exists() else None))
             if report_bytes:
                 _send_telegram_report(
                     img_bytes=report_bytes,
@@ -1316,7 +1327,17 @@ async def api_upload(file: UploadFile = File(...)):
         "raw_detection_count": len(boxes_orig),
     }
 
+    # Raw image → captures_dir (used by /api/latest-capture for grid calibration)
     cv2.imwrite(str(thumb_path), img_full, [cv2.IMWRITE_JPEG_QUALITY, 88])
+
+    # Annotated image → separate static file for UI display and Telegram
+    from app.shared.processor import _render_annotated_canvas
+    annotated_canvas  = _render_annotated_canvas(
+        img_full, validation_results_compat, None, slot_centers, layout_map
+    )
+    annotated_path    = captures / f"{image_id}_annotated.jpg"
+    annotated_url     = f"/static/captures/{image_id}_annotated.jpg"
+    cv2.imwrite(str(annotated_path), annotated_canvas, [cv2.IMWRITE_JPEG_QUALITY, 88])
 
     try:
         save_visual_log(
@@ -1335,7 +1356,7 @@ async def api_upload(file: UploadFile = File(...)):
             tray_id=active_tray_id,
             scanned_at=now,
             image_raw_path=static_url,
-            image_annotated_path=str(log_path),
+            image_annotated_path=str(annotated_path),
             color_0=color_counts[0],
             color_1=color_counts[1],
             color_2=color_counts[2],
@@ -1372,7 +1393,9 @@ async def api_upload(file: UploadFile = File(...)):
                 color_counts=color_counts, error_count=error_count,
                 server_url=cfg.server_url,
             )
-            report_bytes = log_path.read_bytes() if log_path.exists() else None
+            report_bytes = (annotated_path.read_bytes()
+                            if annotated_path.exists()
+                            else (log_path.read_bytes() if log_path.exists() else None))
             if report_bytes:
                 _send_telegram_report(
                     img_bytes=report_bytes,
@@ -1407,7 +1430,7 @@ async def api_upload(file: UploadFile = File(...)):
             "wrong_color_slots": wrong_color_items,
         },
         "slots":     slot_rows,
-        "image_url": static_url,
+        "image_url": annotated_url,
         "timestamp": now.isoformat(),
     }
 
