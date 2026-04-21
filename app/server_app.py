@@ -694,6 +694,14 @@ async def analyze(file: UploadFile = File(...)):
         # Phase D — YOLO detection (must run first so ref row boxes are available)
         _, boxes_orig = app.state.yolo.detect_raw(img_bytes)
 
+        # Split boxes: ref row (y-center < first sample row y) vs sample rows.
+        # Prevents ref row bottles from stealing sample row-1 slot assignments.
+        sample_row1_ys = [grid_result.sample_centres[i][1] for i in range(min(15, len(grid_result.sample_centres)))]
+        ref_y_cutoff = float(np.mean(sample_row1_ys)) if sample_row1_ys else 0.0
+        sample_boxes = [b for b in boxes_orig if (b[1] + b[3]) / 2 >= ref_y_cutoff]
+        logger.info("/analyze: split — ref_y_cutoff={:.0f}px, total={} sample={} ref={}",
+                    ref_y_cutoff, len(boxes_orig), len(sample_boxes), len(boxes_orig) - len(sample_boxes))
+
         # Build live colour baseline — prefer YOLO-detected ref bottle centers
         from utils.color_analysis import build_reference_baseline
         yolo_ref_pos = _extract_ref_from_detections(
@@ -708,7 +716,7 @@ async def analyze(file: UploadFile = File(...)):
             live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
             logger.warning("/analyze: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
-        slot_hits = _match_detections_to_slots(boxes_orig, slot_centers)
+        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except HTTPException:
@@ -1387,6 +1395,12 @@ async def api_upload(file: UploadFile = File(...)):
 
         _, boxes_orig = app.state.yolo.detect_raw(img_bytes)
 
+        sample_row1_ys = [grid_result.sample_centres[i][1] for i in range(min(15, len(grid_result.sample_centres)))]
+        ref_y_cutoff = float(np.mean(sample_row1_ys)) if sample_row1_ys else 0.0
+        sample_boxes = [b for b in boxes_orig if (b[1] + b[3]) / 2 >= ref_y_cutoff]
+        logger.info("/api/upload: split — ref_y_cutoff={:.0f}px, total={} sample={} ref={}",
+                    ref_y_cutoff, len(boxes_orig), len(sample_boxes), len(boxes_orig) - len(sample_boxes))
+
         from utils.color_analysis import build_reference_baseline
         yolo_ref_pos = _extract_ref_from_detections(
             boxes_orig, grid_result.ref_centres, grid_result.grid_spacing
@@ -1400,7 +1414,7 @@ async def api_upload(file: UploadFile = File(...)):
             live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
             logger.warning("/api/upload: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
-        slot_hits = _match_detections_to_slots(boxes_orig, slot_centers)
+        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except HTTPException:
@@ -1604,6 +1618,12 @@ async def api_test_upload(file: UploadFile = File(...)):
 
         _, boxes_orig = app.state.yolo.detect_raw(img_bytes)
 
+        sample_row1_ys = [grid_result.sample_centres[i][1] for i in range(min(15, len(grid_result.sample_centres)))]
+        ref_y_cutoff = float(np.mean(sample_row1_ys)) if sample_row1_ys else 0.0
+        sample_boxes = [b for b in boxes_orig if (b[1] + b[3]) / 2 >= ref_y_cutoff]
+        logger.info("/api/test-upload: split — ref_y_cutoff={:.0f}px, total={} sample={} ref={}",
+                    ref_y_cutoff, len(boxes_orig), len(sample_boxes), len(boxes_orig) - len(sample_boxes))
+
         from utils.color_analysis import build_reference_baseline
         yolo_ref_pos = _extract_ref_from_detections(
             boxes_orig, grid_result.ref_centres, grid_result.grid_spacing
@@ -1617,7 +1637,7 @@ async def api_test_upload(file: UploadFile = File(...)):
             live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
             logger.warning("/api/test-upload: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
-        slot_hits = _match_detections_to_slots(boxes_orig, slot_centers)
+        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except Exception as exc:
