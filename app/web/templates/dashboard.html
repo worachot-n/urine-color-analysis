@@ -376,7 +376,7 @@
         const c   = ((s.position_index - 1) % cols) + 1;
         const exp = Math.min(Math.floor(((s.position_index - 1) % cols) / 3), 4);
         const lbl = s.slot_label || `R${String(Math.floor((s.position_index-1)/cols)+1).padStart(2,'0')}C${String(c).padStart(2,'0')}`;
-        return `${lbl} สี ${exp} (${lbl}_${exp}) — สีตรวจพบ: ${s.color_result}`;
+        return `${lbl} — สีตรวจพบ: ${s.color_result} / คาดหวัง: ${exp}`;
       });
       errList.innerHTML = lines.join('<br>');
     }
