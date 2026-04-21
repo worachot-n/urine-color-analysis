@@ -185,41 +185,46 @@ class _YoloInference:
             verbose=False,
         )
 
-        box_min = cfg.model_box_min_px
-        box_max = cfg.model_box_max_px
-
+        # Step 1 — collect boxes, drop only padding-zone false positives (640-space)
         boxes_640: list[list[float]] = []
         n_padding_rejected = 0
-        n_size_rejected    = 0
         for r in results:
             for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                bw, bh = x2 - x1, y2 - y1
-
-                # Discard boxes outside the configured size range (640-space)
-                if bw < box_min or bh < box_min or bw > box_max or bh > box_max:
-                    n_size_rejected += 1
-                    continue
-
                 cx_640 = (x1 + x2) / 2
                 cy_640 = (y1 + y2) / 2
-                # Discard detections whose center falls in the white padding zone
                 if not (content_x1 <= cx_640 <= content_x2 and
                         content_y1 <= cy_640 <= content_y2):
                     n_padding_rejected += 1
                     continue
-
                 boxes_640.append([x1, y1, x2, y2, float(box.conf[0]), int(box.cls[0])])
 
-        logger.info(
-            "YOLO raw={} kept={} size_drop={} pad_drop={} "
-            "(image {}×{}, scale={:.4f}, pad_x={}, pad_y={})",
-            sum(len(r.boxes) for r in results),
-            len(boxes_640), n_size_rejected, n_padding_rejected,
-            w_img, h_img, scale, pad_x, pad_y,
-        )
+        # Step 2 — invert letterbox transform → original image pixel space
+        boxes_full = scale_coordinates(boxes_640, scale, pad_x, pad_y)
 
-        boxes_orig = scale_coordinates(boxes_640, scale, pad_x, pad_y)
+        # Step 3 — size filter in ORIGINAL image space (140–200 px per side).
+        # Valid bottles must satisfy: box_min < width < box_max AND box_min < height < box_max.
+        # Detections outside this range are noise (shadows, reflections, grid edges).
+        box_min = cfg.model_box_min_px   # 140 px in original image
+        box_max = cfg.model_box_max_px   # 200 px in original image
+        boxes_orig: list[list[float]] = []
+        n_size_rejected = 0
+        for box in boxes_full:
+            bw = box[2] - box[0]
+            bh = box[3] - box[1]
+            if bw <= box_min or bh <= box_min or bw >= box_max or bh >= box_max:
+                n_size_rejected += 1
+                continue
+            boxes_orig.append(box)
+
+        logger.info(
+            "YOLO raw={} pad_drop={} size_drop={} kept={} "
+            "(image {}×{}, scale={:.4f}, pad_x={}, pad_y={}, "
+            "size_filter={}–{}px original)",
+            sum(len(r.boxes) for r in results),
+            n_padding_rejected, n_size_rejected, len(boxes_orig),
+            w_img, h_img, scale, pad_x, pad_y, box_min, box_max,
+        )
         return img, boxes_orig
 
 

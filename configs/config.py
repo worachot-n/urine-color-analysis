@@ -50,6 +50,36 @@ CAMERA_ROTATE_180: bool = _cfg["camera"]["rotate_180"]
 
 
 # =============================================================================
+# Image processing
+# =============================================================================
+_ip = _cfg.get("image_processing", {})
+CLAHE_CLIP_LIMIT: float  = float(_ip.get("clahe_clip_limit", 2.0))
+CLAHE_TILE_SIZE: int     = int(_ip.get("clahe_tile_size",   8))
+GLARE_L_THRESHOLD: float = float(_ip.get("glare_l_threshold",  220))
+GLARE_MIN_VALID_PX: int  = int(_ip.get("glare_min_valid_px",   10))
+
+# =============================================================================
+# Color analysis
+# =============================================================================
+_ca = _cfg.get("color_analysis", {})
+INNER_CROP_PX: int       = int(_ca.get("inner_crop_px",     15))
+DELTA_E_THRESHOLD: float = float(_ca.get("delta_e_threshold", 15.0))
+CONFIDENCE_MARGIN: float = float(_ca.get("confidence_margin",  3.0))
+PRESENCE_THRESHOLD: float = float(_ca.get("presence_threshold", 15.0))
+CONTRAST_THRESHOLD: float = float(_ca.get("contrast_threshold", 12.0))
+GHOST_DE_THRESHOLD: float = float(_ca.get("ghost_de_threshold",  8.0))
+REF_INNER_CROP_PX: int   = int(_ca.get("ref_inner_crop_px", 25))
+COLOR_LEVELS: int        = int(_ca.get("color_levels",      5))
+REFS_PER_LEVEL: int      = int(_ca.get("refs_per_level",    3))
+
+# =============================================================================
+# Grid
+# =============================================================================
+_gr = _cfg.get("grid", {})
+COLOR_JSON_FILE: str    = _gr.get("color_json_file", "color.json")
+GRID_CONFIG_FILE: str   = _gr.get("config_file",     "grid_config.json")
+
+# =============================================================================
 # Network
 # =============================================================================
 HOTSPOT_SSID: str = _cfg["network"]["hotspot_ssid"]

@@ -138,7 +138,7 @@ chat_id = "-1003801438507"
 [yolo]
 model_path          = "models/best.pt"
 imgsz               = 640
-conf_threshold      = 0.25       # Lowered from 0.40 — matches YOLO default validation threshold
+conf_threshold      = 0.30       # Confidence threshold — tuned for full-image letterbox
 iou_threshold       = 0.45       # NMS IoU threshold
 augment             = false      # TTA disabled — lowers confidence scores on fixed-angle camera
 snapshots           = 1          # One snapshot is sufficient for YOLO bottle detection
@@ -146,8 +146,8 @@ snapshot_delay_ms   = 200        # Milliseconds between snapshots (unused with s
 exposure_variation  = 0.15       # ±15% ExposureTime variation (unused with snapshots=1)
 consensus_min_votes = 1          # Must match snapshots value
 consensus_iou       = 0.50       # IoU threshold for matching boxes across snapshots
-box_min_px          = 10         # Min box side in 640px space for full-image letterbox
-box_max_px          = 120        # Max box side in 640px space (raised from 60 for full-image scale)
+box_min_px          = 140        # Min box side in ORIGINAL image pixels (valid bottle lower bound)
+box_max_px          = 200        # Max box side in ORIGINAL image pixels (valid bottle upper bound)
 slot_max_dist_ratio = 0.60       # Max distance from slot center as fraction of slot radius
 clahe_clip_limit    = 2.0        # CLAHE clip for pre-inference enhancement
 clahe_tile_size     = 8          # CLAHE tile grid size (NxN)
