@@ -139,7 +139,8 @@ def scale_coordinates(
 
 # BGR drawing constants
 _C_GRID_LINE  = (100, 100, 100)   # thin grey — calibrated bilinear grid
-_C_BOX        = (0,   220,   0)   # bright green — detection bounding box
+_C_BOX_OK     = (0,   220,   0)   # bright green — correct slot
+_C_BOX_ERR    = (0,   0,   220)   # bright red   — error slot (BGR: R=220)
 _C_LABEL      = (0,   255, 255)   # bright yellow — slot coordinate label
 _C_LABEL_DARK = (0,     0,   0)   # black — label shadow
 
@@ -250,7 +251,7 @@ def _render_annotated_canvas(
         for x in v_lines:
             cv2.line(canvas, (x, gy0), (x, gy1), _C_GRID_LINE, lw)
 
-    # ── 2. Bounding boxes (all detections) + labels (error slots only) ────
+    # ── 2. Bounding boxes + labels ────────────────────────────────────────
     for pos_key, hit in slots.items():
         cx = hit.get("cx", 0)
         cy = hit.get("cy", 0)
@@ -259,10 +260,12 @@ def _render_annotated_canvas(
         x1, y1 = cx - r, cy - r
         x2, y2 = cx + r, cy + r
 
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), _C_BOX, blw)
+        is_error = hit.get("wrong_color", False) or hit.get("duplicate", False)
+        box_color = _C_BOX_ERR if is_error else _C_BOX_OK
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), box_color, blw)
 
-        # ── 3. Label only error slots ─────────────────────────────────────
-        if not (hit.get("wrong_color", False) or hit.get("duplicate", False)):
+        # Label only on error slots
+        if not is_error:
             continue
 
         label = (layout_map.get(pos_key) if layout_map else None) or _pos_to_label(pos_key)

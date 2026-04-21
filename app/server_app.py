@@ -813,7 +813,7 @@ async def analyze(file: UploadFile = File(...)):
             tray_id=active_tray_id,
             scanned_at=now,
             image_raw_path=static_url,
-            image_annotated_path=str(annotated_path),
+            image_annotated_path=annotated_url,
             color_0=color_counts[0],
             color_1=color_counts[1],
             color_2=color_counts[2],
@@ -912,8 +912,19 @@ async def dashboard(request: Request):
     active_tray_name         = active_tray.tray_name if active_tray else None
     active_tray_id_ctx       = active_tray.id if active_tray else None
 
+    def _path_to_url(p: str | None) -> str | None:
+        if not p:
+            return None
+        if p.startswith("/"):
+            return p
+        idx = p.find("/static/")
+        return p[idx:] if idx != -1 else None
+
     if latest_session:
-        latest_image  = latest_session.image_annotated_path or latest_session.image_raw_path
+        latest_image = (
+            _path_to_url(latest_session.image_annotated_path)
+            or _path_to_url(latest_session.image_raw_path)
+        )
         latest_colors = {
             "L0": latest_session.color_0,
             "L1": latest_session.color_1,
@@ -966,6 +977,14 @@ async def api_latest():
             "cols":      scan.tray.cols or 15,
         } if scan.tray else None
 
+        def _to_url(p: str | None) -> str | None:
+            if not p:
+                return None
+            if p.startswith("/"):
+                return p
+            idx = p.find("/static/")
+            return p[idx:] if idx != -1 else None
+
         session_data = {
             "id":                   scan.id,
             "scanned_at":           scan.scanned_at.isoformat(),
@@ -976,7 +995,7 @@ async def api_latest():
             "color_4":              scan.color_4,
             "error_count":          scan.error_count,
             "is_clean":             scan.is_clean,
-            "image_annotated_path": scan.image_annotated_path or scan.image_raw_path,
+            "image_annotated_path": _to_url(scan.image_annotated_path) or _to_url(scan.image_raw_path),
         }
 
         slots_data = [
@@ -1511,7 +1530,7 @@ async def api_upload(file: UploadFile = File(...)):
             tray_id=active_tray_id,
             scanned_at=now,
             image_raw_path=static_url,
-            image_annotated_path=str(annotated_path),
+            image_annotated_path=annotated_url,
             color_0=color_counts[0],
             color_1=color_counts[1],
             color_2=color_counts[2],

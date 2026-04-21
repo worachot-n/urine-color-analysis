@@ -4,29 +4,33 @@
 
 {% block head %}
 <style>
-  /* ── Layout ─────────────────────────────────────────────────────────── */
+  /* ── Wrapper — full viewport height ──────────────────────────────── */
   .dash-wrap {
-    max-width: 1280px;
+    max-width: 1400px;
     margin: 0 auto;
-    padding: 0 20px 40px;
+    padding: 0 20px 12px;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 70px);
   }
 
-  /* ── Top info bar ────────────────────────────────────────────────────── */
+  /* ── Info bar ────────────────────────────────────────────────────── */
   .info-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: 12px;
-    margin-bottom: 20px;
+    gap: 10px;
+    padding: 10px 0 8px;
+    flex-shrink: 0;
   }
-  .info-chips { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .info-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .chip {
     background: #112211;
     border: 1px solid var(--border);
     border-radius: 20px;
-    padding: 5px 14px;
-    font-size: .85rem;
+    padding: 4px 14px;
+    font-size: .82rem;
     color: var(--text);
   }
   .chip strong { color: var(--green); }
@@ -37,166 +41,77 @@
     font-family: 'Sarabun', sans-serif;
     font-weight: 700; font-size: .95rem;
     border: none; border-radius: 8px;
-    padding: 7px 20px; cursor: pointer;
+    padding: 7px 22px; cursor: pointer;
     transition: background .15s;
+    flex-shrink: 0;
   }
   .btn-update:hover { background: var(--green-h); }
 
-  /* ── Main 2-column layout ────────────────────────────────────────────── */
+  /* ── 5 count cards ───────────────────────────────────────────────── */
+  .count-cards {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-shrink: 0;
+  }
+  .level-card { border-radius: 10px; padding: 12px 6px; text-align: center; }
+  .level-card-0 { background: #C1B7A9; color: #2a2a2a; }
+  .level-card-1 { background: #A39371; color: #1a1a1a; }
+  .level-card-2 { background: #978365; color: #fff; }
+  .level-card-3 { background: #755429; color: #fff; }
+  .level-card-4 { background: #50311B; color: #fff; }
+  .level-card .lc-num  { font-size: 2.4rem; font-weight: 800; display: block; line-height: 1; }
+  .level-card .lc-label { font-size: .82rem; opacity: .85; margin-top: 4px; display: block; font-weight: 600; }
+
+  /* ── Main two-column ─────────────────────────────────────────────── */
   .dash-main {
     display: grid;
-    grid-template-columns: 1fr 280px;
-    gap: 24px;
-    align-items: start;
+    grid-template-columns: 1fr 340px;
+    gap: 16px;
+    flex: 1;
+    min-height: 0;
   }
   @media (max-width: 900px) {
     .dash-main { grid-template-columns: 1fr; }
   }
 
-  /* ── Grid panel ──────────────────────────────────────────────────────── */
-  .grid-panel {
+  /* ── Image panel ─────────────────────────────────────────────────── */
+  .image-panel {
     background: #0a1a0a;
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 16px;
-    overflow-x: auto;
-  }
-  .grid-panel h2 {
-    font-size: .9rem;
-    color: var(--muted);
-    margin-bottom: 12px;
-    font-weight: 600;
-  }
-
-  /* Slot grid — columns/rows set dynamically by JS */
-  .slot-grid {
-    gap: 3px;
-    display: none;
-  }
-  @media (max-width: 700px) {
-    .slot-grid { --cell: 26px; }
-  }
-
-  .slot {
-    width: 36px; height: 36px;
-    border-radius: 4px;
-    background: #1a1a1a;
-    border: 2px solid transparent;
-    cursor: default;
-    transition: filter .15s;
-    position: relative;
-  }
-  @media (max-width: 700px) { .slot { width: 26px; height: 26px; } }
-  .slot:hover { filter: brightness(1.3); z-index: 1; }
-
-  /* Filled slot colors */
-  .slot[data-level="0"] { background: #C1B7A9; }
-  .slot[data-level="1"] { background: #A39371; }
-  .slot[data-level="2"] { background: #978365; }
-  .slot[data-level="3"] { background: #755429; }
-  .slot[data-level="4"] { background: #50311B; }
-
-  /* Error blink */
-  .slot.is-error {
-    border-color: #ef5350;
-    animation: blink-border 1s step-end infinite;
-  }
-  @keyframes blink-border {
-    0%, 100% { border-color: #ef5350; }
-    50%       { border-color: transparent; }
-  }
-
-  /* Tooltip */
-  .slot[title]:hover::after {
-    content: attr(title);
-    position: absolute;
-    bottom: calc(100% + 6px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: #1e3a1e;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 4px 8px;
-    font-size: .75rem;
-    white-space: nowrap;
-    color: var(--text);
-    pointer-events: none;
-    z-index: 10;
-  }
-
-  /* Column level zone headers */
-  .col-labels {
-    display: grid;
-    gap: 3px;
-    margin-bottom: 4px;
-  }
-  .col-label {
-    text-align: center;
-    font-size: .65rem;
-    color: var(--muted);
-    font-weight: 600;
-  }
-  /* Color zone bracket lines */
-  .zone-labels {
+    overflow: hidden;
     display: flex;
-    margin-bottom: 6px;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
   }
+  .image-panel img { width: 100%; height: 100%; object-fit: contain; display: block; border-radius: 12px; }
+  .image-panel .no-img { color: var(--muted); font-size: .9rem; padding: 40px; text-align: center; line-height: 1.8; }
 
-  /* ── Side panel ──────────────────────────────────────────────────────── */
-  .side-panel { display: flex; flex-direction: column; gap: 16px; }
-
-  /* Image thumbnail */
-  .thumb-panel {
-    background: #112211;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-    min-height: 160px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .thumb-panel img { width: 100%; display: block; object-fit: contain; }
-  .thumb-panel .no-img { color: var(--muted); font-size: .85rem; padding: 24px; text-align: center; }
-
-  /* Color legend cards */
-  .legend-card {
-    background: #112211;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-  }
-  .legend-card h3 { font-size: .85rem; font-weight: 700; padding: 10px 14px 8px; border-bottom: 1px solid var(--border); }
-  .legend-rows { display: flex; flex-direction: column; }
-  .legend-row {
-    display: flex; align-items: center;
-    padding: 8px 14px; gap: 12px;
-    border-bottom: 1px solid #162216;
-  }
-  .legend-row:last-child { border-bottom: none; }
-  .legend-swatch {
-    width: 28px; height: 28px;
-    border-radius: 5px; flex-shrink: 0;
-  }
-  .legend-label { font-size: .85rem; flex: 1; }
-  .legend-count { font-size: 1.2rem; font-weight: 800; min-width: 30px; text-align: right; }
-
-  /* Error list */
-  .error-card {
+  /* ── Error panel ─────────────────────────────────────────────────── */
+  .error-panel {
     background: #1a0808;
     border: 1px solid #5a1a1a;
-    border-radius: 10px;
-    padding: 12px 14px;
+    border-radius: 12px;
+    padding: 14px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
-  .error-card h3 { font-size: .85rem; font-weight: 700; color: #ef5350; margin-bottom: 8px; }
-  .error-list { font-size: .82rem; color: #ffb3b3; line-height: 1.8; }
+  .error-panel h3 { font-size: .9rem; font-weight: 700; color: #ef5350; margin-bottom: 10px; flex-shrink: 0; }
+  .no-errors { color: #66bb6a; font-size: .85rem; }
   .error-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
-  .error-table th { background: #1a7a6a; color: #fff; padding: 6px 10px; text-align: center; }
+  .error-table th {
+    background: #1a7a6a; color: #fff;
+    padding: 6px 10px; text-align: center;
+    position: sticky; top: 0; z-index: 1;
+  }
   .error-table td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #1e3a30; color: #e0f0ea; }
   .error-table tr:last-child td { border-bottom: none; }
   .badge-wrong { color: #ffb300; font-weight: 600; }
-  .no-errors { font-size: .85rem; color: var(--muted); }
-
-  /* Loading overlay */
-  #loading-msg { text-align: center; color: var(--muted); padding: 40px; font-size: .9rem; }
 </style>
 {% endblock %}
 
@@ -209,175 +124,71 @@
 
   <!-- Info bar -->
   <div class="info-bar">
-    <div class="info-chips" id="info-chips">
+    <div class="info-chips">
       <div class="chip">อัพเดทล่าสุด: <strong id="ts-display">{{ thai_timestamp }}</strong></div>
       <div class="chip {% if not active_tray_name %}chip-err{% else %}chip-ok{% endif %}">
         ถาดที่ใช้งาน: <strong id="tray-display">{{ active_tray_name or 'ยังไม่ได้เลือก' }}</strong>
       </div>
       <div class="chip">สแกนทั้งหมด: <strong>{{ total_scans }}</strong> ครั้ง</div>
-      <div class="chip" id="error-chip">
-        ข้อผิดพลาด: <strong id="err-count">—</strong>
-      </div>
+      <div class="chip" id="error-chip">ข้อผิดพลาด: <strong id="err-count">—</strong></div>
     </div>
     <button class="btn-update" onclick="loadLatest()">อัพเดท</button>
   </div>
 
-  <!-- Main layout -->
+  <!-- 5 color count cards -->
+  <div class="count-cards">
+    {% for i in range(5) %}
+    <div class="level-card level-card-{{ i }}">
+      <span class="lc-num" id="cnt-{{ i }}">{{ latest_colors.get('L' ~ i, 0) }}</span>
+      <span class="lc-label">สี {{ i }}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Main: image (left) + error table (right) -->
   <div class="dash-main">
 
-    <!-- Left: interactive grid -->
-    <div class="grid-panel">
-      <h2 id="grid-title">กำลังโหลดข้อมูล...</h2>
-
-      <!-- Zone labels — populated by JS -->
-      <div class="zone-labels" id="zone-labels" style="margin-bottom:4px;"></div>
-
-      <!-- Column number labels — populated by JS -->
-      <div class="col-labels" id="col-labels"></div>
-
-      <!-- Slot grid, populated by JS -->
-      <div id="loading-msg">กำลังโหลดข้อมูล...</div>
-      <div class="slot-grid" id="slot-grid"></div>
+    <!-- Annotated image -->
+    <div class="image-panel">
+      {% if latest_image %}
+        <img id="latest-img" src="{{ latest_image }}" alt="ภาพการตรวจล่าสุด">
+      {% else %}
+        <img id="latest-img" src="" alt="" style="display:none;">
+        <div class="no-img" id="no-img-msg">ยังไม่มีภาพ<br>กดปุ่มที่ Raspberry Pi</div>
+      {% endif %}
     </div>
 
-    <!-- Right: side panel -->
-    <div class="side-panel">
-
-      <!-- Latest image thumbnail -->
-      <div class="thumb-panel">
-        {% if latest_image %}
-          <img id="latest-img" src="{{ latest_image }}" alt="ภาพการตรวจล่าสุด" style="width:100%;border-radius:8px;">
-        {% else %}
-          <img id="latest-img" src="" alt="" style="display:none;width:100%;border-radius:8px;">
-          <div class="no-img" id="no-img-msg">ยังไม่มีภาพ<br>กดปุ่มที่ Raspberry Pi</div>
-        {% endif %}
-      </div>
-
-      <!-- Color legend with counts -->
-      <div class="legend-card">
-        <h3>สรุปผลตามสี</h3>
-        <div class="legend-rows" id="legend-rows">
-          {% set colors = ['#C1B7A9','#A39371','#978365','#755429','#50311B'] %}
-          {% for i in range(5) %}
-          <div class="legend-row">
-            <div class="legend-swatch" style="background:{{ colors[i] }};"></div>
-            <div class="legend-label">สี {{ i }}</div>
-            <div class="legend-count" id="cnt-{{ i }}">
-              {{ latest_colors.get('L' ~ i, 0) }}
-            </div>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
-
-      <!-- Error details -->
-      <div class="error-card" id="error-card" style="display:none;">
-        <h3>ข้อผิดพลาดที่ตรวจพบ</h3>
-        <div id="error-list"></div>
-      </div>
-
+    <!-- Error details -->
+    <div class="error-panel">
+      <h3>ข้อผิดพลาดที่ตรวจพบ</h3>
+      <div id="error-list"><div class="no-errors">✓ ยังไม่มีข้อมูล</div></div>
     </div>
+
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  const COLORS = ['#C1B7A9','#A39371','#978365','#755429','#50311B'];
-
-  function posToRowCol(idx, cols) {
-    const row = Math.floor((idx - 1) / cols) + 1;
-    const col = ((idx - 1) % cols) + 1;
-    return [row, col];
-  }
-
-  function expectedLevel(posIdx, cols) {
-    const col = ((posIdx - 1) % cols);  // 0-based col
-    return Math.min(Math.floor(col / 3), 4);
-  }
-
-  function buildGrid(slots, rows, cols) {
-    const grid = document.getElementById('slot-grid');
-    grid.innerHTML = '';
-
-    // Set CSS grid dimensions dynamically
-    const cellSize = window.innerWidth <= 700 ? 26 : 36;
-    grid.style.display = 'grid';
-    grid.style.gridTemplateColumns = `repeat(${cols}, ${cellSize}px)`;
-    grid.style.gridTemplateRows    = `repeat(${rows}, ${cellSize}px)`;
-
-    // Build lookup: position_index → slot data
-    const map = {};
-    for (const s of slots) { map[s.position_index] = s; }
-
-    // Create cells in row-major order
-    for (let r = 1; r <= rows; r++) {
-      for (let c = 1; c <= cols; c++) {
-        const idx  = (r - 1) * cols + c;
-        const slot = map[idx];
-        const cell = document.createElement('div');
-        cell.className = 'slot';
-        cell.dataset.idx = idx;
-
-        if (slot && slot.color_result !== null) {
-          const lvl = slot.color_result;
-          cell.dataset.level = lvl;
-          cell.style.background = COLORS[lvl];
-          if (slot.is_error) cell.classList.add('is-error');
-          cell.title = `R${String(r).padStart(2,'0')}C${String(c).padStart(2,'0')} | สี ${lvl} | ${slot.is_error ? '⚠ ผิดโซน' : '✓ ปกติ'}`;
-        } else {
-          cell.title = `R${String(r).padStart(2,'0')}C${String(c).padStart(2,'0')} | ว่าง`;
-        }
-
-        grid.appendChild(cell);
-      }
-    }
-
-    document.getElementById('loading-msg').style.display = 'none';
-  }
-
-  function buildZoneLabels(cols) {
-    const zoneBar = document.getElementById('zone-labels');
-    zoneBar.innerHTML = '';
-    const zonesCount = Math.ceil(cols / 3);
-    for (let i = 0; i < zonesCount; i++) {
-      const el = document.createElement('div');
-      el.style.cssText = `flex:3;text-align:center;font-size:.7rem;color:var(--muted);font-weight:700;${i < zonesCount - 1 ? 'border-right:1px solid var(--border);' : ''}`;
-      el.textContent = `สี ${i}`;
-      zoneBar.appendChild(el);
-    }
-  }
-
-  function buildColLabels(cols) {
-    const cellSize = window.innerWidth <= 700 ? 26 : 36;
-    const bar = document.getElementById('col-labels');
-    bar.style.gridTemplateColumns = `repeat(${cols}, ${cellSize}px)`;
-    bar.innerHTML = Array.from({length: cols}, (_, i) =>
-      `<div class="col-label">${i + 1}</div>`
-    ).join('');
-  }
-
   function updateCounters(session) {
     for (let i = 0; i < 5; i++) {
       const el = document.getElementById('cnt-' + i);
-      if (el) el.textContent = session['color_' + i] || 0;
+      if (el) el.textContent = session['color_' + i] ?? 0;
     }
   }
 
   function updateErrorPanel(slots, cols) {
-    const errSlots  = slots.filter(s => s.is_error);
-    const chip      = document.getElementById('error-chip');
-    const errCount  = document.getElementById('err-count');
-    const errCard   = document.getElementById('error-card');
-    const errList   = document.getElementById('error-list');
+    const errSlots = slots.filter(s => s.is_error);
+    const chip     = document.getElementById('error-chip');
+    const errCount = document.getElementById('err-count');
+    const errList  = document.getElementById('error-list');
 
     errCount.textContent = errSlots.length;
     chip.className = errSlots.length > 0 ? 'chip chip-err' : 'chip chip-ok';
 
     if (errSlots.length === 0) {
-      errCard.style.display = 'none';
+      errList.innerHTML = '<div class="no-errors">✓ ไม่พบข้อผิดพลาด</div>';
     } else {
-      errCard.style.display = '';
       const rows = errSlots.map(s => {
         const exp = Math.min(Math.floor(((s.position_index - 1) % cols) / 3), 4);
         const lbl = s.slot_label || (() => {
@@ -400,41 +211,28 @@
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
 
-      if (!data.session) {
-        document.getElementById('loading-msg').textContent = 'ยังไม่มีข้อมูลการสแกน';
-        return;
-      }
+      if (!data.session) return;
 
-      // Tray dimensions (default 13×15 if not provided)
-      const rows = (data.tray && data.tray.rows) ? data.tray.rows : 13;
       const cols = (data.tray && data.tray.cols) ? data.tray.cols : 15;
 
-      // Update active tray display
-      const trayName = data.tray ? (data.tray.tray_name || `Tray-${data.tray.id}`) : 'ยังไม่ได้เลือก';
+      // Tray name
       const trayEl = document.getElementById('tray-display');
-      if (trayEl) trayEl.textContent = trayName;
+      if (trayEl && data.tray) trayEl.textContent = data.tray.tray_name || `Tray-${data.tray.id}`;
 
-      // Update timestamp
+      // Timestamp
       const dt = new Date(data.session.scanned_at);
       const thaiYear = dt.getFullYear() + 543;
-      const tsStr = `${dt.getDate()}/${dt.getMonth()+1}/${thaiYear} เวลา ${String(dt.getHours()).padStart(2,'0')}${String(dt.getMinutes()).padStart(2,'0')}`;
-      document.getElementById('ts-display').textContent = tsStr;
+      document.getElementById('ts-display').textContent =
+        `${dt.getDate()}/${dt.getMonth()+1}/${thaiYear} เวลา ${String(dt.getHours()).padStart(2,'0')}${String(dt.getMinutes()).padStart(2,'0')}`;
 
-      // Rebuild grid UI for this tray's dimensions
-      buildZoneLabels(cols);
-      buildColLabels(cols);
-      document.getElementById('grid-title').textContent =
-        `ตำแหน่ง ${rows * cols} ช่อง (${rows} แถว × ${cols} คอลัมน์) — โซนสีตามคอลัมน์`;
-
-      if (data.slots)   buildGrid(data.slots, rows, cols);
       if (data.session) updateCounters(data.session);
       if (data.slots)   updateErrorPanel(data.slots, cols);
 
-      // Update image if available
+      // Update annotated image
       const imgEl   = document.getElementById('latest-img');
       const noImgEl = document.getElementById('no-img-msg');
       if (imgEl && data.session.image_annotated_path) {
-        imgEl.src          = data.session.image_annotated_path + '?t=' + Date.now();
+        imgEl.src           = data.session.image_annotated_path + '?t=' + Date.now();
         imgEl.style.display = '';
         if (noImgEl) noImgEl.style.display = 'none';
       }
@@ -444,10 +242,7 @@
     }
   }
 
-  // Load on page open
   loadLatest();
-
-  // Auto-refresh every 30 seconds
   setInterval(loadLatest, 30000);
 </script>
 {% endblock %}
