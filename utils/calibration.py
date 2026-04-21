@@ -6,26 +6,31 @@ Two responsibilities:
   2. run_calibration(image)        — interactive 2-phase grid mapping
                                      Phase 1: click 4 outer corners
                                      Phase 2: drag individual lines to fine-tune
-                                     → computes all 195 slot polygons
-                                     → saves grid_config.json
+                                     → returns grid_pts dict for DB saving
+                                     → caller POSTs to /settings/grid to persist
 
-Grid layout (15×13 cells from 16×14 lines):
-  Row 0  : Reference row — 5 groups of 3 cells each (REF_L0…REF_L4)
-  Rows 1-12: Sample area — col 0 is ZZ dead zone, cols 1-15 are sample slots
-  Row 13 : Unused (bottom border)
+Grid layout (15 cols × 13 rows = 195 sample cells, from 16 v-lines × 14 h-lines):
+  Row 0     : Reference row — 5 level groups of 3 cells each (L0…L4)
+  Rows 1-13 : Sample area — 13 rows × 15 cols = 195 sample slots
 
-Column mapping per sample row:
-  Col 0        → ZZ (excluded, never emitted to slot_data)
-  Cols 1-3     → Level 0 block
-  Cols 4-6     → Level 1 block
-  Cols 7-9     → Level 2 block
-  Cols 10-12   → Level 3 block
-  Cols 13-15   → Level 4 block
+Column mapping (same for all sample rows):
+  Cols 1-3   → Level 0 block
+  Cols 4-6   → Level 1 block
+  Cols 7-9   → Level 2 block
+  Cols 10-12 → Level 3 block
+  Cols 13-15 → Level 4 block
 
-Slot ID: A{group_num}{slot_num}_{level_idx}
-  group_num  1-4   (A1=rows 1-3, A2=rows 4-6, A3=rows 7-9, A4=rows 10-12)
-  slot_num   1-9   (within group; 3 rows × 3 cols-per-level-block)
-  level_idx  0-4
+Slot ID format: A{group}{slot}_{level}
+  group  1-4  (A1=rows 1-3, A2=rows 4-6, A3=rows 7-9, A4=rows 10-12)
+  slot   1-9  (within group: 3 rows × 3 cols per level block, row-major)
+  level  0-4  (expected hydration level for that column zone)
+
+grid_pts shape: (14, 16, 2) — 14 h-lines × 16 v-lines × (x, y)
+  h-line 0     : top edge of reference row
+  h-lines 1-13 : 13 sample row boundaries (h-line i = top of sample row i)
+  h-line 13    : bottom edge of last sample row
+  v-lines 0-15 : 15 column left/right boundaries (v-line i = left edge of col i+1,
+                  v-line 15 = right edge of col 15)
 """
 
 import cv2
@@ -39,19 +44,17 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 from configs.config import (
-    GRID_CONFIG_FILE,
     CAPTURE_RESOLUTION,
     AWB_LOCK,
     AE_LOCK,
     CAMERA_ROTATE_180,
 )
 
-# Grid dimensions (lines, not cells).
-# Physical grid: "16 columns × 14 rows of lines (forming 15×13 cells)" per CLAUDE.md.
-# 14 horizontal lines → 13 cell rows (row 0 = ref, rows 1-12 = samples)
-# 17 vertical lines  → 16 cell columns (col 0 = ZZ, cols 1-15 = data)
-_N_VLINES = 16   # 16 vertical lines → 15 cell columns (ZZ excluded from calibration area)
-_N_HLINES = 14   # 14 horizontal lines → 13 cell rows (was 15; removed unused row 13)
+# Grid dimensions in lines (not cells).
+# 16 v-lines → 15 column cells   (no ZZ dead zone)
+# 14 h-lines → 13 sample rows + 1 reference row
+_N_VLINES = 16
+_N_HLINES = 14
 
 
 # ===========================================================================
@@ -598,13 +601,14 @@ def run_calibration(image=None):
         Useful when the camera angle or lens distortion causes the bilinear
         auto-computation to misplace individual rows or columns.
 
-    Press Enter in Phase 2 to save grid_config.json.
+    Press Enter in Phase 2 to finish. The caller is responsible for saving
+    the returned grid_pts to the database via POST /settings/grid.
 
     Args:
         image: Pre-loaded BGR frame. If None, captures from camera.
 
     Returns:
-        Path to saved grid_config.json, or None if cancelled.
+        dict with keys {corners, grid_pts, calibration_date, ...}, or None if cancelled.
     """
     if image is None:
         print("Capturing calibration image from camera...")
@@ -682,35 +686,14 @@ def run_calibration(image=None):
         return None
 
     # ------------------------------------------------------------------
-    # Compute polygons and save
     # ------------------------------------------------------------------
-    print("\nComputing slot polygons...")
-    reference_slots, slot_data = compute_slot_polygons_from_grid(grid_pts)
-
-    config_data = {
-        "system_metadata": {
-            "project_name":     "Urine Color Analysis",
-            "grid_dimensions":  "16x14 lines",
-            "calibration_date": datetime.now().strftime("%Y-%m-%d"),
-            "corners":          corners,
-            "grid_pts":         grid_pts.tolist(),
-        },
-        "reference_row": {
-            "description": "Top row for dynamic color calibration (3 bottles per level)",
-            "slots": reference_slots,
-        },
-        "main_grid": {
-            "description": "Processing slots for Groups A1-A4 across Color Levels 0-4",
-            "slot_data": slot_data,
-        },
+    # Return grid data — caller saves to DB via POST /settings/grid
+    # ------------------------------------------------------------------
+    grid_data = {
+        "calibration_date": datetime.now().strftime("%Y-%m-%d"),
+        "corners":          corners,
+        "grid_pts":         grid_pts.tolist(),
     }
 
-    out_path = Path(GRID_CONFIG_FILE)
-    with open(out_path, 'w') as f:
-        json.dump(config_data, f, indent=2)
-
-    print(f"\nCalibration saved: {out_path}")
-    print(f"  Reference slots : {len(reference_slots)}")
-    print(f"  Sample slots    : {len(slot_data)}")
-
-    return out_path
+    print(f"\nCalibration complete — POST grid_pts to /settings/grid to save to database.")
+    return grid_data

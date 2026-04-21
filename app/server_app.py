@@ -252,16 +252,28 @@ def _normalize_layout_map(layout_json, cols: int = 15) -> dict[str, str]:
 
 
 def _grid_pts_to_result(grid_pts_list):
-    """Convert [[14][17][2]] bilinear grid → GridDetectionResult (same shape as U-Net output)."""
-    from utils.grid_detector import GridDetectionResult
-    gp = np.array(grid_pts_list)   # shape (14, 17, 2)
+    """Convert (14, 16, 2) bilinear grid → GridDetectionResult.
 
+    Layout: 15 ref positions (row 0, positions 1-15) + 180 sample cells
+    (12 rows × 15 cols, positions 16-195). The caller must add position_offset=16
+    when calling _match_detections_to_slots so that nearest_idx 0 → position 16.
+
+    All centres are 4-corner cell midpoints for accurate nearest-neighbour matching.
+    """
+    from utils.grid_detector import GridDetectionResult
+    gp = np.array(grid_pts_list)
+
+    # 180 sample cell midpoints: 12 rows (h-lines 1-2, 2-3, …, 12-13) × 15 cols
     sample_centres = [
-        (int(gp[hi][vi][0]), int(gp[hi][vi][1]))
-        for hi in range(1, 14)
-        for vi in range(0, 15)
+        (
+            int((gp[hi][vi][0] + gp[hi][vi + 1][0] + gp[hi + 1][vi][0] + gp[hi + 1][vi + 1][0]) / 4),
+            int((gp[hi][vi][1] + gp[hi][vi + 1][1] + gp[hi + 1][vi][1] + gp[hi + 1][vi + 1][1]) / 4),
+        )
+        for hi in range(1, 13)   # 12 sample rows (between h-lines 1-13)
+        for vi in range(0, 15)   # 15 cols
     ]
 
+    # 15 ref row cell midpoints (between h-lines 0-1)
     ref_centres = []
     for vi in range(0, 15):
         xs = [gp[r][c][0] for r in (0, 1) for c in (vi, vi + 1)]
@@ -294,10 +306,14 @@ def _expected_level_from_position(position_index: int) -> int:
 def _match_detections_to_slots(
     boxes_orig: list[list[float]],
     slot_centers: list[tuple[int, int]],
+    position_offset: int = 1,
 ) -> dict[int, dict]:
     """
     Greedy nearest-slot matching.  Each YOLO box claims the closest slot center
-    whose distance < half the minimum inter-slot spacing.
+    whose distance < 75% of the median inter-slot spacing.
+
+    position_offset: added to nearest_idx to form position_index.
+      Use position_offset=16 for sample slots (positions 16-195 in layout).
 
     Returns:
         {position_index: {"cx": int, "cy": int, "radius": int, "box": [x1,y1,x2,y2]}}
@@ -347,7 +363,7 @@ def _match_detections_to_slots(
             continue
 
         claimed.add(nearest_idx)
-        position_index = nearest_idx + 1
+        position_index = nearest_idx + position_offset
         radius         = max((x2 - x1) // 2, (y2 - y1) // 2)
         hits[position_index] = {
             "cx": cx, "cy": cy, "radius": radius,
@@ -453,12 +469,14 @@ def _build_slot_rows(
     classified: dict[int, int],
 ) -> list[dict]:
     """
-    Build the 195-element list of slot dicts for DB + JSON response.
+    Build slot dicts for DB + JSON response (sample positions 16-195 only).
 
+    Positions 1-15 are reference row slots — handled separately for baseline
+    extraction and never classified as samples.
     Each dict: {position_index, color_result, is_error}
     """
     rows: list[dict] = []
-    for pos_idx in range(1, 196):
+    for pos_idx in range(16, 196):
         if pos_idx not in slot_hits:
             rows.append({"position_index": pos_idx, "color_result": None, "is_error": False})
             continue
@@ -716,7 +734,7 @@ async def analyze(file: UploadFile = File(...)):
             live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
             logger.warning("/analyze: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
-        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers)
+        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers, position_offset=16)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except HTTPException:
@@ -1414,7 +1432,7 @@ async def api_upload(file: UploadFile = File(...)):
             live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
             logger.warning("/api/upload: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
-        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers)
+        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers, position_offset=16)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except HTTPException:
@@ -1637,7 +1655,7 @@ async def api_test_upload(file: UploadFile = File(...)):
             live_baseline = build_reference_baseline(img_full, ref_positions) if ref_positions else {}
             logger.warning("/api/test-upload: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
-        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers)
+        slot_hits = _match_detections_to_slots(sample_boxes, slot_centers, position_offset=16)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except Exception as exc:
