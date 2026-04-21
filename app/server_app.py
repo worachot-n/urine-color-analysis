@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -685,7 +685,7 @@ async def analyze(file: UploadFile = File(...)):
             detail="กรุณาปรับเทียบกริดก่อนสแกน (Grid not calibrated for this tray)",
         )
 
-    now      = datetime.utcnow()
+    now      = datetime.now(timezone(timedelta(hours=7))).replace(tzinfo=None)
     image_id = str(uuid.uuid4())
     ts_str   = now.strftime("%Y%m%d_%H%M%S")
 
@@ -1411,7 +1411,7 @@ async def api_upload(file: UploadFile = File(...)):
             detail="กรุณาปรับเทียบกริดก่อนสแกน (Grid not calibrated for this tray)",
         )
 
-    now      = datetime.utcnow()
+    now      = datetime.now(timezone(timedelta(hours=7))).replace(tzinfo=None)
     image_id = str(uuid.uuid4())
     ts_str   = now.strftime("%Y%m%d_%H%M%S")
 
