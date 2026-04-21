@@ -913,7 +913,7 @@ async def dashboard(request: Request):
     active_tray_id_ctx       = active_tray.id if active_tray else None
 
     if latest_session:
-        latest_image  = latest_session.image_raw_path
+        latest_image  = latest_session.image_annotated_path or latest_session.image_raw_path
         latest_colors = {
             "L0": latest_session.color_0,
             "L1": latest_session.color_1,
@@ -967,15 +967,16 @@ async def api_latest():
         } if scan.tray else None
 
         session_data = {
-            "id":         scan.id,
-            "scanned_at": scan.scanned_at.isoformat(),
-            "color_0":    scan.color_0,
-            "color_1":    scan.color_1,
-            "color_2":    scan.color_2,
-            "color_3":    scan.color_3,
-            "color_4":    scan.color_4,
-            "error_count": scan.error_count,
-            "is_clean":   scan.is_clean,
+            "id":                   scan.id,
+            "scanned_at":           scan.scanned_at.isoformat(),
+            "color_0":              scan.color_0,
+            "color_1":              scan.color_1,
+            "color_2":              scan.color_2,
+            "color_3":              scan.color_3,
+            "color_4":              scan.color_4,
+            "error_count":          scan.error_count,
+            "is_clean":             scan.is_clean,
+            "image_annotated_path": scan.image_annotated_path or scan.image_raw_path,
         }
 
         slots_data = [

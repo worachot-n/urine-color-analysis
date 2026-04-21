@@ -188,6 +188,11 @@
   }
   .error-card h3 { font-size: .85rem; font-weight: 700; color: #ef5350; margin-bottom: 8px; }
   .error-list { font-size: .82rem; color: #ffb3b3; line-height: 1.8; }
+  .error-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  .error-table th { background: #1a7a6a; color: #fff; padding: 6px 10px; text-align: center; }
+  .error-table td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #1e3a30; color: #e0f0ea; }
+  .error-table tr:last-child td { border-bottom: none; }
+  .badge-wrong { color: #ffb300; font-weight: 600; }
   .no-errors { font-size: .85rem; color: var(--muted); }
 
   /* Loading overlay */
@@ -241,9 +246,10 @@
       <!-- Latest image thumbnail -->
       <div class="thumb-panel">
         {% if latest_image %}
-          <img id="latest-img" src="{{ latest_image }}" alt="ภาพการตรวจล่าสุด">
+          <img id="latest-img" src="{{ latest_image }}" alt="ภาพการตรวจล่าสุด" style="width:100%;border-radius:8px;">
         {% else %}
-          <div class="no-img">ยังไม่มีภาพ<br>กดปุ่มที่ Raspberry Pi</div>
+          <img id="latest-img" src="" alt="" style="display:none;width:100%;border-radius:8px;">
+          <div class="no-img" id="no-img-msg">ยังไม่มีภาพ<br>กดปุ่มที่ Raspberry Pi</div>
         {% endif %}
       </div>
 
@@ -266,8 +272,8 @@
 
       <!-- Error details -->
       <div class="error-card" id="error-card" style="display:none;">
-        <h3>&#9888; ช่องผิดพลาด</h3>
-        <div class="error-list" id="error-list"></div>
+        <h3>ข้อผิดพลาดที่ตรวจพบ</h3>
+        <div id="error-list"></div>
       </div>
 
     </div>
@@ -372,13 +378,19 @@
       errCard.style.display = 'none';
     } else {
       errCard.style.display = '';
-      const lines = errSlots.map(s => {
-        const c   = ((s.position_index - 1) % cols) + 1;
+      const rows = errSlots.map(s => {
         const exp = Math.min(Math.floor(((s.position_index - 1) % cols) / 3), 4);
-        const lbl = s.slot_label || `R${String(Math.floor((s.position_index-1)/cols)+1).padStart(2,'0')}C${String(c).padStart(2,'0')}`;
-        return `${lbl} — สีตรวจพบ: ${s.color_result} / คาดหวัง: ${exp}`;
-      });
-      errList.innerHTML = lines.join('<br>');
+        const lbl = s.slot_label || (() => {
+          const r = Math.floor((s.position_index - 1) / cols) + 1;
+          const c = ((s.position_index - 1) % cols) + 1;
+          return `R${String(r).padStart(2,'0')}C${String(c).padStart(2,'0')}`;
+        })();
+        return `<tr><td>${lbl}</td><td>${exp}</td><td>${s.color_result}</td><td class="badge-wrong">สีผิด</td></tr>`;
+      }).join('');
+      errList.innerHTML =
+        '<table class="error-table">' +
+        '<thead><tr><th>ช่อง</th><th>สีคาดหวัง</th><th>สีตรวจพบ</th><th>หมายเหตุ</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table>';
     }
   }
 
@@ -419,9 +431,12 @@
       if (data.slots)   updateErrorPanel(data.slots, cols);
 
       // Update image if available
-      const imgEl = document.getElementById('latest-img');
-      if (imgEl && data.session.image_raw_path) {
-        imgEl.src = data.session.image_raw_path + '?t=' + Date.now();
+      const imgEl   = document.getElementById('latest-img');
+      const noImgEl = document.getElementById('no-img-msg');
+      if (imgEl && data.session.image_annotated_path) {
+        imgEl.src          = data.session.image_annotated_path + '?t=' + Date.now();
+        imgEl.style.display = '';
+        if (noImgEl) noImgEl.style.display = 'none';
       }
 
     } catch (e) {
