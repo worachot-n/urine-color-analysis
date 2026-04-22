@@ -86,7 +86,7 @@ glare_min_valid_px = 10    # Min non-glare pixels required to use masked median
 # COLOR ANALYSIS
 # =============================================================================
 [color_analysis]
-inner_crop_px      = 15    # Pixels to shrink from each side of bottle crop
+inner_crop_px      = 20    # Pixels to shrink from each side — samples pure liquid center, not plastic edge
 delta_e_threshold  = 15.0  # Legacy — kept for reference; confidence now uses margin
 confidence_margin  = 3.0   # second_best_ΔE − best_ΔE must exceed this for 'Confident'
 presence_threshold = 15.0  # Max ΔE to nearest reference level to confirm bottle present
