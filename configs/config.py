@@ -62,13 +62,13 @@ GLARE_MIN_VALID_PX: int  = int(_ip.get("glare_min_valid_px",   10))
 # Color analysis
 # =============================================================================
 _ca = _cfg.get("color_analysis", {})
-INNER_CROP_PX: int       = int(_ca.get("inner_crop_px",     15))
+OUTER_CROP_PX: int       = int(_ca.get("outer_crop_px",     15))
+INNER_CROP_PX: int       = int(_ca.get("inner_crop_px",     10))
 DELTA_E_THRESHOLD: float = float(_ca.get("delta_e_threshold", 15.0))
 CONFIDENCE_MARGIN: float = float(_ca.get("confidence_margin",  3.0))
 PRESENCE_THRESHOLD: float = float(_ca.get("presence_threshold", 15.0))
 CONTRAST_THRESHOLD: float = float(_ca.get("contrast_threshold", 12.0))
 GHOST_DE_THRESHOLD: float = float(_ca.get("ghost_de_threshold",  8.0))
-REF_INNER_CROP_PX: int   = int(_ca.get("ref_inner_crop_px", 25))
 COLOR_LEVELS: int        = int(_ca.get("color_levels",      5))
 REFS_PER_LEVEL: int      = int(_ca.get("refs_per_level",    3))
 

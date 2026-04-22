@@ -9,7 +9,7 @@ Core design principles (from CLAUDE.md):
 
 Public API:
     delta_e_cie76(lab1, lab2)           -> float
-    extract_bottle_color(frame, cx, cy, radius, inner_crop_px) -> (L, a, b) | None
+    extract_bottle_color(frame, cx, cy, radius, outer_crop_px, inner_crop_px) -> (L, a, b) | None
     build_reference_baseline(frame, reference_positions)       -> {level: (L,a,b)}
     classify_sample(sample_lab, baseline, threshold)           -> (level, delta_e, confident)
 """
@@ -20,8 +20,8 @@ import numpy as np
 from pathlib import Path
 from loguru import logger
 
-from configs.config import INNER_CROP_PX, CONFIDENCE_MARGIN, \
-                           GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX, REF_INNER_CROP_PX
+from configs.config import OUTER_CROP_PX, INNER_CROP_PX, CONFIDENCE_MARGIN, \
+                           GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX
 
 # OpenCV 8-bit Lab representation of pure white (L=255, a=128, b=128)
 WHITE_LAB = (255.0, 128.0, 128.0)
@@ -49,34 +49,33 @@ def delta_e_cie76(lab1, lab2):
 # Color extraction
 # ---------------------------------------------------------------------------
 
-def extract_bottle_color(frame, cx, cy, radius, inner_crop_px=INNER_CROP_PX):
+def extract_bottle_color(frame, cx, cy, radius,
+                          outer_crop_px=OUTER_CROP_PX,
+                          inner_crop_px=INNER_CROP_PX):
     """
-    Extract the median CIE Lab color from the center of a detected bottle cap.
+    Extract the median CIE Lab color from an annular ring on a detected bottle cap.
 
-    An inner crop is applied (shrinking by inner_crop_px on each side) to
-    exclude cap edges and focus on the liquid color beneath the cap.
+    Sampling region = ring between inner_crop_px (from center) and
+    (radius - outer_crop_px) (from center outward). This avoids:
+      - outer_crop_px: plastic cap ring / edge artifacts
+      - inner_crop_px: specular glare hot-spot at cap center
 
     Args:
         frame:          BGR image (numpy array, full resolution)
         cx, cy:         Circle center in image pixel coordinates
         radius:         Circle radius in pixels
-        inner_crop_px:  Pixels to shrink from each side before sampling
+        outer_crop_px:  Pixels to shrink from bottle edge (outer ring boundary)
+        inner_crop_px:  Pixels from center to exclude (inner ring boundary)
 
     Returns:
-        (L, a, b) tuple of median CIE Lab values, or None if the crop is invalid.
+        (L, a, b) tuple of median CIE Lab values, or None if the ring is invalid.
     """
     r = int(radius)
-    x1 = int(cx) - r + inner_crop_px
-    y1 = int(cy) - r + inner_crop_px
-    x2 = int(cx) + r - inner_crop_px
-    y2 = int(cy) + r - inner_crop_px
-
-    # Clamp to image bounds
-    h, w = frame.shape[:2]
-    x1 = max(0, x1)
-    y1 = max(0, y1)
-    x2 = min(w, x2)
-    y2 = min(h, y2)
+    # Bounding box for the outer boundary
+    x1 = max(0, int(cx) - r + outer_crop_px)
+    y1 = max(0, int(cy) - r + outer_crop_px)
+    x2 = min(frame.shape[1], int(cx) + r - outer_crop_px)
+    y2 = min(frame.shape[0], int(cy) + r - outer_crop_px)
 
     if x2 <= x1 or y2 <= y1:
         return None
@@ -85,19 +84,26 @@ def extract_bottle_color(frame, cx, cy, radius, inner_crop_px=INNER_CROP_PX):
     if crop.size == 0:
         return None
 
+    # Annular mask: exclude pixels closer than inner_crop_px to the bottle center
+    h_crop, w_crop = crop.shape[:2]
+    Y, X = np.ogrid[:h_crop, :w_crop]
+    dist = np.sqrt((X - (int(cx) - x1)) ** 2 + (Y - (int(cy) - y1)) ** 2)
+    ring_mask = dist >= inner_crop_px  # True = in the usable ring
+
+    if ring_mask.sum() < GLARE_MIN_VALID_PX:
+        return None
+
     # Convert BGR → CIE Lab
     lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
 
-    # Exclude glare pixels (over-exposed hotspot at cap center)
+    # Combine ring mask with glare filter
     non_glare = lab[:, :, 0] < GLARE_L_THRESHOLD
-    if non_glare.sum() >= GLARE_MIN_VALID_PX:
-        L = float(np.median(lab[:, :, 0][non_glare]))
-        a = float(np.median(lab[:, :, 1][non_glare]))
-        b = float(np.median(lab[:, :, 2][non_glare]))
-    else:
-        L = float(np.median(lab[:, :, 0]))
-        a = float(np.median(lab[:, :, 1]))
-        b = float(np.median(lab[:, :, 2]))
+    combined  = ring_mask & non_glare
+    mask = combined if combined.sum() >= GLARE_MIN_VALID_PX else ring_mask
+
+    L = float(np.median(lab[:, :, 0][mask]))
+    a = float(np.median(lab[:, :, 1][mask]))
+    b = float(np.median(lab[:, :, 2][mask]))
 
     return (L, a, b)
 
@@ -127,8 +133,7 @@ def build_reference_baseline(frame, reference_positions):
     for level, positions in reference_positions.items():
         labs = []
         for cx, cy, radius in positions:
-            lab = extract_bottle_color(frame, cx, cy, radius,
-                                       inner_crop_px=REF_INNER_CROP_PX)
+            lab = extract_bottle_color(frame, cx, cy, radius)
             if lab is not None:
                 labs.append(lab)
 

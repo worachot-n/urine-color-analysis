@@ -467,6 +467,58 @@ def _build_ref_positions(
     return positions
 
 
+def _refine_baseline_from_slots(
+    img: np.ndarray,
+    slot_hits: dict[int, dict],
+    initial_baseline: dict[int, tuple],
+    min_samples: int = 2,
+) -> dict[int, tuple]:
+    """Refine baseline using actual sample-area bottle colors grouped by expected column zone.
+
+    The reference row sits at a different position (top) than the sample bottles and may
+    have different lighting. This function samples bottle colors from the actual sample
+    area, groups them by their expected column zone (L0=cols1-3, L1=cols4-6, …), takes
+    the median Lab per zone, and uses that to override each centroid.
+
+    Median is used for robustness — a single wrong-color bottle in a zone won't shift the
+    centroid enough to mask the error, as long as it is a minority.
+
+    Args:
+        img:              Full BGR image.
+        slot_hits:        {position_index: {cx, cy, radius}} from _match_detections_to_slots.
+        initial_baseline: {level: (L, a, b)} from reference row — used as fallback for
+                          zones with fewer than min_samples detected bottles.
+        min_samples:      Minimum bottles per zone required to update that centroid.
+
+    Returns:
+        Refined {level: (L, a, b)}.
+    """
+    from utils.color_analysis import extract_bottle_color
+
+    zone_labs: dict[int, list] = {level: [] for level in initial_baseline}
+
+    for pos_idx, hit in slot_hits.items():
+        expected = _expected_level_from_position(pos_idx)
+        if expected not in zone_labs:
+            continue
+        lab = extract_bottle_color(img, hit["cx"], hit["cy"], hit["radius"])
+        if lab is not None:
+            zone_labs[expected].append(lab)
+
+    refined = dict(initial_baseline)
+    for level, labs in zone_labs.items():
+        if len(labs) < min_samples:
+            logger.debug("Zone L{}: {} sample(s) — keeping reference baseline", level, len(labs))
+            continue
+        L = float(np.median([v[0] for v in labs]))
+        a = float(np.median([v[1] for v in labs]))
+        b = float(np.median([v[2] for v in labs]))
+        logger.info("Zone L{}: refined Lab=({:.1f}, {:.1f}, {:.1f}) from {} bottle(s)", level, L, a, b, len(labs))
+        refined[level] = (L, a, b)
+
+    return refined
+
+
 def _build_slot_rows(
     slot_hits: dict[int, dict],
     classified: dict[int, int],
@@ -738,6 +790,8 @@ async def analyze(file: UploadFile = File(...)):
             logger.warning("/analyze: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
         slot_hits = _match_detections_to_slots(sample_boxes, slot_centers, position_offset=16)
+        if live_baseline and slot_hits:
+            live_baseline = _refine_baseline_from_slots(img_full, slot_hits, live_baseline)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except HTTPException:
@@ -1459,6 +1513,8 @@ async def api_upload(file: UploadFile = File(...)):
             logger.warning("/api/upload: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
         slot_hits = _match_detections_to_slots(sample_boxes, slot_centers, position_offset=16)
+        if live_baseline and slot_hits:
+            live_baseline = _refine_baseline_from_slots(img_full, slot_hits, live_baseline)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except HTTPException:
@@ -1688,6 +1744,8 @@ async def api_test_upload(file: UploadFile = File(...)):
             logger.warning("/api/test-upload: baseline fallback to grid-position sampling (YOLO ref={} levels)", len(yolo_ref_pos))
 
         slot_hits = _match_detections_to_slots(sample_boxes, slot_centers, position_offset=16)
+        if live_baseline and slot_hits:
+            live_baseline = _refine_baseline_from_slots(img_full, slot_hits, live_baseline)
         classified    = _run_color_analysis_v2(img_full, slot_hits, baseline=live_baseline or None)
 
     except Exception as exc:

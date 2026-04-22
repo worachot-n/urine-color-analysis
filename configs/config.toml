@@ -86,14 +86,15 @@ glare_min_valid_px = 10    # Min non-glare pixels required to use masked median
 # COLOR ANALYSIS
 # =============================================================================
 [color_analysis]
-inner_crop_px      = 20    # Pixels to shrink from each side — samples pure liquid center, not plastic edge
+outer_crop_px      = 15    # Pixels to shrink from bottle edge (excludes plastic ring)
+inner_crop_px      = 10    # Pixels from bottle center to exclude (excludes glare hot-spot)
+                            # Sampling region = annular ring between inner_crop_px and (radius - outer_crop_px)
 delta_e_threshold  = 15.0  # Legacy — kept for reference; confidence now uses margin
 confidence_margin  = 3.0   # second_best_ΔE − best_ΔE must exceed this for 'Confident'
 presence_threshold = 15.0  # Max ΔE to nearest reference level to confirm bottle present
                             # Background paper scores >>15; real bottles score <15
 contrast_threshold = 12.0  # Min ΔE to white paper — below this = ghost (old pipeline)
 ghost_de_threshold  = 8.0  # Stricter ΔE to white paper for YOLO path anti-ghosting
-ref_inner_crop_px  = 15    # Match sample inner_crop_px — red ring negligible at full resolution
 color_levels       = 5     # Number of distinct color levels (L0-L4)
 refs_per_level     = 3     # Reference bottles per level in reference row
 

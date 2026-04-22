@@ -50,13 +50,13 @@ def test_delta_e_non_negative():
 
 def test_extract_returns_none_when_crop_degenerates():
     frame = np.zeros((100, 100, 3), dtype=np.uint8)
-    # radius=5, inner_crop=15 → crop collapses
-    assert extract_bottle_color(frame, 50, 50, 5, inner_crop_px=15) is None
+    # radius=5, outer_crop=15 → bounding box collapses
+    assert extract_bottle_color(frame, 50, 50, 5, outer_crop_px=15) is None
 
 
 def test_extract_returns_tuple_of_three():
     frame = np.full((300, 300, 3), (80, 160, 200), dtype=np.uint8)
-    result = extract_bottle_color(frame, 150, 150, 50, inner_crop_px=5)
+    result = extract_bottle_color(frame, 150, 150, 50, outer_crop_px=5, inner_crop_px=0)
     assert result is not None
     assert len(result) == 3
 
@@ -64,8 +64,8 @@ def test_extract_returns_tuple_of_three():
 def test_extract_uniform_color_is_consistent():
     """Same uniform color in different positions should return the same Lab."""
     frame = np.full((400, 400, 3), (30, 120, 200), dtype=np.uint8)
-    lab1 = extract_bottle_color(frame, 100, 100, 40, inner_crop_px=5)
-    lab2 = extract_bottle_color(frame, 300, 300, 40, inner_crop_px=5)
+    lab1 = extract_bottle_color(frame, 100, 100, 40, outer_crop_px=5, inner_crop_px=0)
+    lab2 = extract_bottle_color(frame, 300, 300, 40, outer_crop_px=5, inner_crop_px=0)
     assert lab1 is not None and lab2 is not None
     for c1, c2 in zip(lab1, lab2):
         assert abs(c1 - c2) < 1.0   # Identical uniform regions → same median
@@ -74,7 +74,7 @@ def test_extract_uniform_color_is_consistent():
 def test_extract_clamps_to_image_bounds():
     """Circle partially outside frame edge should still return a result."""
     frame = np.full((200, 200, 3), (100, 100, 100), dtype=np.uint8)
-    result = extract_bottle_color(frame, 5, 5, 40, inner_crop_px=5)
+    result = extract_bottle_color(frame, 5, 5, 40, outer_crop_px=5, inner_crop_px=0)
     # After clamping there might still be a valid crop (or None if degenerate)
     # Either outcome is acceptable — just must not raise
     assert result is None or len(result) == 3
