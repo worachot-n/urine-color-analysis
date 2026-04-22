@@ -101,6 +101,7 @@ class TestSlot(_Base):
     position_index = Column(Integer, nullable=False)   # 1-195 row-major
     color_result   = Column(Integer, nullable=True)    # 0-4; None = empty slot
     is_error       = Column(Boolean, default=False)
+    error_reason   = Column(String, nullable=True)     # "สีผิด" | "วางเลขซ้ำ" | None
     person_id      = Column(Integer, ForeignKey("people.id"), nullable=True)
 
     session        = relationship("ScanSession", back_populates="slots")
@@ -522,27 +523,56 @@ def _refine_baseline_from_slots(
 def _build_slot_rows(
     slot_hits: dict[int, dict],
     classified: dict[int, int],
+    layout_map: dict[str, str] | None = None,
 ) -> list[dict]:
     """
     Build slot dicts for DB + JSON response (sample positions 16-195 only).
 
     Positions 1-15 are reference row slots — handled separately for baseline
     extraction and never classified as samples.
-    Each dict: {position_index, color_result, is_error}
+
+    Each dict: {position_index, color_result, is_error, error_reason}
+    error_reason is "วางเลขซ้ำ" when the slot label appears in more than one
+    occupied slot, or "สีผิด" when the classified colour differs from the
+    expected column-zone colour.  Duplicate takes precedence over wrong colour.
     """
+    # Detect duplicate labels among occupied slots
+    duplicate_positions: set[int] = set()
+    if layout_map:
+        label_to_positions: dict[str, list[int]] = {}
+        for pos_idx in slot_hits:
+            label = layout_map.get(str(pos_idx))
+            if label:
+                label_to_positions.setdefault(label, []).append(pos_idx)
+        for positions in label_to_positions.values():
+            if len(positions) > 1:
+                duplicate_positions.update(positions)
+
     rows: list[dict] = []
     for pos_idx in range(16, 196):
         if pos_idx not in slot_hits:
-            rows.append({"position_index": pos_idx, "color_result": None, "is_error": False})
+            rows.append({"position_index": pos_idx, "color_result": None,
+                         "is_error": False, "error_reason": None})
             continue
 
         level    = classified.get(pos_idx)
         expected = _expected_level_from_position(pos_idx)
-        is_error = (level is not None) and (level != expected)
+
+        if pos_idx in duplicate_positions:
+            is_error     = True
+            error_reason = "วางเลขซ้ำ"
+        elif (level is not None) and (level != expected):
+            is_error     = True
+            error_reason = "สีผิด"
+        else:
+            is_error     = False
+            error_reason = None
+
         rows.append({
             "position_index": pos_idx,
             "color_result":   level,
             "is_error":       is_error,
+            "error_reason":   error_reason,
         })
     return rows
 
@@ -608,12 +638,13 @@ def _run_migrations() -> None:
     bool_t   = "BOOLEAN DEFAULT FALSE" if is_pg else "INTEGER DEFAULT 0"
 
     migrations = [
-        ("trays", "layout_json",    json_t),
-        ("trays", "grid_json",      json_t),
-        ("trays", "tray_name",      "VARCHAR"),
-        ("trays", "is_active",      bool_t),
-        ("trays", "rows",           "INTEGER DEFAULT 13"),
-        ("trays", "cols",           "INTEGER DEFAULT 15"),
+        ("trays",      "layout_json",  json_t),
+        ("trays",      "grid_json",    json_t),
+        ("trays",      "tray_name",    "VARCHAR"),
+        ("trays",      "is_active",    bool_t),
+        ("trays",      "rows",         "INTEGER DEFAULT 13"),
+        ("trays",      "cols",         "INTEGER DEFAULT 15"),
+        ("test_slots", "error_reason", "VARCHAR"),
     ]
     for table, col, col_type in migrations:
         try:
@@ -801,7 +832,7 @@ async def analyze(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
 
     # Phase E — wrong-colour-zone validation (per position_index)
-    slot_rows   = _build_slot_rows(slot_hits, classified)
+    slot_rows   = _build_slot_rows(slot_hits, classified, layout_map)
     error_slots = [r for r in slot_rows if r["is_error"]]
     count       = len(slot_hits)
     error_count = len(error_slots)
@@ -809,6 +840,8 @@ async def analyze(file: UploadFile = File(...)):
     color_counts: dict[int, int] = {i: 0 for i in range(5)}
     for pos_idx in slot_hits:
         color_counts[_expected_level_from_position(pos_idx)] += 1
+
+    dup_positions = {r["position_index"] for r in slot_rows if r["error_reason"] == "วางเลขซ้ำ"}
 
     # Build validation_results for annotation (error slots get labels)
     validation_results_compat: dict = {
@@ -820,11 +853,11 @@ async def analyze(file: UploadFile = File(...)):
                 "level":       r["color_result"],
                 "ok":          not r["is_error"],
                 "wrong_color": r["is_error"],
-                "duplicate":   False,
+                "duplicate":   r["position_index"] in dup_positions,
             }
             for r in slot_rows if r["color_result"] is not None
         },
-        "duplicate_slots":     [],
+        "duplicate_slots":     list(dup_positions),
         "wrong_color_slots":   [
             {"slot_id":    str(r["position_index"]),
              "slot_label": layout_map.get(str(r["position_index"]),
@@ -888,6 +921,7 @@ async def analyze(file: UploadFile = File(...)):
                 "position_index": r["position_index"],
                 "color_result":   r["color_result"],
                 "is_error":       r["is_error"],
+                "error_reason":   r["error_reason"],
                 "person_id":      None,
             }
             for r in slot_rows
@@ -1060,6 +1094,7 @@ async def api_latest():
                 "position_index": s.position_index,
                 "color_result":   s.color_result,
                 "is_error":       s.is_error,
+                "error_reason":   s.error_reason,
                 "slot_label":     _layout_map.get(str(s.position_index)),
             }
             for s in sorted(scan.slots, key=lambda x: x.position_index)
@@ -1523,7 +1558,7 @@ async def api_upload(file: UploadFile = File(...)):
         logger.exception("Upload inference failed")
         raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
 
-    slot_rows   = _build_slot_rows(slot_hits, classified)
+    slot_rows   = _build_slot_rows(slot_hits, classified, layout_map)
     error_slots = [r for r in slot_rows if r["is_error"]]
     count       = len(slot_hits)
     error_count = len(error_slots)
@@ -1607,6 +1642,7 @@ async def api_upload(file: UploadFile = File(...)):
                 "position_index": r["position_index"],
                 "color_result":   r["color_result"],
                 "is_error":       r["is_error"],
+                "error_reason":   r["error_reason"],
                 "person_id":      None,
             }
             for r in slot_rows
@@ -1752,7 +1788,7 @@ async def api_test_upload(file: UploadFile = File(...)):
         logger.exception("Test inference failed")
         raise HTTPException(status_code=500, detail=f"Model inference failed: {exc}")
 
-    slot_rows   = _build_slot_rows(slot_hits, classified)
+    slot_rows   = _build_slot_rows(slot_hits, classified, layout_map)
     error_slots = [r for r in slot_rows if r["is_error"]]
     count       = len(slot_hits)
     color_counts: dict[int, int] = {i: 0 for i in range(5)}

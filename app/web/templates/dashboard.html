@@ -112,6 +112,7 @@
   .error-table td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #1e3a30; color: #e0f0ea; }
   .error-table tr:last-child td { border-bottom: none; }
   .badge-wrong { color: #ffb300; font-weight: 600; }
+  .badge-dup   { color: #ff5252; font-weight: 600; }
 </style>
 {% endblock %}
 
@@ -196,7 +197,12 @@
           const c = ((s.position_index - 1) % cols) + 1;
           return `R${String(r).padStart(2,'0')}C${String(c).padStart(2,'0')}`;
         })();
-        return `<tr><td>${lbl}</td><td>${exp}</td><td>${s.color_result}</td><td class="badge-wrong">สีผิด</td></tr>`;
+        const isDup    = s.error_reason === 'วางเลขซ้ำ';
+        const badgeCls = isDup ? 'badge-dup' : 'badge-wrong';
+        const reason   = s.error_reason || 'สีผิด';
+        const expCell  = isDup ? '-' : exp;
+        const gotCell  = isDup ? '-' : (s.color_result ?? '-');
+        return `<tr><td>${lbl}</td><td>${expCell}</td><td>${gotCell}</td><td class="${badgeCls}">${reason}</td></tr>`;
       }).join('');
       errList.innerHTML =
         '<table class="error-table">' +
@@ -243,6 +249,6 @@
   }
 
   loadLatest();
-  setInterval(loadLatest, 30000);
+  setInterval(loadLatest, 10000);
 </script>
 {% endblock %}
