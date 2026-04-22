@@ -111,6 +111,17 @@ cfg.unet_input_size      # → 640
 cfg.unet_mask_threshold  # → 0.5
 ```
 
+Color analysis parameters come from `configs/config.toml` `[color_analysis]`:
+
+```toml
+[color_analysis]
+outer_crop_px      = 15    # pixels to exclude from bottle edge (plastic cap ring)
+inner_crop_px      = 10    # pixels from bottle center to exclude (specular glare)
+confidence_margin  = 3.0   # min ΔE gap between best and second-best for confident result
+glare_l_threshold  = 240   # OpenCV 8-bit L value above which a pixel is considered glare
+glare_min_valid_px = 10    # minimum valid pixels after glare filter, else use full ring
+```
+
 **Never hardcode pin numbers, file paths, or thresholds in logic files.**
 
 ### GPIO pins (from `configs/config.toml`)
@@ -201,13 +212,20 @@ JPEG bytes
   ▼ _match_detections_to_slots()                 # server_app.py
   Each YOLO box → nearest grid slot (position_index 1-195)
   │
+  ▼ _refine_baseline_from_slots()                # server_app.py
+  Re-sample actual bottles in each column zone; replace reference centroid with
+  median Lab from sample-area bottles (corrects for row-to-row lighting shift).
+  Fallback to reference centroid if < 2 bottles in that zone.
+  │
   ▼ _run_color_analysis_v2()
   For each occupied slot: extract_bottle_color() → classify_sample()
-  level 0-4 per position_index (K-means nearest centroid in CIE Lab)
+  level 0-4 per position_index (nearest centroid in CIE Lab)
+  Warns at WARNING level when confidence margin is too small.
   │
-  ▼ _build_slot_rows()
-  195 TestSlot dicts: {position_index, color_result, is_error}
-  is_error = True when classified level ≠ expected level for that column zone
+  ▼ _build_slot_rows(slot_hits, classified, layout_map)
+  195 TestSlot dicts: {position_index, color_result, is_error, error_reason}
+  is_error=True + error_reason="สีผิด"    when classified level ≠ expected zone
+  is_error=True + error_reason="วางเลขซ้ำ" when two bottles share the same layout label
   │
   ▼ _render_annotated_canvas()                   # app/shared/processor.py
   green box per bottle + red blink on error slots + layout_json labels
@@ -278,6 +296,7 @@ class TestSlot(_Base):
     position_index = Column(Integer, nullable=False)   # 1–(rows×cols), row-major
     color_result   = Column(Integer, nullable=True)    # 0-4; None = empty slot
     is_error       = Column(Boolean, default=False)
+    error_reason   = Column(String, nullable=True)     # "สีผิด" | "วางเลขซ้ำ" | None
     person_id      = Column(Integer, ForeignKey("people.id"), nullable=True)
 
 class People(_Base):
@@ -347,7 +366,7 @@ Returns the most recent `ScanSession` with all slot results and tray dimensions:
 {
   "tray":    {"id": 3, "tray_name": "ถาดหน่วยที่ 1", "is_active": true, "rows": 13, "cols": 15},
   "session": {"id": 42, "scanned_at": "...", "color_0": 3, ..., "error_count": 2, "is_clean": false},
-  "slots":   [{"position_index": 1, "color_result": 0, "is_error": false}, ...]
+  "slots":   [{"position_index": 1, "color_result": 0, "is_error": false, "error_reason": null}, ...]
 }
 ```
 
@@ -387,7 +406,7 @@ Runs the full pipeline without DB write or Telegram. Returns:
   "summary":   {"L0": 3, ...},
   "is_clean":  false,
   "errors":    {"duplicate_slots": [], "wrong_color_slots": ["R01C05"]},
-  "slots":     [...],
+  "slots":     [{"position_index": 1, "color_result": 0, "is_error": false, "error_reason": null}, ...],
   "image_url": "/static/test/<uuid>.jpg"
 }
 ```
@@ -441,6 +460,8 @@ Every scan generates `logs/img/URINE_SCAN_<YYYYMMDD_HHMMSS>.jpg` via `save_visua
 4. Single PIL pass for Thai text rendering (BGR→RGB→BGR once)
 
 Files older than 30 days are cleaned up at server startup.
+
+The dashboard (`dashboard.html`) auto-refreshes via `setInterval(loadLatest, 10000)` — polling `/api/latest` every 10 seconds. The "อัพเดท" button triggers an immediate refresh.
 
 ---
 
@@ -596,6 +617,8 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 - Do not re-implement Telegram in `bot/telegram_bot.py` — the active implementation is inlined in `server_app.py`
 - Do not add ArUco detection — tray identification is handled via the DB active-tray mechanism
 - Do not hardcode grid dimensions (13×15) in dashboard JS — read `tray.rows` / `tray.cols` from `/api/latest`
+- Do not use a fixed absolute ΔE threshold for `classify_sample` confidence — use the margin-of-victory check `(second_best_ΔE − best_ΔE) > margin`
+- Do not use `ref_inner_crop_px` — reference and sample bottles use the same `outer_crop_px` / `inner_crop_px` to avoid systematic Lab bias
 
 ---
 
@@ -616,8 +639,11 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 | `lock_focus_picamera2(picam2, focus_value)` | `utils/camera_undistort.py` | Set AfMode=Manual + LensPosition |
 | `load_params(yaml_path)` | `utils/camera_undistort.py` | Parse camera_params.yaml |
 | `build_kmeans_centroids(path)` | `utils/color_analysis.py` | Load color.json → Lab centroids per class |
-| `classify_sample(lab, centroids)` | `utils/color_analysis.py` | K-means nearest centroid → level 0-4 |
-| `extract_bottle_color(frame, cx, cy, r)` | `utils/color_analysis.py` | Crop + Lab mean from bottle region |
+| `classify_sample(lab, baseline, margin)` | `utils/color_analysis.py` | Nearest-centroid → (level, delta_e, confident); margin-of-victory confidence |
+| `extract_bottle_color(frame, cx, cy, radius, outer_crop_px, inner_crop_px)` | `utils/color_analysis.py` | Annular ring Lab median — excludes plastic edge (outer) and center glare (inner) |
+| `build_reference_baseline(frame, ref_positions)` | `utils/color_analysis.py` | Sample reference row → {level: (L,a,b)} per color level |
+| `_refine_baseline_from_slots(img, slot_hits, initial_baseline, min_samples)` | `app/server_app.py` | Replace reference centroid with median of actual sample-area bottles per zone |
+| `_build_slot_rows(slot_hits, classified, layout_map)` | `app/server_app.py` | Build 195 slot dicts; flags wrong color ("สีผิด") and duplicate labels ("วางเลขซ้ำ") |
 | `_generate_default_layout(rows, cols)` | `app/server_app.py` | Auto-generate layout_json for a new tray |
 | `_expected_level_from_position(position_index)` | `app/server_app.py` | Column-zone → expected colour level |
 

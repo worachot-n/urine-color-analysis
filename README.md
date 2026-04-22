@@ -18,20 +18,22 @@ Button press (GPIO 24)                     POST /analyze
   → CameraUndistorter.undistort_frame()      → letterbox to 640 × 640 (white)
   → HTTPS POST + X-Auth-Token  ─────────►   → Load grid_json from active tray (DB)
   → TM1637 spinner animation               → YOLO: bottle detection → slot matching
-  → LCD "Analyzing..."                       → Live CIE Lab color ref from ref row
-  → parse JSON response        ◄─────────   → Wrong-zone validation → error slots
-  → update LCD + TM1637 count              → Visual log saved to logs/img/
-  → scroll error coords on LCD             → Telegram report (Thai) sent
-  → Relay Green (ok) / Red (error)         → PostgreSQL (ScanSession + TestSlot rows)
+  → LCD "Analyzing..."                       → Live CIE Lab baseline from ref row
+  → parse JSON response        ◄─────────   → Zone-baseline refinement from sample area
+  → update LCD + TM1637 count              → Wrong-zone + duplicate-label validation
+  → scroll error coords on LCD             → Visual log saved to logs/img/
+  → Relay Green (ok) / Red (error)         → Telegram report (Thai) sent
+                                           → PostgreSQL (ScanSession + TestSlot rows)
                                            → return JSON {count, summary, slots, errors}
 ```
 
 - Pi performs lens undistortion locally before uploading (focus locked via `camera_params.yaml`)
 - Server requires an **active tray** to be selected via the `/trays` management page
 - Grid is calibrated once via `/settings` (4-corner click → bilinear interpolation → saved to `grid_json` in DB)
-- YOLO boxes are matched to the 195 calibrated slot centres loaded from the active tray's `grid_json`
-- Color reference is extracted live from the reference row (row 0) of each capture — no `color.json` needed
-- Dashboard renders an interactive CSS grid sized to the active tray's `rows × cols`
+- YOLO boxes are matched to 195 calibrated slot centres loaded from the active tray's `grid_json`
+- Color reference is extracted live from the reference row (row 0) every capture, then **refined using actual sample-area bottle colors** grouped by expected column zone — no `color.json` needed
+- Duplicate label detection flags bottles whose `layout_json` label appears in more than one occupied slot
+- Dashboard renders an interactive CSS grid sized to the active tray's `rows × cols`, auto-refreshing every 10 s
 - Tunnel via Cloudflare for public HTTPS access from the Pi
 
 ---
@@ -54,37 +56,34 @@ urine-color-analysis/
 │   └── web/
 │       ├── templates/
 │       │   ├── layout.html         # Base template (nav + hamburger, 5 links)
-│       │   ├── dashboard.html      # Interactive dynamic grid (rows×cols from active tray)
+│       │   ├── dashboard.html      # Interactive dynamic grid (rows×cols) — 10 s auto-refresh
 │       │   ├── trays.html          # Tray management — create, activate, edit, delete
 │       │   ├── trend.html          # Historical chart + date-range filter
-│       │   ├── settings.html       # Grid calibration + color reference UI
+│       │   ├── settings.html       # Grid calibration UI
 │       │   └── test.html           # Manual upload + result preview (no DB / Telegram)
 │       └── static/
-│           ├── settings.js         # Canvas corner-picker for grid calibration
 │           ├── captures/           # Annotated JPEGs at /static/captures/
 │           └── test/               # Test-upload results at /static/test/
 │
 ├── utils/
-│   ├── grid_detector.py            # GridDetector — U-Net → skeleton → 195 intersections
+│   ├── grid_detector.py            # GridDetectionResult dataclass
 │   ├── camera_undistort.py         # CameraUndistorter — lens correction + focus lock
 │   ├── yolo_detector.py            # YoloBottleDetector
-│   ├── color_analysis.py           # CIE Lab, Delta E, build_kmeans_centroids(), classifier
+│   ├── color_analysis.py           # CIE Lab, Delta E, annular-ring extraction, classifier
 │   ├── grid.py                     # GridConfig — slot polygons, find_slot_for_circle()
 │   └── calibration.py              # Grid calibration helpers
 │
 ├── models/
-│   ├── unet.py                     # U-Net model (smp.Unet + ResNet-34 backbone)
+│   ├── unet.py                     # U-Net model (unused — kept for reference)
 │   ├── unet_grid.pt                # U-Net trained weights (git-ignored)
 │   └── best.pt                     # YOLO PyTorch weights (git-ignored)
 │
 ├── configs/
-│   ├── config.toml                 # PRIMARY hardware config — GPIO, camera, relay, U-Net
+│   ├── config.toml                 # PRIMARY hardware config — GPIO, camera, relay, YOLO, color analysis
 │   ├── camera_params.yaml          # Lens calibration — focus_value, K matrix, distortion
 │   └── config.py                   # TOML loader (used by utils/ directly)
 │
 ├── settings.yaml                   # Server / model / database fallback config
-├── color.json                      # 5 color levels × reference bottles (Lab values)
-├── grid_config.json                # 195 slot polygons (generated by /settings)
 ├── pyproject.toml                  # uv project — extras: common / pi / server
 │
 ├── logs/
@@ -180,16 +179,17 @@ model_path     = "models/best.pt"
 conf_threshold = 0.40
 iou_threshold  = 0.45
 
+[color_analysis]
+outer_crop_px = 15    # pixels to exclude from bottle edge (plastic ring)
+inner_crop_px = 10    # pixels from bottle center to exclude (glare hot-spot)
+                      # sampling region = annular ring between inner_crop_px and (radius - outer_crop_px)
+confidence_margin = 3.0
+
 [sample_roi]
 top    = 220   # skip reference row
 bottom = 20
 left   = 200   # skip dead-zone column ZZ
 right  = 800
-
-[unet]
-model_path     = "models/unet_grid.pt"
-input_size     = 640
-mask_threshold = 0.5
 ```
 
 ### `configs/camera_params.yaml` — lens calibration
@@ -256,8 +256,8 @@ TELEGRAM_CHAT_ID=your_chat_id
   "summary":      {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
   "is_clean":     false,
   "error_count":  2,
-  "errors":       {"duplicate_slots": [], "wrong_color_slots": ["R01C05", "R03C12"]},
-  "slots":        [{"position_index": 1, "color_result": 0, "is_error": false}, "..."],
+  "errors":       {"duplicate_slots": [31, 36], "wrong_color_slots": ["R01C05"]},
+  "slots":        [{"position_index": 1, "color_result": 0, "is_error": false, "error_reason": null}, "..."],
   "timestamp":    "2026-04-21T10:30:00.000000",
   "image_id":     "uuid-string"
 }
@@ -270,9 +270,12 @@ Returns the most recent session with tray dimensions for the dashboard grid:
 {
   "tray":    {"id": 3, "tray_name": "...", "is_active": true, "rows": 13, "cols": 15},
   "session": {"id": 42, "scanned_at": "...", "color_0": 3, "...", "error_count": 2},
-  "slots":   [{"position_index": 1, "color_result": 0, "is_error": false}, "..."]
+  "slots":   [{"position_index": 1, "color_result": 0, "is_error": false,
+               "error_reason": null, "slot_label": "A01"}, "..."]
 }
 ```
+
+`error_reason` values: `null` (no error) · `"สีผิด"` (wrong colour zone) · `"วางเลขซ้ำ"` (duplicate label)
 
 ### Tray API
 
@@ -289,7 +292,7 @@ Returns the most recent session with tray dimensions for the dashboard grid:
 | URL | Description |
 |-----|-------------|
 | `GET /health` | `{"status": "ok"}` |
-| `GET /dashboard` | Interactive grid dashboard |
+| `GET /dashboard` | Interactive grid dashboard — auto-refreshes every 10 s |
 | `GET /trays` | Tray management page |
 | `GET /trend` | Historical chart |
 | `GET /api/trend?from_date=&to_date=` | JSON trend data (Thai Buddhist dates) |
@@ -311,7 +314,8 @@ scan_sessions    — one row per scan event
   image_raw_path, image_annotated_path
 
 test_slots       — rows×cols rows per session (195 for 13×15 tray)
-  id, session_id, position_index, color_result (0-4 or null), is_error, person_id
+  id, session_id, position_index, color_result (0-4 or null),
+  is_error, error_reason ("สีผิด" | "วางเลขซ้ำ" | null), person_id
 
 people           — personnel registry (for future identity linking)
   id, full_name, personnel_id, department
@@ -348,7 +352,7 @@ Server: cv2.imdecode() → full BGR
         (HTTP 400 if tray is uncalibrated)
         │
         ▼  build_reference_baseline() on ref row
-        Live CIE Lab standard per color level (L0–L4) — no color.json
+        Initial CIE Lab centroid per level (L0–L4) from reference row bottles
         │
         ▼  YOLO inference → scale_coordinates()
         Bottle boxes in full-image space
@@ -356,11 +360,16 @@ Server: cv2.imdecode() → full BGR
         ▼  _match_detections_to_slots()
         Each box → nearest position_index (1–195)
         │
-        ▼  CIE Lab classification via live baseline
-        level 0-4 per occupied slot
+        ▼  _refine_baseline_from_slots()
+        Median Lab per column zone (L0–L4) from actual sample-area bottles
+        Corrects for lighting difference between reference row and sample area
         │
-        ▼  Wrong-zone validation
-        is_error = True when level ≠ expected_level for that column zone
+        ▼  CIE Lab classification via refined baseline
+        level 0-4 per occupied slot (nearest centroid, CIE76 Delta E)
+        │
+        ▼  _build_slot_rows() with layout_map
+        195 slot dicts: {position_index, color_result, is_error, error_reason}
+        is_error + error_reason set for wrong colour zone OR duplicate label
         │
         ▼  _render_annotated_canvas() → save_visual_log()
         Annotated JPEG to logs/img/ + Telegram
@@ -368,6 +377,40 @@ Server: cv2.imdecode() → full BGR
         ▼  INSERT ScanSession + 195 TestSlot rows → PostgreSQL
         return JSON
 ```
+
+---
+
+## Color Classification
+
+Classification is **nearest-centroid in CIE Lab** (CIE76 Delta E), not iterative K-means.
+
+### Two-phase baseline
+
+1. **Reference row** (`build_reference_baseline`): 15 reference bottles at the top of the tray (3 per level) are sampled live each scan to build an initial {level → (L, a, b)} baseline.
+
+2. **Sample-area refinement** (`_refine_baseline_from_slots`): All detected sample bottles are grouped by their expected column zone. The median Lab of each zone overrides the corresponding reference centroid. This corrects for systematic lighting differences between the reference row position and the sample area.
+
+### Annular ring sampling
+
+`extract_bottle_color` samples from a **circular ring** rather than a simple square crop:
+
+```
+outer_crop_px = 15  →  excludes plastic cap edge
+inner_crop_px = 10  →  excludes center glare hot-spot
+ring = pixels where  inner_crop_px ≤ dist_from_center ≤ (radius − outer_crop_px)
+```
+
+Median Lab is taken over non-glare ring pixels (L < 220 in OpenCV 8-bit encoding).
+Both reference and sample bottles use the same ring parameters.
+
+### Error detection
+
+| Error | Condition | `error_reason` |
+|-------|-----------|----------------|
+| Wrong colour | `classified_level ≠ expected_level_for_column` | `"สีผิด"` |
+| Duplicate label | Same `layout_json` label on 2+ occupied slots | `"วางเลขซ้ำ"` |
+
+Duplicate takes precedence when both conditions apply.
 
 ---
 
@@ -395,32 +438,17 @@ The `/dashboard` grid automatically resizes to the active tray's `rows × cols` 
 
 ---
 
-## Color Reference
-
-No manual color calibration needed. The reference row (row 0 of the tray, 15 reference bottles in L0–L4 groups) is sampled live from every capture using `build_reference_baseline()`. This self-calibrates per lighting condition automatically.
-
----
-
 ## Camera Lens Calibration (Pi)
 
 Calibrate once using a checkerboard at full sensor resolution (4608×2592):
 
 ```python
-# Standard OpenCV calibration — run on Pi or offline
 ret, K, dist, rvecs, tvecs = cv2.calibrateCamera(
     obj_points, img_points, (4608, 2592), None, None
 )
-# K[0,0]=fx, K[1,1]=fy, K[0,2]=cx, K[1,2]=cy
-# dist = [k1, k2, p1, p2, k3]
 ```
 
 Save the values to `configs/camera_params.yaml`. The `CameraUndistorter` scales them automatically when a different capture resolution is used at runtime.
-
-To find the optimal `focus_value`:
-```bash
-python -m utils.camera_undistort --mode preview --width 1920 --height 1080
-```
-Adjust `focus_value` in the YAML until the tray grid is sharp. LensPosition ≈ 1 / distance_metres.
 
 ---
 
@@ -432,7 +460,7 @@ Adjust `focus_value` in the YAML until the tray grid is sharp. LensPosition ≈ 
 |-------|---------|-------|
 | Idle / Ready | Boot + clean scan | **Green** ON |
 | Processing | Button press → throughout upload + wait | **Yellow** ON |
-| Error | Camera / network / timeout / wrong-zone errors | **Red** ON (until next scan) |
+| Error | Camera / network / timeout / wrong-zone / duplicate errors | **Red** ON (until next scan) |
 
 ### LCD + TM1637
 
