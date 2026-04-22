@@ -93,7 +93,7 @@ presence_threshold = 15.0  # Max ΔE to nearest reference level to confirm bottl
                             # Background paper scores >>15; real bottles score <15
 contrast_threshold = 12.0  # Min ΔE to white paper — below this = ghost (old pipeline)
 ghost_de_threshold  = 8.0  # Stricter ΔE to white paper for YOLO path anti-ghosting
-ref_inner_crop_px  = 25    # Larger inner crop for reference bottles (ignores red ring edge)
+ref_inner_crop_px  = 15    # Match sample inner_crop_px — red ring negligible at full resolution
 color_levels       = 5     # Number of distinct color levels (L0-L4)
 refs_per_level     = 3     # Reference bottles per level in reference row
 

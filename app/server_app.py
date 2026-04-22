@@ -391,9 +391,9 @@ def _run_color_analysis_v2(
         classify_sample,
         extract_bottle_color,
     )
+    from configs.config import COLOR_JSON_FILE, CONFIDENCE_MARGIN
 
     if baseline is None:
-        from configs.config import COLOR_JSON_FILE
         baseline = build_kmeans_centroids(COLOR_JSON_FILE)
 
     if not baseline:
@@ -408,8 +408,11 @@ def _run_color_analysis_v2(
         level, delta_e, confident = classify_sample(lab, baseline)
         if level is not None:
             classified[pos_idx] = level
-            logger.debug("Slot {} → L{} (ΔE={:.1f}, confident={})",
-                         pos_idx, level, delta_e, confident)
+            if confident:
+                logger.debug("Slot {} → L{} (ΔE={:.1f})", pos_idx, level, delta_e)
+            else:
+                logger.warning("Slot {} → L{} (ΔE={:.1f}) — LOW CONFIDENCE (margin < {})",
+                               pos_idx, level, delta_e, CONFIDENCE_MARGIN)
 
     return classified
 

@@ -18,6 +18,7 @@ import json
 import cv2
 import numpy as np
 from pathlib import Path
+from loguru import logger
 
 from configs.config import INNER_CROP_PX, CONFIDENCE_MARGIN, \
                            GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX, REF_INNER_CROP_PX
@@ -132,12 +133,14 @@ def build_reference_baseline(frame, reference_positions):
                 labs.append(lab)
 
         if not labs:
+            logger.warning("Baseline L{}: no valid samples extracted (all ref positions failed)", level)
             continue
 
         L = float(np.mean([v[0] for v in labs]))
         a = float(np.mean([v[1] for v in labs]))
         b = float(np.mean([v[2] for v in labs]))
         baseline[level] = (L, a, b)
+        logger.info("Baseline L{}: Lab=({:.1f}, {:.1f}, {:.1f}) from {} ref(s)", level, L, a, b, len(labs))
 
     return baseline
 
