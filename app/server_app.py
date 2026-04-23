@@ -387,15 +387,8 @@ def _run_color_analysis_v2(
     Returns:
         {position_index: level_int}
     """
-    from utils.color_analysis import (
-        build_kmeans_centroids,
-        classify_sample,
-        extract_bottle_color,
-    )
-    from configs.config import COLOR_JSON_FILE, CONFIDENCE_MARGIN
-
-    if baseline is None:
-        baseline = build_kmeans_centroids(COLOR_JSON_FILE)
+    from utils.color_analysis import classify_sample, extract_bottle_color
+    from configs.config import CONFIDENCE_MARGIN
 
     if not baseline:
         logger.warning("No colour baseline available — skipping colour classification")
