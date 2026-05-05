@@ -1,9 +1,8 @@
-# Urine Color Analysis System v2
+# Urine Color Analysis System v3
 
 A distributed vision system for automated urine sample analysis using AI.
 A **Raspberry Pi 4B** captures and undistorts images, controls status hardware, and POSTs to a server.
-A **remote Ubuntu server** runs YOLO inference, performs CIE Lab color classification, stores results in PostgreSQL, and hosts the web dashboard. The grid is calibrated once manually and saved to the database.
-Communication is secured via HTTPS (Cloudflare Tunnel) with a shared API key.
+A **Ubuntu server** runs YOLO inference, performs CIE Lab color classification, stores annotated images in Google Drive, appends results to Google Sheets, and hosts the web dashboard.
 
 ---
 
@@ -13,28 +12,23 @@ Communication is secured via HTTPS (Cloudflare Tunnel) with a shared API key.
 Raspberry Pi 4B                            Ubuntu Server
 ────────────────────────────────           ─────────────────────────────────────────
 Button press (GPIO 24)                     POST /analyze
-  → Relay Yellow ON (processing)             → Fetch active tray from DB
-  → picamera2 capture (4608 × 2592)          → ROI crop (skips ref row + dead zone)
-  → CameraUndistorter.undistort_frame()      → letterbox to 640 × 640 (white)
-  → HTTPS POST + X-Auth-Token  ─────────►   → Load grid_json from active tray (DB)
-  → TM1637 spinner animation               → YOLO: bottle detection → slot matching
-  → LCD "Analyzing..."                       → Live CIE Lab baseline from ref row
-  → parse JSON response        ◄─────────   → Zone-baseline refinement from sample area
-  → update LCD + TM1637 count              → Wrong-zone + duplicate-label validation
-  → scroll error coords on LCD             → Visual log saved to logs/img/
-  → Relay Green (ok) / Red (error)         → Telegram report (Thai) sent
-                                           → PostgreSQL (ScanSession + TestSlot rows)
-                                           → return JSON {count, summary, slots, errors}
+  → Relay Yellow ON (processing)             → crop_sample_roi (skip dead zones)
+  → picamera2 capture (4608 × 2592)          → letterbox to 640 × 640 (white fill)
+  → CameraUndistorter.undistort_frame()      → detect_grid (HoughCircles + RANSAC)
+  → HTTPS POST + X-Auth-Token  ─────────►   → YOLO: bottle detection → slot matching
+  → TM1637 spinner animation               → Live CIE Lab baseline from ref cells
+  → LCD "Analyzing..."                       → classify_sample (nearest-centroid ΔE)
+  → parse JSON response        ◄─────────   → upload annotated image → Google Drive
+  → update LCD + TM1637 count              → append row → Google Sheets
+  → scroll missing slots on LCD            → return JSON
+  → Relay Green (ok) / Red (missing)
 ```
 
-- Pi performs lens undistortion locally before uploading (focus locked via `camera_params.yaml`)
-- Server requires an **active tray** to be selected via the `/trays` management page
-- Grid is calibrated once via `/settings` (4-corner click → bilinear interpolation → saved to `grid_json` in DB)
-- YOLO boxes are matched to 195 calibrated slot centres loaded from the active tray's `grid_json`
-- Color reference is extracted live from the reference row (row 0) every capture, then **refined using actual sample-area bottle colors** grouped by expected column zone — no `color.json` needed
-- Duplicate label detection flags bottles whose `layout_json` label appears in more than one occupied slot
-- Dashboard renders an interactive CSS grid sized to the active tray's `rows × cols`, auto-refreshing every 10 s
-- Tunnel via Cloudflare for public HTTPS access from the Pi
+- Pi performs lens undistortion locally before uploading
+- Grid is detected automatically each scan via classical CV — no calibration step
+- Slot assignment is configured once via `/settings` and persisted to `server/slot_config.json`
+- Color reference is extracted live from reference cells every scan — no static `color.json`
+- Results (annotated JPEG + JSON) stored permanently in `server/static/results/`
 
 ---
 
@@ -43,55 +37,52 @@ Button press (GPIO 24)                     POST /analyze
 ```
 urine-color-analysis/
 │
-├── main.py                         # Entry point — --role client | server
+├── client/
+│   └── pi_client.py              # Pi loop — GPIO, camera, undistort, relay, LCD, TM1637, POST
 │
-├── app/
-│   ├── server_app.py               # FastAPI — YOLO, PostgreSQL, dashboard, tray API, grid calibration
-│   ├── client_app.py               # Pi loop — undistort, GPIO, relay, LCD, TM1637, HTTP POST
-│   ├── shared/
-│   │   ├── config.py               # pydantic-settings (config.toml + settings.yaml + .env)
-│   │   └── processor.py            # crop_sample_roi(), letterbox_white_padding(),
-│   │                               # scale_coordinates(), save_visual_log(),
-│   │                               # generate_visual_report(), _render_annotated_canvas()
-│   └── web/
-│       ├── templates/
-│       │   ├── layout.html         # Base template (nav + hamburger, 5 links)
-│       │   ├── dashboard.html      # Interactive dynamic grid (rows×cols) — 10 s auto-refresh
-│       │   ├── trays.html          # Tray management — create, activate, edit, delete
-│       │   ├── trend.html          # Historical chart + date-range filter
-│       │   ├── settings.html       # Grid calibration UI
-│       │   └── test.html           # Manual upload + result preview (no DB / Telegram)
-│       └── static/
-│           ├── captures/           # Annotated JPEGs at /static/captures/
-│           └── test/               # Test-upload results at /static/test/
+├── server/
+│   ├── api.py                    # FastAPI app — all 8 routes
+│   ├── pipeline.py               # run_pipeline() + lab_to_hex() — shared by all callers
+│   ├── slot_config.py            # SlotConfig dataclass + load/save/query helpers
+│   ├── slot_config.json          # Persisted slot assignment (user-edited via /settings)
+│   ├── integrations/
+│   │   ├── drive.py              # upload_image() → Google Drive
+│   │   └── sheets.py             # write_slot_config_to_sheet(), append_result_to_sheet()
+│   ├── templates/
+│   │   ├── base.html             # Shared layout (nav: Upload | Results | Settings)
+│   │   ├── upload.html           # Drag-drop form → fetch /analyze → redirect to /result/<id>
+│   │   ├── results.html          # History table (all scans, newest first)
+│   │   ├── result.html           # Detail: annotated image + slot table + scatter plot + JSON
+│   │   └── settings.html         # Interactive grid editor
+│   └── static/
+│       ├── results/              # Persistent annotated JPEGs + JSON (<scan_id>.{jpg,json})
+│       └── js/
+│           └── settings.js       # Grid rendering, popup state, API calls
 │
 ├── utils/
-│   ├── grid_detector.py            # GridDetectionResult dataclass
-│   ├── camera_undistort.py         # CameraUndistorter — lens correction + focus lock
-│   ├── yolo_detector.py            # YoloBottleDetector
-│   ├── color_analysis.py           # CIE Lab, Delta E, annular-ring extraction, classifier
-│   ├── grid.py                     # GridConfig — slot polygons, find_slot_for_circle()
-│   └── calibration.py              # Grid calibration helpers
+│   ├── grid_circle_detector.py   # detect_grid() — HoughCircles + spacing + RANSAC
+│   ├── color_analysis.py         # extract_bottle_color(), build_reference_baseline(), classify_sample()
+│   └── camera_undistort.py       # CameraUndistorter — lens correction + focus lock
 │
-├── models/
-│   ├── unet.py                     # U-Net model (unused — kept for reference)
-│   ├── unet_grid.pt                # U-Net trained weights (git-ignored)
-│   └── best.pt                     # YOLO PyTorch weights (git-ignored)
+├── app/
+│   └── shared/
+│       └── processor.py          # crop_sample_roi(), letterbox_white_padding(), scale_coordinates()
 │
 ├── configs/
-│   ├── config.toml                 # PRIMARY hardware config — GPIO, camera, relay, YOLO, color analysis
-│   ├── camera_params.yaml          # Lens calibration — focus_value, K matrix, distortion
-│   └── config.py                   # TOML loader (used by utils/ directly)
+│   ├── config.toml               # Hardware config — GPIO, camera, YOLO, color, google
+│   ├── camera_params.yaml        # Lens calibration — focus_value, K, dist_coeffs
+│   └── config.py                 # TOML loader
 │
-├── settings.yaml                   # Server / model / database fallback config
-├── pyproject.toml                  # uv project — extras: common / pi / server
+├── credentials/
+│   ├── client_secrets.json       # OAuth2 client ID + secret (git-ignored)
+│   └── token.json                # OAuth2 token, auto-written after first auth (git-ignored)
 │
-├── logs/
-│   ├── img/                        # Annotated scan images (URINE_SCAN_*.jpg)
-│   └── app_*.log                   # Rotating text logs
+├── models/
+│   └── best.pt                   # YOLO weights (git-ignored)
 │
-└── data/
-    └── results.db                  # SQLite fallback database (git-ignored)
+├── pyproject.toml                # uv project — extras: common / pi / server
+└── logs/
+    └── app_*.log                 # Rotating text logs
 ```
 
 ---
@@ -103,9 +94,6 @@ urine-color-analysis/
 ```bash
 # macOS / Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 ### 2 — Configure secrets
@@ -115,26 +103,22 @@ cp .env.template .env
 # Edit .env:
 #   API_KEY=your-long-random-secret
 #   SERVER_URL=https://your-tunnel.trycloudflare.com
-#   DATABASE_URL=postgresql://user:pass@localhost:5432/urine_db
-#   TELEGRAM_TOKEN=your_bot_token
-#   TELEGRAM_CHAT_ID=your_chat_id
 ```
-
-Both machines must use the **same** `API_KEY`. `DATABASE_URL` defaults to SQLite if unset.
 
 ### 3 — Ubuntu server
 
 ```bash
 uv sync --extra server --extra common
-uv run main.py --role server
-# Dashboard  → http://localhost:8000/dashboard
-# Trays      → http://localhost:8000/trays    ← select active tray here first
-# Test page  → http://localhost:8000/test
-# Health     → http://localhost:8000/health
+uv run uvicorn server.api:app --reload
+
+# Upload page  → http://localhost:8000/upload
+# History      → http://localhost:8000/results
+# Settings     → http://localhost:8000/settings
+# Health       → http://localhost:8000/health
 ```
 
-> **Before the first scan:** go to `/trays`, create a tray, and click **เลือกใช้งาน** to activate it.
-> `/analyze` returns HTTP 400 if no tray is active.
+> **Before the first scan:** go to `/settings`, assign slot IDs to cells, and click **Save**.
+> `/analyze` returns HTTP 400 if no slots are configured.
 
 ### 4 — Raspberry Pi
 
@@ -150,91 +134,89 @@ uv run main.py --role client
 | Extra | Key packages |
 |-------|-------------|
 | `common` | `requests`, `pydantic-settings`, `loguru`, `numpy`, `pyyaml`, `python-dotenv`, `Pillow`, `psutil` |
-| `server` | `fastapi`, `uvicorn`, `opencv-python`, `sqlalchemy`, `psycopg2-binary`, `ultralytics`, `torch`, `torchvision`, `segmentation-models-pytorch`, `scikit-image`, `scipy`, `jinja2`, `python-multipart` |
-| `pi` | `picamera2`, `RPi.GPIO`, `raspberrypi-tm1637`, `rpi-lcd`, `smbus2` |
+| `server` | `fastapi`, `uvicorn`, `opencv-python`, `ultralytics`, `torch`, `torchvision`, `scikit-image`, `scipy`, `jinja2`, `python-multipart`, `google-api-python-client`, `google-auth-httplib2`, `google-auth-oauthlib` |
+| `pi` | `picamera2`, `RPi.GPIO`, `rpi-lcd`, `raspberrypi-tm1637`, `smbus2` |
 
 ---
 
 ## Configuration
 
-### `configs/config.toml` — hardware (primary source)
+### `configs/config.toml`
 
 ```toml
-[gpio.button]
-pin         = 24
-debounce_ms = 50
-
-[gpio.relay]
-led_red    = 21
-led_yellow = 20
-led_green  = 12
-active_low = true
-
 [camera]
 capture_resolution = [4608, 2592]
 rotate_180         = true
 
 [yolo]
 model_path     = "models/best.pt"
-conf_threshold = 0.40
+conf_threshold = 0.20
 iou_threshold  = 0.45
 
 [color_analysis]
-outer_crop_px = 15    # pixels to exclude from bottle edge (plastic ring)
-inner_crop_px = 10    # pixels from bottle center to exclude (glare hot-spot)
-                      # sampling region = annular ring between inner_crop_px and (radius - outer_crop_px)
-confidence_margin = 3.0
+outer_crop_px     = 15    # pixels to exclude from bottle edge (plastic ring)
+inner_crop_px     = 10    # pixels from bottle center to exclude (glare hot-spot)
+confidence_margin = 3.0   # second_best_ΔE − best_ΔE required for "Confident"
 
 [sample_roi]
 top    = 220   # skip reference row
 bottom = 20
-left   = 200   # skip dead-zone column ZZ
+left   = 200   # skip dead-zone column
 right  = 800
+
+[google]
+credentials_file = "client_secrets.json"
+token_file       = "token.json"
+drive_folder_id  = ""          # Google Drive folder ID for annotated images
+spreadsheet_id   = ""          # Single Google Spreadsheet ID (two tabs inside)
+slots_tab        = "SlotAssignment"
+results_tab      = "Results"
 ```
 
 ### `configs/camera_params.yaml` — lens calibration
 
 ```yaml
 metadata:
-  focus_value: 1.0        # diopters ≈ 1/distance_metres; 100 cm tray → 1.0
-  sensor_resolution:
-    width:  4608
-    height: 2592
+  focus_value: 1.0
+  sensor_resolution: {width: 4608, height: 2592}
 calibration:
-  camera_matrix:
-    fx: 3254.7
-    fy: 3254.7
-    cx: 2304.0
-    cy: 1296.0
+  camera_matrix: {fx: 3254.7, fy: 3254.7, cx: 2304.0, cy: 1296.0}
   dist_coeffs: [-0.1234, 0.0567, -0.0001, 0.0002, -0.0123]
 ```
 
-Replace the placeholder values with the output of your own `cv2.calibrateCamera()` run at full sensor resolution.
-
-### `settings.yaml` — server fallbacks
-
-```yaml
-server:
-  host: "0.0.0.0"
-  port: 8000
-model:
-  path: "models/best.pt"
-database:
-  path: "data/results.db"
-storage:
-  captures_dir:   "app/web/static/captures"
-  visual_log_dir: "logs/img"
-```
+Replace placeholder values with the output of `cv2.calibrateCamera()` at full sensor resolution.
 
 ### `.env` — secrets (never commit)
 
 ```env
 API_KEY=your-long-random-secret
 SERVER_URL=https://your-tunnel.trycloudflare.com
-DATABASE_URL=postgresql://user:pass@localhost:5432/urine_db
-TELEGRAM_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
 ```
+
+---
+
+## Slot Configuration
+
+Not all grid cells are used. The `/settings` page lets you assign a `slot_id` label to each cell you want to analyze. The pipeline ignores all unassigned cells.
+
+```json
+{
+  "rows": 13,
+  "cols": 15,
+  "cells": {
+    "1":  { "slot_id": "REF_L0", "is_reference": true,  "ref_level": 0 },
+    "2":  { "slot_id": "REF_L1", "is_reference": true,  "ref_level": 1 },
+    "3":  { "slot_id": "REF_L2", "is_reference": true,  "ref_level": 2 },
+    "4":  { "slot_id": "REF_L3", "is_reference": true,  "ref_level": 3 },
+    "5":  { "slot_id": "REF_L4", "is_reference": true,  "ref_level": 4 },
+    "16": { "slot_id": "A01",    "is_reference": false, "ref_level": null }
+  }
+}
+```
+
+- Key = **1-based row-major** cell index: `cell_index = (row - 1) * cols + col`
+- `is_reference: true` → used for dynamic color baseline; `ref_level` 0–4 required
+- `is_reference: false` → sample bottle to classify
 
 ---
 
@@ -243,88 +225,44 @@ TELEGRAM_CHAT_ID=your_chat_id
 ### `POST /analyze`
 
 **Auth:** `X-Auth-Token: <API_KEY>` header required.
-**Precondition:** An active tray must be selected via `/trays`.
+**Precondition:** At least one slot must be assigned via `/settings`.
 
 ```json
 {
-  "status":       "success",
-  "session_id":   42,
-  "tray_id":      3,
-  "tray_name":    "ถาดหน่วยที่ 1",
-  "count":        12,
-  "total_physical_count": 12,
-  "summary":      {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
-  "is_clean":     false,
-  "error_count":  2,
-  "errors":       {"duplicate_slots": [31, 36], "wrong_color_slots": ["R01C05"]},
-  "slots":        [{"position_index": 1, "color_result": 0, "is_error": false, "error_reason": null}, "..."],
-  "timestamp":    "2026-04-21T10:30:00.000000",
-  "image_id":     "uuid-string"
+  "status": "success",
+  "scan_id": "a1b2c3d4",
+  "detected_count": 20,
+  "total_assigned": 25,
+  "missing_slots": ["A03", "B07"],
+  "summary": {"L0": 5, "L1": 8, "L2": 4, "L3": 3, "L4": 0},
+  "reference_labs": {
+    "0": [{"lab": [210.0, 126.0, 134.0], "hex": "#f5e8c0"}],
+    "1": [{"lab": [185.0, 131.0, 148.0], "hex": "#dfc07a"}]
+  },
+  "slots": {
+    "A01": {"cell_index": 16, "detected": true, "color_level": 1,
+            "delta_e": 3.2, "confident": true, "lab": [188.0, 130.0, 147.0], "hex": "#e2c47e"},
+    "A03": {"cell_index": 18, "detected": false, "color_level": null,
+            "delta_e": null, "confident": false, "lab": null, "hex": null}
+  },
+  "image_url": "/static/results/a1b2c3d4.jpg",
+  "timestamp": "2026-05-05T10:30:00Z"
 }
 ```
 
-### `GET /api/latest`
+`/analyze` always returns JSON. The browser upload page uses `fetch()`, receives JSON, then does `window.location.href = '/result/' + data.scan_id`. The Pi receives the same JSON directly.
 
-Returns the most recent session with tray dimensions for the dashboard grid:
-```json
-{
-  "tray":    {"id": 3, "tray_name": "...", "is_active": true, "rows": 13, "cols": 15},
-  "session": {"id": 42, "scanned_at": "...", "color_0": 3, "...", "error_count": 2},
-  "slots":   [{"position_index": 1, "color_result": 0, "is_error": false,
-               "error_reason": null, "slot_label": "A01"}, "..."]
-}
-```
+### Other Endpoints
 
-`error_reason` values: `null` (no error) · `"สีผิด"` (wrong colour zone) · `"วางเลขซ้ำ"` (duplicate label)
-
-### Tray API
-
-| Method | URL | Body / Notes |
-|--------|-----|--------------|
-| `GET` | `/api/trays` | List all trays |
-| `POST` | `/api/trays` | `{tray_name, rows, cols}` |
-| `PATCH` | `/api/trays/{id}` | `{tray_name?, rows?, cols?}` |
-| `DELETE` | `/api/trays/{id}` | HTTP 409 if tray is active |
-| `POST` | `/api/trays/{id}/activate` | Deactivates all others atomically |
-
-### Other
-
-| URL | Description |
-|-----|-------------|
-| `GET /health` | `{"status": "ok"}` |
-| `GET /dashboard` | Interactive grid dashboard — auto-refreshes every 10 s |
-| `GET /trays` | Tray management page |
-| `GET /trend` | Historical chart |
-| `GET /api/trend?from_date=&to_date=` | JSON trend data (Thai Buddhist dates) |
-| `GET /api/sessions?tray_id=&from_date=` | Session history |
-| `GET /settings` | Calibration UI |
-| `POST /api/test-upload` | Full pipeline — no DB write, no Telegram |
-
----
-
-## Database Schema (PostgreSQL)
-
-```
-trays            — one row per physical tray
-  id, tray_name, is_active, rows, cols, total_slots, layout_json, grid_json, created_at
-  grid_json: {calibration_date, corners, grid_pts[14][17][2], sample_centres×195, ref_centres×15, grid_spacing}
-
-scan_sessions    — one row per scan event
-  id, tray_id, scanned_at, color_0…color_4, error_count, is_clean,
-  image_raw_path, image_annotated_path
-
-test_slots       — rows×cols rows per session (195 for 13×15 tray)
-  id, session_id, position_index, color_result (0-4 or null),
-  is_error, error_reason ("สีผิด" | "วางเลขซ้ำ" | null), person_id
-
-people           — personnel registry (for future identity linking)
-  id, full_name, personnel_id, department
-```
-
-The server creates tables automatically on first startup (`Base.metadata.create_all`).
-New columns on existing tables are added via idempotent `ALTER TABLE … ADD COLUMN` in `_run_migrations()`.
-
-**SQLite fallback:** if `DATABASE_URL` is unset or starts with `sqlite://`, the server uses a local file at `logs/scan_results.db`. All features work identically.
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/upload` | Upload form page |
+| `GET` | `/results` | Scan history (newest first) |
+| `GET` | `/result/{scan_id}` | Scan detail page |
+| `GET` | `/settings` | Slot assignment page |
+| `GET` | `/api/slots` | Return `slot_config.json` as JSON |
+| `POST` | `/api/slots` | Save slot configuration |
+| `GET` | `/health` | `{"status": "ok"}` |
 
 ---
 
@@ -334,65 +272,51 @@ New columns on existing tables are added via idempotent `ALTER TABLE … ADD COL
 Pi: 4608 × 2592 raw capture
         │
         ▼  CameraUndistorter.undistort_frame()
-        Lens-corrected, focus-locked JPEG (no black borders)
+        Lens-corrected JPEG
         │
         ▼  POST /analyze
 Server: cv2.imdecode() → full BGR
         │
-        ▼  Fetch active tray (HTTP 400 if none)
-        │
         ▼  crop_sample_roi(top=220, bottom=20, left=200, right=800)
-        ROI — excludes reference row + dead-zone column ZZ
+        ROI — excludes reference row + dead-zone column
         │
-        ▼  letterbox_white_padding(640)   [white fill, not black]
+        ▼  letterbox_white_padding(640)   [white fill, NOT black]
         640 × 640 padded image
         │
-        ▼  Load grid from active tray grid_json (DB)
-        _grid_pts_to_result() → 195 sample centres + 15 ref centres
-        (HTTP 400 if tray is uncalibrated)
+        ▼  detect_grid(padded, rows, cols)   [HoughCircles + RANSAC]
+        grid_pts in 640-space → convert to full-image coords
         │
-        ▼  build_reference_baseline() on ref row
-        Initial CIE Lab centroid per level (L0–L4) from reference row bottles
+        ▼  YOLO inference on padded image → scale to full-image coords
         │
-        ▼  YOLO inference → scale_coordinates()
-        Bottle boxes in full-image space
+        ▼  assign_bottles_to_slots(yolo_boxes, grid_pts_full, active_cells)
         │
-        ▼  _match_detections_to_slots()
-        Each box → nearest position_index (1–195)
+        ▼  build_reference_baseline(frame_full, ref_positions)
+        Dynamic per-frame CIE Lab centroid per level (L0–L4)
         │
-        ▼  _refine_baseline_from_slots()
-        Median Lab per column zone (L0–L4) from actual sample-area bottles
-        Corrects for lighting difference between reference row and sample area
+        ▼  classify_all_samples()
+        extract_bottle_color() (annular ring median) → classify_sample() (nearest ΔE)
+        lab_to_hex() → "#rrggbb" for each bottle
         │
-        ▼  CIE Lab classification via refined baseline
-        level 0-4 per occupied slot (nearest centroid, CIE76 Delta E)
+        ▼  render_annotated_image()   [green circles = detected, red = missing]
         │
-        ▼  _build_slot_rows() with layout_map
-        195 slot dicts: {position_index, color_result, is_error, error_reason}
-        is_error + error_reason set for wrong colour zone OR duplicate label
+        ┌─── CLOUD (fire-and-forget) ──────────────────┐
+        │  upload_image() → Google Drive               │
+        │  append_result_to_sheet() → Google Sheets    │
+        └──────────────────────────────────────────────┘
         │
-        ▼  _render_annotated_canvas() → save_visual_log()
-        Annotated JPEG to logs/img/ + Telegram
-        │
-        ▼  INSERT ScanSession + 195 TestSlot rows → PostgreSQL
-        return JSON
+        ▼  save scan_result.json + annotated.jpg → server/static/results/
+        ▼  return JSON
 ```
 
 ---
 
 ## Color Classification
 
-Classification is **nearest-centroid in CIE Lab** (CIE76 Delta E), not iterative K-means.
-
-### Two-phase baseline
-
-1. **Reference row** (`build_reference_baseline`): 15 reference bottles at the top of the tray (3 per level) are sampled live each scan to build an initial {level → (L, a, b)} baseline.
-
-2. **Sample-area refinement** (`_refine_baseline_from_slots`): All detected sample bottles are grouped by their expected column zone. The median Lab of each zone overrides the corresponding reference centroid. This corrects for systematic lighting differences between the reference row position and the sample area.
+Classification uses **nearest-centroid in CIE Lab** (CIE76 Delta E). Confidence is **margin-of-victory** (`second_best_ΔE − best_ΔE > margin`), not a fixed threshold.
 
 ### Annular ring sampling
 
-`extract_bottle_color` samples from a **circular ring** rather than a simple square crop:
+`extract_bottle_color` samples the **median Lab** over an annular ring:
 
 ```
 outer_crop_px = 15  →  excludes plastic cap edge
@@ -400,80 +324,97 @@ inner_crop_px = 10  →  excludes center glare hot-spot
 ring = pixels where  inner_crop_px ≤ dist_from_center ≤ (radius − outer_crop_px)
 ```
 
-Median Lab is taken over non-glare ring pixels (L < 220 in OpenCV 8-bit encoding).
-Both reference and sample bottles use the same ring parameters.
+Both reference and sample bottles use the same ring parameters. `cx`/`cy` must be in full-image coordinates.
 
-### Error detection
+### Dynamic reference baseline
 
-| Error | Condition | `error_reason` |
-|-------|-----------|----------------|
-| Wrong colour | `classified_level ≠ expected_level_for_column` | `"สีผิด"` |
-| Duplicate label | Same `layout_json` label on 2+ occupied slots | `"วางเลขซ้ำ"` |
-
-Duplicate takes precedence when both conditions apply.
+`build_reference_baseline()` extracts Lab from every reference cell each scan and averages within each level group. No stored `color.json` — the baseline adapts to current lighting automatically.
 
 ---
 
-## Tray Management Workflow
+## Google Sheets Integration
 
-1. Navigate to `http://<server>:8000/trays`
-2. Create a new tray — set **name**, **rows** (default 13), **cols** (default 15)
-3. Click **เลือกใช้งาน** (Activate) on the desired tray
-4. The active tray banner shows which tray is currently selected
-5. All subsequent scans are linked to the active tray
+Single spreadsheet (`spreadsheet_id`) with two tabs:
 
-The `/dashboard` grid automatically resizes to the active tray's `rows × cols` dimensions.
+**"SlotAssignment" tab** — cleared and rewritten whenever `POST /api/slots` saves the config.
+Columns: `cell_index | slot_id | is_reference | ref_level | row | col`
 
----
+**"Results" tab** — one batch appended per successful `/analyze` call. Never overwritten.
 
-## Grid Calibration
+Summary row: `scan_id | timestamp | detected_count | total_assigned | missing_slots | L0 | L1 | L2 | L3 | L4`
 
-1. Navigate to `http://<server>:8000/settings`
-2. Load the latest capture or upload a tray photo
-3. Click 4 outer corners: **TL → TR → BR → BL** (in order)
-4. Optionally drag grid lines to fine-tune alignment
-5. Click **บันทึกกริด** → server saves 195 slot centres + 15 ref centres to `trays.grid_json` in DB
+Detail row (one per assigned cell): `scan_id | slot_id | cell_index | is_reference | ref_level | detected | color_level | delta_e | confident | L | a | b | hex`
 
-> The calibration must be done once per tray before scanning. `/analyze` returns HTTP 400 if the active tray is uncalibrated.
+The `hex` column cell background is set to the detected color via `userEnteredFormat.backgroundColor` — a visual color swatch directly in the spreadsheet.
 
----
+### Google OAuth2 First-Time Setup
 
-## Camera Lens Calibration (Pi)
-
-Calibrate once using a checkerboard at full sensor resolution (4608×2592):
-
-```python
-ret, K, dist, rvecs, tvecs = cv2.calibrateCamera(
-    obj_points, img_points, (4608, 2592), None, None
-)
+```toml
+# configs/config.toml
+[google]
+credentials_file = "client_secrets.json"   # download from Google Cloud Console
+token_file       = "token.json"
+drive_folder_id  = "..."
+spreadsheet_id   = "..."
 ```
 
-Save the values to `configs/camera_params.yaml`. The `CameraUndistorter` scales them automatically when a different capture resolution is used at runtime.
+On first use, the server opens a browser consent URL and writes `token.json` automatically. Subsequent runs auto-refresh. Never commit `token.json` or `client_secrets.json`.
+
+Scopes: `https://www.googleapis.com/auth/drive.file` + `https://www.googleapis.com/auth/spreadsheets`
 
 ---
 
-## Pi Client State Machine
+## Result Detail Page
 
-### Relay (LED Tower)
+Three panels at `/result/{scan_id}`:
 
-| State | Trigger | Relay |
-|-------|---------|-------|
-| Idle / Ready | Boot + clean scan | **Green** ON |
-| Processing | Button press → throughout upload + wait | **Yellow** ON |
-| Error | Camera / network / timeout / wrong-zone / duplicate errors | **Red** ON (until next scan) |
+1. **Annotated image** — green circles on detected bottles, red on missing assigned cells, slot_id labels
+2. **Slot results table** — color swatch, level badge, ΔE, confidence per slot
+3. **Color matching scatter plot** (Chart.js) — CIE Lab a*/b* space; reference cells as large markers per level, detected bottles as small labeled markers with tooltips (slot_id, Lab, ΔE); shows visually why each bottle was classified at its level
+4. **Raw JSON** — collapsible `<details><pre>` block
 
-### LCD + TM1637
+---
 
-| State | LCD Line 1 | LCD Line 2 | TM1637 |
-|-------|-----------|-----------|--------|
-| Startup | `Urine Analyzer` | `Ready` | `0000` |
-| Capturing | `Capturing...` | — | `8888` |
-| Uploading | `Uploading...` | `Please wait` | spinning |
-| Analyzing | `Analyzing...` | `AI running` | spinning |
-| Result OK | `Count: N` | colour summary | `000N` |
-| Error slots | `Count: N` | `ERR @ R01C05  R03C12` (scrolling) | `000N` |
-| Server offline | `ERR: SRV OFF` | `Check network` | `----` |
-| Timeout | `ERR: TIMEOUT` | `Server slow` | `----` |
+## Pi Client
+
+The Pi does exactly three things: capture, send, display.
+
+### LCD 16×4 Display States
+
+| State | Line 1 | Line 2 | Line 3 | Line 4 |
+|---|---|---|---|---|
+| Boot | `Urine Analyzer ` | `Ready          ` | ` ` | ` ` |
+| Capturing | `Capturing...   ` | ` ` | ` ` | ` ` |
+| Uploading | `Uploading...   ` | `Please wait    ` | ` ` | ` ` |
+| Analyzing | `Analyzing...   ` | `AI running     ` | ` ` | ` ` |
+| OK result | `Count: NN/NNN  ` | `L0:N L1:N L2:N ` | `L3:N L4:N      ` | `Status: OK     ` |
+| Missing slots | `Count: NN/NNN  ` | `L0:N L1:N L2:N ` | `L3:N L4:N      ` | `Miss: A03 B07..` |
+| Network error | `ERR: SRV OFF   ` | `Check network  ` | ` ` | ` ` |
+| Timeout | `ERR: TIMEOUT   ` | `Server slow    ` | ` ` | ` ` |
+
+Line 4 scrolls slot_ids for missing bottles at 300 ms/step in a daemon thread.
+
+### TM1637 States
+
+| State | Display |
+|---|---|
+| Boot | `0000` |
+| Capturing | `8888` |
+| Upload / analyze | Spinning `- - - -` at 250 ms |
+| Result | `NNNN` (detected count) |
+| Error | `----` |
+
+### Relay LED Tower
+
+```
+Boot              → Green ON
+Button pressed    → Yellow ON  (until result received)
+All slots found   → Green ON
+Any missing slot  → Red ON
+Any error         → Red ON
+```
+
+Active-LOW relay: `GPIO.LOW` energises. Turn off previous channel before turning new one on (50 ms gap).
 
 ---
 
@@ -488,21 +429,19 @@ cloudflared tunnel --url http://localhost:8000
 SERVER_URL=https://xxxx.trycloudflare.com
 ```
 
-Do **not** include a port number in `SERVER_URL` when using Cloudflare Tunnel.
-
 ---
 
-## Local Development (no Pi hardware)
+## Local Development
 
 ```bash
-uv run main.py --role server
+uv run uvicorn server.api:app --reload
 
-# Upload via the test page (no API key):
-# http://localhost:8000/test
+# Upload via the web page:
+open http://localhost:8000/upload
 
-# Or via curl (API key required):
+# Or via curl:
 curl -X POST http://localhost:8000/analyze \
-     -H "X-Auth-Token: changeme" \
+     -H "X-Auth-Token: test" \
      -F "file=@data/test.jpg"
 ```
 
@@ -521,13 +460,10 @@ uv run pytest -v
 
 ```gitignore
 .env
-data/
 models/
 logs/
-app/web/static/captures/
-app/web/static/test/
-color.json
-grid_config.json
+credentials/
+server/static/results/
 *.pyc
 __pycache__/
 .venv/
