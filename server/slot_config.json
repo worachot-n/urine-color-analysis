@@ -1,0 +1,16 @@
+{
+  "rows": 13,
+  "cols": 15,
+  "cells": {
+    "1": {
+      "slot_id": "REF_L0",
+      "is_reference": true,
+      "ref_level": 0
+    },
+    "16": {
+      "slot_id": "A01",
+      "is_reference": false,
+      "ref_level": null
+    }
+  }
+}

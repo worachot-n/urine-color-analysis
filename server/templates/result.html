@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% set active_page = "results" %}
+{% block title %}Result {{ scan.scan_id }} — Urine Analyzer{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-6">
+  <a href="/results" class="text-gray-400 hover:text-white">← History</a>
+  <h1 class="text-xl font-bold flex-1">Result <span class="font-mono text-blue-400">{{ scan.scan_id }}</span></h1>
+  <span class="text-gray-400 text-sm font-mono">{{ scan.timestamp }}</span>
+  <a href="/upload" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-md text-sm">+ New Upload</a>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+  <!-- Annotated image -->
+  <div class="bg-gray-800 rounded-xl p-4">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">Annotated Image</h2>
+    <img src="{{ scan.image_url }}" alt="Annotated scan" class="w-full rounded-lg"/>
+    <div class="mt-3 flex gap-6 text-sm">
+      <span>Detected: <strong class="text-green-400">{{ scan.detected_count }} / {{ scan.total_assigned }}</strong></span>
+      {% if scan.missing_slots %}
+      <span>Missing: <strong class="text-red-400">{{ scan.missing_slots | join(', ') }}</strong></span>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Slot results table -->
+  <div class="bg-gray-800 rounded-xl p-4">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">Slot Results</h2>
+    <div class="overflow-auto max-h-80">
+      <table class="w-full text-sm">
+        <thead class="text-gray-400 text-xs uppercase sticky top-0 bg-gray-800">
+          <tr>
+            <th class="py-2 text-left">Slot</th>
+            <th class="py-2 text-center">Color</th>
+            <th class="py-2 text-center">Level</th>
+            <th class="py-2 text-center">ΔE</th>
+            <th class="py-2 text-center">Conf</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-700">
+          {% for slot_id, d in scan.slots.items() %}
+          <tr class="{% if not d.detected %}opacity-50{% endif %}">
+            <td class="py-1.5 font-mono font-semibold">{{ slot_id }}</td>
+            <td class="py-1.5 text-center">
+              {% if d.hex %}
+              <span class="inline-block w-5 h-5 rounded border border-gray-600"
+                    style="background:{{ d.hex }}" title="{{ d.hex }}"></span>
+              {% else %}—{% endif %}
+            </td>
+            <td class="py-1.5 text-center">
+              {% if d.color_level is not none %}
+              <span class="px-2 py-0.5 rounded text-xs font-bold
+                {% if d.color_level == 0 %}bg-yellow-200 text-yellow-900
+                {% elif d.color_level == 1 %}bg-yellow-400 text-yellow-900
+                {% elif d.color_level == 2 %}bg-orange-400 text-white
+                {% elif d.color_level == 3 %}bg-red-400 text-white
+                {% else %}bg-red-800 text-white{% endif %}">
+                L{{ d.color_level }}
+              </span>
+              {% else %}
+              <span class="text-red-400 text-xs">miss</span>
+              {% endif %}
+            </td>
+            <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
+              {{ "%.1f"|format(d.delta_e) if d.delta_e is not none else '—' }}
+            </td>
+            <td class="py-1.5 text-center">
+              {% if d.detected %}
+                {% if d.confident %}<span class="text-green-400">✓</span>
+                {% else %}<span class="text-yellow-400">~</span>{% endif %}
+              {% else %}<span class="text-red-400">✗</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <!-- Summary bar -->
+    <div class="mt-3 flex gap-3 text-xs font-mono border-t border-gray-700 pt-3">
+      {% for k, v in scan.summary.items() %}
+      <span class="{% if v > 0 %}text-white font-bold{% else %}text-gray-600{% endif %}">{{ k }}:{{ v }}</span>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<!-- Color matching scatter plot -->
+<div class="bg-gray-800 rounded-xl p-4 mb-6">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">Color Matching — CIE Lab a*/b* Space</h2>
+  <div class="relative" style="height:320px">
+    <canvas id="scatter-chart"></canvas>
+  </div>
+  <p class="text-xs text-gray-500 mt-2">Large markers = reference clusters · Small markers = detected bottles · Hover for details</p>
+</div>
+
+<!-- Raw JSON -->
+<details class="bg-gray-800 rounded-xl">
+  <summary class="px-4 py-3 cursor-pointer text-sm font-semibold text-gray-400 hover:text-white">▼ Raw JSON</summary>
+  <pre class="px-4 pb-4 text-xs text-gray-300 overflow-auto max-h-96 font-mono">{{ scan | tojson(indent=2) }}</pre>
+</details>
+
+<script>
+const LEVEL_COLORS = ['#f9e54d','#ffc107','#ff9800','#f44336','#b71c1c'];
+const LEVEL_NAMES  = ['L0','L1','L2','L3','L4'];
+
+const scanData = {{ scan | tojson }};
+
+function buildDatasets() {
+  const datasets = [];
+
+  // Reference clusters (large markers)
+  const refLabs = scanData.reference_labs || {};
+  for (const [lvl, refs] of Object.entries(refLabs)) {
+    const lvlInt = parseInt(lvl);
+    const color  = LEVEL_COLORS[lvlInt] || '#888';
+    const pts    = refs
+      .filter(r => r.lab)
+      .map(r => ({
+        x: r.lab[1] - 128,  // a* (OpenCV a - 128)
+        y: r.lab[2] - 128,  // b* (OpenCV b - 128)
+        hex: r.hex,
+        label: `REF L${lvlInt}`,
+      }));
+    if (pts.length) {
+      datasets.push({
+        label: `REF L${lvlInt}`,
+        data: pts,
+        backgroundColor: color + 'aa',
+        borderColor: color,
+        borderWidth: 2,
+        pointRadius: 14,
+        pointStyle: 'circle',
+      });
+    }
+  }
+
+  // Detected sample bottles (small markers, per level)
+  const byLevel = {};
+  for (const [slotId, d] of Object.entries(scanData.slots || {})) {
+    if (!d.detected || d.lab == null) continue;
+    const lvl = d.color_level ?? -1;
+    if (!byLevel[lvl]) byLevel[lvl] = [];
+    byLevel[lvl].push({
+      x: d.lab[1] - 128,
+      y: d.lab[2] - 128,
+      hex: d.hex,
+      label: slotId,
+      delta_e: d.delta_e,
+    });
+  }
+  for (const [lvl, pts] of Object.entries(byLevel)) {
+    const lvlInt = parseInt(lvl);
+    const color  = lvlInt >= 0 ? LEVEL_COLORS[lvlInt] : '#aaa';
+    datasets.push({
+      label: `Samples L${lvlInt >= 0 ? lvlInt : '?'}`,
+      data: pts,
+      backgroundColor: color,
+      borderColor: '#fff',
+      borderWidth: 1,
+      pointRadius: 6,
+      pointStyle: 'circle',
+    });
+  }
+
+  return datasets;
+}
+
+const ctx = document.getElementById('scatter-chart').getContext('2d');
+new Chart(ctx, {
+  type: 'scatter',
+  data: { datasets: buildDatasets() },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { labels: { color: '#ccc', boxWidth: 12 } },
+      tooltip: {
+        callbacks: {
+          label(ctx) {
+            const d = ctx.raw;
+            const lines = [`${d.label}`, `a*: ${d.x.toFixed(1)}, b*: ${d.y.toFixed(1)}`];
+            if (d.hex) lines.push(`hex: ${d.hex}`);
+            if (d.delta_e != null) lines.push(`ΔE: ${d.delta_e.toFixed(1)}`);
+            return lines;
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        title: { display: true, text: 'a* (green ← → red)', color: '#888' },
+        grid: { color: '#333' },
+        ticks: { color: '#888' },
+      },
+      y: {
+        title: { display: true, text: 'b* (blue ← → yellow)', color: '#888' },
+        grid: { color: '#333' },
+        ticks: { color: '#888' },
+      },
+    },
+  },
+});
+</script>
+{% endblock %}

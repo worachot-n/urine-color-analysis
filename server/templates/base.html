@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}Urine Analyzer{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .nav-link { @apply px-4 py-2 rounded-md text-sm font-medium transition-colors; }
+    .nav-link.active { @apply bg-blue-600 text-white; }
+    .nav-link:not(.active) { @apply text-gray-300 hover:bg-gray-700 hover:text-white; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+  <nav class="bg-gray-800 border-b border-gray-700">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-2">
+      <span class="text-blue-400 font-bold text-lg mr-4">🔬 UrineAnalyzer</span>
+      <a href="/upload"   class="nav-link {% if active_page == 'upload'   %}active{% endif %}">Upload</a>
+      <a href="/results"  class="nav-link {% if active_page == 'results'  %}active{% endif %}">Results</a>
+      <a href="/settings" class="nav-link {% if active_page == 'settings' %}active{% endif %}">Settings</a>
+    </div>
+  </nav>
+  <main class="max-w-7xl mx-auto px-4 py-8">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

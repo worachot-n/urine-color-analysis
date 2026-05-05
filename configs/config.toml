@@ -182,6 +182,19 @@ input_size     = 640
 mask_threshold = 0.5
 
 # =============================================================================
+# GOOGLE INTEGRATION (server-side only)
+# Fill in after completing OAuth2 consent screen setup.
+# Run: uv run python -c "from server.integrations.sheets import _get_creds; _get_creds('client_secrets.json','token.json')"
+# =============================================================================
+[google]
+credentials_file = "client_secrets.json"
+token_file       = "token.json"
+drive_folder_id  = ""          # Google Drive folder ID for annotated images
+spreadsheet_id   = ""          # Single Google Spreadsheet ID
+slots_tab        = "SlotAssignment"
+results_tab      = "Results"
+
+# =============================================================================
 # LOGGING / DEBUG
 # =============================================================================
 [debug]

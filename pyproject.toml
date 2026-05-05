@@ -41,6 +41,9 @@ server = [
     "torch>=2.0",
     "torchvision>=0.15",
     "segmentation-models-pytorch>=0.3",
+    "google-api-python-client>=2.0",
+    "google-auth-httplib2>=0.2",
+    "google-auth-oauthlib>=1.0",
 ]
 
 [dependency-groups]

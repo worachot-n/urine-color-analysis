@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% set active_page = "settings" %}
+{% block title %}Settings — Urine Analyzer{% endblock %}
+
+{% block head %}
+<style>
+  .grid-cell {
+    width: 60px; height: 50px;
+    border: 1px solid #374151;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 600;
+    text-align: center;
+    vertical-align: middle;
+    transition: opacity .15s;
+    user-select: none;
+  }
+  .grid-cell:hover { opacity: 0.75; }
+  #popup {
+    position: fixed;
+    z-index: 100;
+    background: #1f2937;
+    border: 1px solid #4b5563;
+    border-radius: 8px;
+    padding: 14px;
+    min-width: 200px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  }
+  #toast {
+    position: fixed; bottom: 24px; right: 24px;
+    padding: 12px 20px; border-radius: 8px;
+    font-size: 14px; font-weight: 600;
+    opacity: 0; transition: opacity .3s;
+    pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-2xl font-bold">Slot Assignment</h1>
+  <div class="flex gap-2">
+    <button onclick="loadConfig()" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Load Saved</button>
+    <button onclick="resetAll()" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Reset All</button>
+    <button onclick="saveConfig()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm font-semibold">Save</button>
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="flex gap-4 mb-4 text-xs items-center flex-wrap">
+  <span class="font-semibold text-gray-400">Legend:</span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#fff9c4"></span><span class="text-gray-300">Ref L0</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#ffe082"></span><span class="text-gray-300">Ref L1</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#ffb74d"></span><span class="text-gray-300">Ref L2</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#ef9a9a"></span><span class="text-gray-300">Ref L3</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded border" style="background:#b71c1c"></span><span class="text-gray-300">Ref L4</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded border border-gray-500" style="background:#fff;"></span><span class="text-gray-300">Sample</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#374151"></span><span class="text-gray-300">Empty</span></span>
+</div>
+
+<!-- Grid -->
+<div class="overflow-auto">
+  <table id="grid-table" class="border-collapse text-xs">
+    <thead id="grid-thead"></thead>
+    <tbody id="grid-tbody"></tbody>
+  </table>
+</div>
+
+<!-- Popup -->
+<div id="popup" style="display:none">
+  <div id="popup-title" class="text-xs text-gray-400 mb-3"></div>
+  <label class="block text-xs text-gray-400 mb-1">Slot ID</label>
+  <input id="popup-slot-id" type="text" maxlength="12"
+         class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm mb-3 text-white"/>
+  <label class="flex items-center gap-2 text-sm mb-2 cursor-pointer">
+    <input id="popup-is-ref" type="checkbox" class="accent-blue-500"/>
+    <span>Reference cell</span>
+  </label>
+  <div id="popup-level-row" class="hidden mb-3">
+    <label class="block text-xs text-gray-400 mb-1">Color Level</label>
+    <select id="popup-level"
+            class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm text-white">
+      <option value="0">L0</option>
+      <option value="1">L1</option>
+      <option value="2">L2</option>
+      <option value="3">L3</option>
+      <option value="4">L4</option>
+    </select>
+  </div>
+  <div class="flex gap-2">
+    <button onclick="popupSave()"  class="flex-1 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs font-semibold">Save</button>
+    <button onclick="popupClear()" class="flex-1 py-1.5 bg-red-800  hover:bg-red-700  rounded text-xs font-semibold">Clear</button>
+    <button onclick="closePopup()" class="px-3 py-1.5 bg-gray-700  hover:bg-gray-600  rounded text-xs">✕</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="/static/js/settings.js"></script>
+<script>
+  const ROWS = {{ rows }};
+  const COLS = {{ cols }};
+  document.addEventListener('DOMContentLoaded', () => { initGrid(ROWS, COLS); loadConfig(); });
+</script>
+{% endblock %}

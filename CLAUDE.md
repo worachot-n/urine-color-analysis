@@ -1,20 +1,78 @@
-# CLAUDE.md — Urine Analysis System v2
+# CLAUDE.md — Urine Analysis System v3
 
 Codebase and developer context for AI Code Assistants (Claude, Cursor, Copilot).
 Read this file before modifying any file in this repository.
 
 ---
 
+## What Changed from v2 → v3 (and Why)
+
+| Concern | v2 | v3 | Reason |
+|---|---|---|---|
+| Grid detection | Manual 4-corner click → bilinear → saved to DB | Auto classical CV per scan (`grid_circle_detector.py`) | No calibration step needed; works on any tray |
+| Grid storage | PostgreSQL `trays.grid_json` | Not stored — reconstructed each scan | Grid is stateless; rows/cols come from slot_config |
+| Sample storage | PostgreSQL (`ScanSession`, `TestSlot`, `Tray`) | Google Sheets (two tabs) | Simpler ops, accessible without DB admin |
+| Image archive | Local `logs/img/` | Google Drive + local `server/static/results/` | Persistent, shareable, cloud-first |
+| Color zoning | Fixed columns 1-3→L0, 4-6→L1… (hardcoded) | `slot_config.json` — any cell can be any ref level | Works for any tray layout; multiple refs per level |
+| Web UI | Jinja2 `/dashboard` | `/upload` + `/results` + `/result/{id}` + `/settings` | History list, detail view, interactive grid editor |
+| Test endpoint | `/test-upload` (separate) | `/analyze` (single endpoint) | No divergence between Pi and browser paths |
+| Slot assignment | DB-driven fixed layout | `server/slot_config.json` — user-editable via `/settings` | Not all 195 cells used; user assigns slot_ids |
+| Telegram bot | Inline in `server_app.py` | Removed | Out of scope for v3; add later if needed |
+| Google auth | Service account JSON | OAuth2 (`google-auth-oauthlib`) → stored `token.json` | Works with personal Google accounts |
+| Color result | Level only | Level + Lab values + hex color + ΔE scatter plot | Visualizes why each bottle was classified |
+
+**Everything preserved from v2:**
+- YOLO bottle detection (`ultralytics`) — still the only detection method
+- CIE Lab color classification (`extract_bottle_color`, `classify_sample`, `delta_e_cie76`)
+- Dynamic per-frame reference baseline (`build_reference_baseline`)
+- White-padding letterbox for YOLO input
+- `crop_sample_roi` ROI preprocessing
+- Pi camera undistortion (`CameraUndistorter`)
+- CLAHE preprocessing before YOLO/HoughCircles
+- **LCD 16×4 display** — 4 lines
+- **TM1637 7-segment displays** — count + spinner
+- **3-channel relay LED tower** — idle / processing / error states
+- `loguru` logging throughout
+- `uv` as package manager
+
+---
+
 ## Project Overview
 
-A distributed urine sample analysis system. Bottles of collected urine are placed on a physical grid tray. The tray grid is calibrated once manually (4-corner click → bilinear interpolation → saved to DB). Per scan: YOLO detects bottles in the 195 calibrated slot centres; CIE Lab color analysis classifies each bottle's hydration level (L0–L4) using a live reference row baseline extracted from every capture. Results are stored in PostgreSQL (SQLite for dev), shown on an interactive web dashboard, and reported via Telegram.
+A distributed urine sample analysis system. Bottles are placed on a physical grid tray. Per scan: classical CV (OpenCV HoughCircles + spacing estimation) detects and reconstructs the grid; YOLO detects bottles; CIE Lab color analysis classifies each bottle's hydration level (L0–L4) using a live reference-slot baseline. Results are stored in Google Sheets and annotated images uploaded to Google Drive.
 
 | Role | Hardware | Responsibility |
 |------|----------|----------------|
-| **Client** | Raspberry Pi 4B | Undistort frame, capture, trigger via GPIO, control relay + LCD + TM1637, POST to server |
-| **Server** | Ubuntu PC | FastAPI, manual grid calibration (bilinear), YOLO inference (PyTorch), live CIE Lab color classification, PostgreSQL, web dashboard |
+| **Client** | Raspberry Pi 4B | Capture image → POST to server → receive JSON result → display on LCD 16×4 / TM1637 / relay |
+| **Server** | Ubuntu PC | Receive image → YOLO + OpenCV grid → color analysis → upload to Google Drive → append to Google Sheets → return JSON |
 
-Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
+**Strict boundary:**
+
+```
+Raspberry Pi                          Server (Ubuntu)
+─────────────────────────────         ──────────────────────────────────────────
+capture image                         receive image
+undistort                             run YOLO + OpenCV grid
+POST /analyze ──────────────────────► detect + classify
+                                      upload annotated image → Google Drive
+                                      append row → Google Sheets
+receive JSON result ◄────────────────return JSON
+display on LCD / TM1637 / relay
+```
+
+The Pi has **no Google credentials and no Google SDK**. All cloud interaction is server-side only.
+
+---
+
+## Core Design Constraints (Non-negotiable)
+
+| Task | Method | Reason |
+|---|---|---|
+| Bottle detection | **YOLO only** (PyTorch / ultralytics) | Handles varied sizes, occlusion, color |
+| Grid detection | **OpenCV only** (HoughCircles + geometry) | No ML weights needed; deterministic |
+| Color extraction | **Annular ring median** (not center point) | Avoids specular glare at cap center and plastic ring at edge |
+
+Grid is **ground truth**. YOLO detections are assigned to pre-computed grid slots — never the reverse.
 
 ---
 
@@ -24,18 +82,24 @@ Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 |-------|----------------|
 | Package manager | `uv` (never `pip install`) |
 | Server framework | FastAPI + Uvicorn |
-| Grid calibration | Manual 4-corner click → bilinear interpolation → saved as `grid_json` in DB |
-| Bottle detection | PyTorch / `ultralytics` YOLO — **not OpenVINO** |
-| Image processing | OpenCV (`cv2`) + Pillow (Thai text rendering) |
-| Database | SQLAlchemy + PostgreSQL (SQLite fallback via `DATABASE_URL`) |
-| Web templates | Jinja2 (base: `layout.html`) |
-| Config | `pydantic-settings` loading `configs/config.toml` + `settings.yaml` + `.env` |
+| Grid detection | `cv2.HoughCircles` + median-spacing estimation + RANSAC origin voting |
+| Bottle detection | PyTorch / `ultralytics` YOLO |
+| Image processing | OpenCV (`cv2`) |
+| Color analysis | CIE Lab + Delta E (OpenCV + NumPy) |
+| Config | `configs/config.toml` loaded via `tomllib` |
+| Slot assignment | `server/slot_config.json` — JSON file, edited via `/settings` |
 | Logging | `loguru` — use throughout, **never `print()`** |
+| Cloud storage | Google Drive API v3 (`google-api-python-client`) |
+| Cloud data | Google Sheets API v4 (`google-api-python-client`) |
+| Google auth | OAuth2 flow (`google-auth-oauthlib`) → stored `token.json`; refresh via `google-auth-httplib2` |
+| Multipart upload | `python-multipart` (FastAPI file ingestion) |
+| Web UI | Jinja2 templates + Tailwind CSS (CDN) + Chart.js (CDN) |
 | Pi camera | `picamera2` (libcamera) |
-| Pi undistortion | `cv2` + `configs/camera_params.yaml` — lens correction on Pi before POST |
+| Pi undistortion | `cv2` + `configs/camera_params.yaml` |
 | Pi GPIO | `RPi.GPIO` (BCM mode) |
-| Pi display | `rpi-lcd` (I2C LCD) + `raspberrypi-tm1637` (7-segment) |
-| Pi relay | `RPi.GPIO` outputs — 3-channel active-LOW relay module |
+| Pi LCD | `rpi-lcd` — I2C 16×4 character display |
+| Pi 7-segment | `raspberrypi-tm1637` — count + spinner |
+| Pi relay | 3-channel active-LOW relay module |
 | HTTP client | `requests` |
 | Tunnel | Cloudflare Tunnel (`cloudflared`) |
 
@@ -45,99 +109,47 @@ Communication: Pi → HTTPS POST to Cloudflare Tunnel URL → FastAPI on Ubuntu.
 
 ```
 urine-color-analysis/
-├── main.py                         # CLI entry — --role client | server
-├── app/
-│   ├── server_app.py               # FastAPI app — YOLO, grid calibration, color, DB, dashboard, API
-│   ├── client_app.py               # Pi loop — GPIO, relay, camera, undistort, LCD, TM1637, POST
-│   ├── shared/
-│   │   ├── config.py               # Settings class (pydantic-settings)
-│   │   └── processor.py            # crop_sample_roi(), letterbox, scale_coords, visual log
-│   └── web/
-│       ├── templates/
-│       │   ├── layout.html         # Base template (nav + hamburger, 5 links)
-│       │   ├── dashboard.html      # Interactive dynamic CSS grid (rows×cols from tray)
-│       │   ├── trays.html          # Tray management — create, activate, edit, delete
-│       │   ├── trend.html          # Extends layout.html — historical chart
-│       │   ├── settings.html       # Extends layout.html — two calibration tabs
-│       │   └── test.html           # Extends layout.html — manual upload test page
-│       └── static/
-│           ├── settings.js         # Canvas corner-picker for grid calibration
-│           ├── captures/           # Annotated JPEGs served at /static/captures/
-│           └── test/               # Test-upload results at /static/test/
+├── client/
+│   └── pi_client.py              # Pi loop — GPIO, camera, undistort, relay, LCD, TM1637, POST /analyze
+├── server/
+│   ├── api.py                    # FastAPI app — all routes
+│   ├── pipeline.py               # run_pipeline() + lab_to_hex() — shared by all /analyze callers
+│   ├── slot_config.py            # SlotConfig dataclass + load/save/query helpers
+│   ├── slot_config.json          # Persisted slot assignment (user-edited via /settings)
+│   ├── integrations/
+│   │   ├── __init__.py
+│   │   ├── drive.py              # upload_image() → Google Drive file_id
+│   │   └── sheets.py             # write_slot_config_to_sheet(), append_result_to_sheet()
+│   ├── templates/
+│   │   ├── base.html             # Shared layout (nav: Upload | Results | Settings)
+│   │   ├── upload.html           # Drag-drop form → fetch /analyze → redirect to /result/<id>
+│   │   ├── results.html          # History table (all scans, newest first)
+│   │   ├── result.html           # Detail: annotated image + slot table + Lab scatter plot + JSON
+│   │   └── settings.html        # Interactive grid editor (click cell → popup → assign slot_id)
+│   └── static/
+│       ├── results/              # Persistent annotated JPEGs + JSON (<scan_id>.{jpg,json})
+│       └── js/
+│           └── settings.js       # Grid rendering, popup state management, API calls
 ├── utils/
-│   ├── grid_detector.py            # GridDetectionResult dataclass (kept; GridDetector class unused)
-│   ├── camera_undistort.py         # CameraUndistorter — lens correction + focus lock
-│   ├── yolo_detector.py            # YoloBottleDetector
-│   ├── color_analysis.py           # CIE Lab, Delta E, build_kmeans_centroids()
-│   ├── grid.py                     # GridConfig — slot polygons, find_slot_for_circle()
-│   └── calibration.py              # Grid calibration helpers
-├── models/
-│   ├── unet.py                     # U-Net model definition (unused — kept for reference)
-│   ├── unet_grid.pt                # U-Net trained weights (unused — not required at startup)
-│   └── best.pt                     # YOLO weights (git-ignored)
-├── bot/
-│   └── telegram_bot.py             # Legacy helpers (Telegram logic now inline in server_app.py)
+│   ├── grid_circle_detector.py   # Standalone grid pipeline (detect_grid)
+│   ├── color_analysis.py         # extract_bottle_color(), classify_sample(), build_reference_baseline()
+│   └── camera_undistort.py       # CameraUndistorter — lens correction + focus lock
+├── app/
+│   └── shared/
+│       └── processor.py          # crop_sample_roi(), letterbox_white_padding(), scale_coordinates()
 ├── configs/
-│   ├── config.toml                 # PRIMARY hardware config — GPIO, camera, relay, YOLO, U-Net
-│   ├── camera_params.yaml          # Lens calibration — focus_value, sensor_resolution, K, dist
-│   └── config.py                   # TOML loader used by utils/ directly
-├── settings.yaml                   # Server / model / database fallback config
-├── color.json                      # 5 levels × reference bottles (Lab + hex)
-├── grid_config.json                # 195 slot polygons (generated by /settings/grid)
-├── pyproject.toml                  # uv project — extras: common / pi / server
+│   ├── config.toml               # Hardware config — GPIO, camera, YOLO, color, google
+│   ├── camera_params.yaml        # Lens calibration — focus_value, K, dist_coeffs
+│   └── config.py                 # TOML loader — exposes flat constants
+├── models/
+│   └── best.pt                   # YOLO weights (git-ignored)
+├── credentials/
+│   ├── client_secrets.json       # OAuth2 client ID + secret (git-ignored)
+│   └── token.json                # OAuth2 token, auto-written after first auth (git-ignored)
+├── pyproject.toml                # uv project — extras: common / pi / server
 └── logs/
-    ├── img/                        # URINE_SCAN_<timestamp>.jpg annotated images
-    └── app_*.log                   # Rotating text logs
+    └── app_*.log                 # Rotating text logs
 ```
-
----
-
-## Configuration System
-
-**Load order (highest priority last wins):**
-1. `settings.yaml` — server / model / database defaults
-2. `configs/config.toml` — hardware (GPIO, camera, relay, U-Net); overrides YAML for those sections
-3. `.env` / environment variables — secrets (`DATABASE_URL`, `API_KEY`, etc.)
-
-**All config is accessed via `cfg` from `app/shared/config.py`:**
-
-```python
-from app.shared.config import cfg
-cfg.relay_red_pin        # → 21  (config.toml [gpio.relay].led_red)
-cfg.gpio_trigger_pin     # → 24  (config.toml [gpio.button].pin)
-cfg.database_url         # → "postgresql://..."  (env DATABASE_URL)
-cfg.unet_model_path      # → "models/unet_grid.pt"
-cfg.unet_input_size      # → 640
-cfg.unet_mask_threshold  # → 0.5
-```
-
-Color analysis parameters come from `configs/config.toml` `[color_analysis]`:
-
-```toml
-[color_analysis]
-outer_crop_px      = 15    # pixels to exclude from bottle edge (plastic cap ring)
-inner_crop_px      = 10    # pixels from bottle center to exclude (specular glare)
-confidence_margin  = 3.0   # min ΔE gap between best and second-best for confident result
-glare_l_threshold  = 240   # OpenCV 8-bit L value above which a pixel is considered glare
-glare_min_valid_px = 10    # minimum valid pixels after glare filter, else use full ring
-```
-
-**Never hardcode pin numbers, file paths, or thresholds in logic files.**
-
-### GPIO pins (from `configs/config.toml`)
-
-| Signal | BCM GPIO | Physical Pin |
-|--------|----------|-------------|
-| Button trigger | 24 | 18 |
-| Relay Red | 21 | 40 |
-| Relay Yellow | 20 | 38 |
-| Relay Green | 12 | 32 |
-| TM1637 H0 CLK/DIO | 4 / 17 | 7 / 11 |
-| TM1637 H1 CLK/DIO | 27 / 22 | 13 / 15 |
-| TM1637 H2 CLK/DIO | 5 / 6 | 29 / 31 |
-| TM1637 H3 CLK/DIO | 13 / 19 | 33 / 35 |
-| TM1637 H4 CLK/DIO | 26 / 16 | 37 / 36 |
-| LCD SDA / SCL | 2 / 3 | 3 / 5 |
 
 ---
 
@@ -146,435 +158,438 @@ glare_min_valid_px = 10    # minimum valid pixels after glare filter, else use f
 Always use `uv`. Never run `pip install`.
 
 ```toml
-# pyproject.toml extras
-common = ["requests", "pydantic-settings", "loguru", "numpy", "pyyaml", "python-dotenv",
-          "Pillow>=10.0", "psutil>=5.9"]
-server = ["fastapi", "uvicorn[standard]", "opencv-python", "sqlalchemy", "psycopg2-binary",
-          "jinja2", "python-multipart", "ultralytics>=8.4.24", "scikit-image>=0.21",
-          "scipy>=1.11", "torch>=2.0", "torchvision>=0.15", "segmentation-models-pytorch>=0.3"]
-pi     = ["picamera2", "RPi.GPIO", "raspberrypi-tm1637", "rpi-lcd", "smbus2"]
+[project.optional-dependencies]
+common = [
+    "requests", "pydantic-settings", "loguru", "numpy", "pyyaml",
+    "python-dotenv", "Pillow>=10.0", "psutil>=5.9"
+]
+server = [
+    "fastapi", "uvicorn[standard]", "opencv-python", "python-multipart", "jinja2",
+    "ultralytics>=8.4.24", "torch>=2.0", "torchvision>=0.15",
+    # Google integration (SERVER ONLY — never install on Pi)
+    "google-api-python-client>=2.0", "google-auth-httplib2>=0.2", "google-auth-oauthlib>=1.0"
+]
+pi = [
+    "picamera2", "RPi.GPIO", "rpi-lcd", "raspberrypi-tm1637", "smbus2"
+    # All Pi packages are gated on aarch64 Linux in pyproject.toml
+]
 ```
 
 ```bash
-# Server
-uv sync --extra server --extra common
+uv sync --extra server --extra common   # server
+uv sync --extra pi --extra common       # Pi
+```
 
-# Pi
-uv sync --extra pi --extra common
+### Starting the server
+
+```bash
+uv run --extra server --extra common uvicorn server.api:app --reload
+# Open http://localhost:8000/upload
+```
+
+### Google OAuth2 First-Time Setup
+
+Fill in `configs/config.toml [google]`, then trigger any Google API call — the server will open a browser consent URL and write `token.json` automatically. Subsequent runs auto-refresh via `google-auth-httplib2`.
+
+```toml
+[google]
+credentials_file = "client_secrets.json"
+token_file       = "token.json"
+drive_folder_id  = "..."          # Google Drive folder ID
+spreadsheet_id   = "..."          # Single spreadsheet; two tabs inside
+slots_tab        = "SlotAssignment"
+results_tab      = "Results"
+```
+
+Scopes required:
+```python
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets",
+]
+```
+
+Never commit `token.json` or `client_secrets.json`.
+
+---
+
+## Slot Config (`server/slot_config.json`)
+
+Not all 195 grid cells are used. The user assigns a `slot_id` to each cell they want to analyze via the `/settings` page. The pipeline only processes cells that have an assigned `slot_id`.
+
+```json
+{
+  "rows": 13,
+  "cols": 15,
+  "cells": {
+    "1":  { "slot_id": "REF_L0", "is_reference": true,  "ref_level": 0 },
+    "2":  { "slot_id": "REF_L1", "is_reference": true,  "ref_level": 1 },
+    "3":  { "slot_id": "REF_L2", "is_reference": true,  "ref_level": 2 },
+    "4":  { "slot_id": "REF_L3", "is_reference": true,  "ref_level": 3 },
+    "5":  { "slot_id": "REF_L4", "is_reference": true,  "ref_level": 4 },
+    "16": { "slot_id": "A01",    "is_reference": false, "ref_level": null },
+    "17": { "slot_id": "A02",    "is_reference": false, "ref_level": null }
+  }
+}
+```
+
+- Key = **1-based row-major** cell index: `cell_index = (row - 1) * cols + col`
+- Cells absent from `"cells"` are completely ignored by the pipeline
+- `is_reference: true` → used for color baseline; `ref_level` 0–4 required
+- `is_reference: false` → sample bottle; `ref_level` is null
+- Multiple cells can share the same `ref_level` — all are averaged into one baseline centroid
+
+`server/slot_config.py` exposes:
+```python
+load_slot_config(path=None) -> SlotConfig
+save_slot_config(cfg, path=None) -> None
+active_cell_indices(cfg) -> set[int]   # all assigned cell indices
+reference_cells(cfg) -> dict[int, int]  # cell_index → ref_level
+sample_cells(cfg) -> dict[int, str]     # cell_index → slot_id
 ```
 
 ---
 
-## Image Processing Pipeline
+## API Endpoints
 
-### Pi side (before POST)
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/analyze` | `X-Auth-Token` | **Single endpoint** — Pi camera POST and browser file upload |
+| `GET` | `/upload` | none | Upload form page |
+| `GET` | `/results` | none | Scan history list (newest first) |
+| `GET` | `/result/{scan_id}` | none | Scan detail page |
+| `GET` | `/settings` | none | Slot assignment page |
+| `GET` | `/api/slots` | none | Return `slot_config.json` as JSON |
+| `POST` | `/api/slots` | none | Save slot configuration (also writes to Google Sheets SlotAssignment tab) |
+| `GET` | `/health` | none | `{"status": "ok"}` |
+
+`API_KEY` defaults to `"test"`, overridden via `API_KEY` environment variable.
+
+### How `/analyze` serves both Pi and browser
+
+`/analyze` always returns JSON. The browser upload page uses `fetch()`, receives JSON, then redirects:
+```javascript
+const data = await res.json();
+window.location.href = '/result/' + data.scan_id;
+```
+The Pi receives the same JSON directly. No content-type negotiation needed.
+
+### Result persistence
+
+`/analyze` saves two files persistently to `server/static/results/`:
+- `<scan_id>.jpg` — annotated image (50% scaled, quality 88)
+- `<scan_id>.json` — full scan result dict
+
+`GET /results` reads all `*.json` files sorted by `timestamp` descending.
+`GET /result/{scan_id}` reads `<scan_id>.json`.
+
+---
+
+## `/analyze` Response Schema
+
+```json
+{
+  "status": "success",
+  "scan_id": "a1b2c3d4",
+  "detected_count": 20,
+  "total_assigned": 25,
+  "missing_slots": ["A03", "B07"],
+  "summary": { "L0": 5, "L1": 8, "L2": 4, "L3": 3, "L4": 0 },
+  "reference_labs": {
+    "0": [{ "lab": [210.0, 126.0, 134.0], "hex": "#f5e8c0" }],
+    "1": [{ "lab": [185.0, 131.0, 148.0], "hex": "#dfc07a" },
+          { "lab": [183.0, 130.0, 147.0], "hex": "#ddbf78" }]
+  },
+  "slots": {
+    "A01": { "cell_index": 16, "detected": true,  "color_level": 1, "delta_e": 3.2, "confident": true,  "lab": [188.0, 130.0, 147.0], "hex": "#e2c47e" },
+    "A03": { "cell_index": 18, "detected": false, "color_level": null, "delta_e": null, "confident": false, "lab": null, "hex": null }
+  },
+  "image_url": "/static/results/a1b2c3d4.jpg",
+  "timestamp": "2026-05-05T10:30:00Z"
+}
+```
+
+- `reference_labs` — per-level list of reference cells with their Lab + hex (for scatter plot and Sheets)
+- `lab` / `hex` — extracted via annular ring median (not center pixel); `hex` = Lab → XYZ → sRGB → `#rrggbb`
+- `scan_id` — browser redirects to `/result/<scan_id>`; Pi ignores it
+- `missing_slots` — list of slot_ids where no YOLO detection was assigned; Pi uses for relay/LCD
+
+---
+
+## Full Server Pipeline (`server/pipeline.py`)
 
 ```
-picamera2 raw frame (4608 × 2592, BGR)
+━━━ POST /analyze (JPEG bytes) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   │
-  ▼ CameraUndistorter.undistort_frame()   # utils/camera_undistort.py
-  │   - lock_focus_picamera2() at boot (AfMode=Manual, LensPosition from camera_params.yaml)
-  │   - scale K from sensor_resolution → capture_resolution
-  │   - cv2.remap() with pre-computed maps (alpha=0, no black borders)
-  │   - crop to valid ROI
-  Undistorted JPEG → POST /analyze
-```
-
-### Server side (on receiving POST)
-
-```
-JPEG bytes
+  ▼ cv2.imdecode → BGR frame
+  ▼ crop_sample_roi(top, bottom, left, right)     # remove dead zones
+  ▼ letterbox_white_padding(640)                  # white fill, NOT black
+  │   → padded (640×640), scale, pad_x, pad_y
   │
-  ▼ Fetch active tray from DB (HTTP 400 if none selected)
+  ▼ detect_grid(padded, rows, cols)               # HoughCircles + CLAHE + RANSAC
+  │   → grid_pts_640 (rows×cols, 2) in padded coords
+  │   → convert to full-image coords via (pt - pad) / scale + roi_offset
   │
-  ▼ cv2.imdecode() → full BGR image
+  ▼ YOLO inference on padded image                # ultralytics YOLO
+  │   → boxes [cx,cy,w,h,conf] in padded coords → scale to full-image coords
   │
-  ▼ crop_sample_roi(top, bottom, left, right)    # app/shared/processor.py
-  ROI image  (skips reference row + dead-zone column ZZ)
+  ▼ assign_bottles_to_slots(yolo_boxes, grid_pts_full, active_cells, max_dist)
+  │   → slot_hits: {cell_index: {cx, cy, w, h, conf}}
   │
-  ▼ letterbox_white_padding(640)                 # white fill — NOT black
-  640 × 640 padded image
+  ▼ build_reference_baseline(frame_full, ref_positions)
+  │   ref_positions built from reference_cells(slot_cfg) → {level: [(cx,cy,r),...]}
+  │   extract_bottle_color() on each ref cell (annular ring median)
+  │   → {level: (L, a, b)} dynamic per-frame baseline
   │
-  ▼ Load grid_json from active tray (DB)          # server_app.py
-  │   _grid_pts_to_result(tray.grid_json["grid_pts"])
-  │   → GridDetectionResult: 195 sample_centres + 15 ref_centres
-  │   HTTP 400 raised if tray.grid_json is None (uncalibrated)
+  ▼ classify_all_samples(slot_hits, sample_cells, baseline)
+  │   extract_bottle_color() on each detected sample bottle
+  │   classify_sample() → nearest centroid (minimum ΔE) + margin-of-victory confidence
+  │   lab_to_hex() → "#rrggbb" for each bottle
+  │   → result_slots: {slot_id: {cell_index, detected, color_level, delta_e, confident, lab, hex}}
   │
-  ▼ build_reference_baseline(img_full, ref_positions)  # utils/color_analysis.py
-  Live CIE Lab standard per color level (L0–L4) from reference row — no color.json
+  ▼ build_scan_result(...)  → scan_result dict
+  ▼ render_annotated_image(frame_full, ...) → JPEG bytes (50% scale)
   │
-  ▼ YOLO inference                               # utils/yolo_detector.py
-  bounding boxes in 640-space
+  ┌─── CLOUD (fire-and-forget, never blocks response) ──────────────────────────┐
+  │ upload_image() → Google Drive                                               │
+  │ append_result_to_sheet() → Google Sheets "Results" tab                     │
+  └─────────────────────────────────────────────────────────────────────────────┘
   │
-  ▼ scale_coordinates(scale, pad_x, pad_y, roi_x1, roi_y1)
-  boxes in full-image space
-  │
-  ▼ _match_detections_to_slots()                 # server_app.py
-  Each YOLO box → nearest grid slot (position_index 1-195)
-  │
-  ▼ _refine_baseline_from_slots()                # server_app.py
-  Re-sample actual bottles in each column zone; replace reference centroid with
-  median Lab from sample-area bottles (corrects for row-to-row lighting shift).
-  Fallback to reference centroid if < 2 bottles in that zone.
-  │
-  ▼ _run_color_analysis_v2()
-  For each occupied slot: extract_bottle_color() → classify_sample()
-  level 0-4 per position_index (nearest centroid in CIE Lab)
-  Warns at WARNING level when confidence margin is too small.
-  │
-  ▼ _build_slot_rows(slot_hits, classified, layout_map)
-  195 TestSlot dicts: {position_index, color_result, is_error, error_reason}
-  is_error=True + error_reason="สีผิด"    when classified level ≠ expected zone
-  is_error=True + error_reason="วางเลขซ้ำ" when two bottles share the same layout label
-  │
-  ▼ _render_annotated_canvas()                   # app/shared/processor.py
-  green box per bottle + red blink on error slots + layout_json labels
-  │
-  ▼ save_visual_log()  →  logs/img/URINE_SCAN_<ts>.jpg
-  _send_telegram_report()  →  Telegram (Thai caption)
-  │
-  ▼ INSERT ScanSession + 195 TestSlot rows  →  PostgreSQL
-  return JSON response
+  ▼ save scan_result.json + annotated.jpg → server/static/results/
+  ▼ return JSON  ──────────────────────────────────────────────────────────────►
 ```
 
 ### Why white padding?
-Bottle labels and liquid colours are dark/coloured on white backgrounds. Black padding creates false-contrast edges that confuse the YOLO model.
+White fill matches YOLO training preprocessing — black borders create false-contrast edges near bottle caps.
 
 ### Why ROI crop before letterbox?
-Focusing the 640×640 pixel budget on the sample area (rather than the full frame) gives denser coverage of bottles. The reference row (top) and dead-zone column ZZ (left) are never sample locations.
+Focusing the 640×640 budget on the sample area gives better YOLO coverage than the full frame.
 
-### Why position-index instead of slot ID?
-V2 trays have configurable rows × cols. A flat 1-based integer (`row-1)*cols + col`, 1–`rows*cols`) is tray-dimension-agnostic and maps cleanly to a CSS Grid cell index.
+### Why grid-first, then YOLO?
+Grid defines slot positions. YOLO detections are *assigned to* grid slots — never used to infer structure. The grid is always complete (all `rows × cols` positions), even if 50% of bottles are missing.
 
----
-
-## Position Index ↔ Row/Col Mapping
-
-```
-row = (position_index - 1) // cols + 1    # 1–rows
-col = (position_index - 1) % cols  + 1    # 1–cols
-```
-
-Expected colour level per slot (5 zones, 3 cols each):
-```
-expected_level = min((col - 1) // 3, 4)   # cols 1-3 → L0 … cols 13-15 → L4
-```
+### Why annular ring, not center point?
+`extract_bottle_color()` samples the median Lab over the region between `inner_crop_px` (avoids specular glare at the center) and `radius - outer_crop_px` (avoids plastic cap ring at the edge). This applies equally to reference cells and sample bottles.
 
 ---
 
-## Database Schema (PostgreSQL)
+## Grid Detection Sub-Pipeline
 
-```python
-class Tray(_Base):
-    __tablename__ = "trays"
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    tray_name      = Column(String, nullable=True)
-    is_active      = Column(Boolean, default=False, nullable=False)  # only one True at a time
-    rows           = Column(Integer, default=13)
-    cols           = Column(Integer, default=15)
-    total_slots    = Column(Integer, default=195)
-    dimension_info = Column(String, default="13x15")
-    created_at     = Column(DateTime, default=datetime.utcnow)
-    layout_json    = Column(JSON, nullable=True)   # {"1": "A01", "2": "A02", ...}
-    grid_json      = Column(JSON, nullable=True)   # {calibration_date, corners, grid_pts[14][17][2], sample_centres×195, ref_centres×15, grid_spacing}
+Implemented in `utils/grid_circle_detector.py` (standalone combined version used by the server pipeline).
 
-class ScanSession(_Base):
-    __tablename__ = "scan_sessions"
-    id                   = Column(Integer, primary_key=True, autoincrement=True)
-    tray_id              = Column(Integer, ForeignKey("trays.id"), nullable=False, index=True)
-    scanned_at           = Column(DateTime, default=datetime.utcnow, index=True)
-    image_raw_path       = Column(String, nullable=True)
-    image_annotated_path = Column(String, nullable=True)
-    color_0 … color_4   = Column(Integer, default=0)   # count per level
-    error_count          = Column(Integer, default=0)
-    is_clean             = Column(Boolean, default=True)
-
-class TestSlot(_Base):
-    __tablename__ = "test_slots"
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    session_id     = Column(Integer, ForeignKey("scan_sessions.id"), nullable=False, index=True)
-    position_index = Column(Integer, nullable=False)   # 1–(rows×cols), row-major
-    color_result   = Column(Integer, nullable=True)    # 0-4; None = empty slot
-    is_error       = Column(Boolean, default=False)
-    error_reason   = Column(String, nullable=True)     # "สีผิด" | "วางเลขซ้ำ" | None
-    person_id      = Column(Integer, ForeignKey("people.id"), nullable=True)
-
-class People(_Base):
-    __tablename__ = "people"
-    id           = Column(Integer, primary_key=True, autoincrement=True)
-    full_name    = Column(String, nullable=False)
-    personnel_id = Column(String, unique=True, index=True)
-    department   = Column(String, nullable=True)
+```
+grayscale image
+  │
+  ▼ CLAHE on L channel (BGR→LAB, enhance L, back to gray)
+  │   Normalises white AND colored (orange/yellow/red) caps to similar contrast
+  │
+  ▼ GaussianBlur (blur_kernel from GridCircleConfig)
+  │
+  ▼ cv2.HoughCircles (dp, min_dist, param1, param2, min_radius, max_radius)
+  │   → raw centres (N, 2) — partial detection OK (30–50% missing tolerated)
+  │
+  ▼ estimate_grid_spacing(centres, rows, cols, image_shape)
+  │   Sort projections on X and Y axes
+  │   Median of consecutive diffs in [min_spacing, 3.5×min_spacing]
+  │   De-aliasing: if spacing/2 better represented, halve it
+  │   Cross-validate vs image_width/cols — prefer fallback if >30% deviation
+  │   → (dx, dy, origin_x, origin_y)
+  │
+  ▼ reconstruct_grid(centres, rows, cols, dx, dy, origin_x, origin_y)
+  │   RANSAC-style origin voting:
+  │     Each detected centre votes for the sub-pixel origin that places it on-grid
+  │     median(votes) → refined origin  (robust to up to 50% missing)
+  │   Fill all rows × cols positions
+  │   → grid_pts (rows×cols, 2), is_detected (rows×cols,) bool
 ```
 
-`_run_migrations()` adds new columns via `ALTER TABLE … ADD COLUMN` wrapped in `try/except` — safe on repeated startup. `Base.metadata.create_all()` handles new tables.
+Config (all thresholds from `GridCircleConfig` defaults, matching `[hough]` TOML section):
+- `dp=1.2`, `min_dist=55`, `param1=60`, `param2=25`, `min_radius=22`, `max_radius=38`
+- `blur_kernel=5`, `clahe_clip=2.0`, `clahe_tile=8`
+
+**Config controls all thresholds — never hardcode in vision code.**
 
 ---
 
-## Tray Management
+## Color Classification
 
-Trays are physical plaswood grids. Exactly one tray is marked `is_active=True` at a time.
-`/analyze` rejects the request with HTTP 400 if no tray is active.
+Functions live in `utils/color_analysis.py`.
 
-**Activation is atomic:** `UPDATE trays SET is_active=False WHERE is_active=True` then set the target to True.
+### `extract_bottle_color(frame, cx, cy, radius, outer_crop_px, inner_crop_px)`
+Annular ring sampling:
+- Excludes `outer_crop_px` pixels from bottle edge (plastic ring)
+- Excludes `inner_crop_px` pixels from center (specular glare)
+- Converts BGR → CIE Lab; applies glare filter (L > `glare_l_threshold`)
+- Returns median (L, a, b) of valid ring pixels, or `None` if insufficient pixels
+- **cx, cy must be in full-image coordinates** — not padded or ROI-relative
 
-`layout_json` maps position_index strings to display labels. Auto-generated by `_generate_default_layout(rows, cols)` if not supplied:
-```python
-{"1": "A01", "2": "A02", ..., "195": "M15"}   # chr(64+row) + f"{col:02d}"
-```
+### `build_reference_baseline(frame, reference_positions)`
+- `reference_positions`: `{ref_level: [(cx, cy, radius), ...]}` — multiple cells per level supported
+- Calls `extract_bottle_color()` on each reference cell
+- Averages Labs within each level group
+- Returns `{level: (L, a, b)}` dynamic baseline calibrated to current frame's lighting
+- **Never uses absolute Lab values — always relative to this frame's reference**
 
----
+### `classify_sample(sample_lab, baseline, margin)`
+- Nearest-centroid in CIE Lab (minimum Delta E CIE76)
+- Confident when `second_best_ΔE − best_ΔE > margin` (margin-of-victory, not absolute threshold)
+- Returns `(level, delta_e, confident)`
 
-## API Contract
-
-### `POST /analyze`
-
-**Auth:** `X-Auth-Token: <API_KEY>` header.
-**Request:** `multipart/form-data`, field `file` (JPEG).
-**Precondition:** An active tray must exist (HTTP 400 if none).
-
-**Success response:**
-```json
-{
-  "status":       "success",
-  "session_id":   42,
-  "tray_id":      3,
-  "tray_name":    "ถาดหน่วยที่ 1",
-  "count":        12,
-  "total_physical_count": 12,
-  "summary":      {"L0": 3, "L1": 4, "L2": 3, "L3": 2, "L4": 0},
-  "is_clean":     false,
-  "error_count":  2,
-  "errors":       {"duplicate_slots": [], "wrong_color_slots": ["R01C05", "R03C12"]},
-  "slots":        [{"position_index": 1, "color_result": 0, "is_error": false}, ...],
-  "timestamp":    "2026-04-21T10:30:00.000000",
-  "image_id":     "uuid-string"
-}
-```
-
-**Error response:**
-```json
-{"status": "error", "message": "กรุณาเลือกถาดก่อนสแกน (No active tray selected)"}
-```
-
-The Pi client reads: `count` (or `total_physical_count`), `summary`, `errors`, `tray_name`.
-
-### `GET /api/latest`
-
-Returns the most recent `ScanSession` with all slot results and tray dimensions:
-```json
-{
-  "tray":    {"id": 3, "tray_name": "ถาดหน่วยที่ 1", "is_active": true, "rows": 13, "cols": 15},
-  "session": {"id": 42, "scanned_at": "...", "color_0": 3, ..., "error_count": 2, "is_clean": false},
-  "slots":   [{"position_index": 1, "color_result": 0, "is_error": false, "error_reason": null}, ...]
-}
-```
-
-### Tray CRUD API
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/trays` | List all trays |
-| `POST` | `/api/trays` | Create tray — body: `{tray_name, rows, cols}` |
-| `PATCH` | `/api/trays/{id}` | Update tray — body: `{tray_name?, rows?, cols?}` |
-| `DELETE` | `/api/trays/{id}` | Delete tray (HTTP 409 if active) |
-| `POST` | `/api/trays/{id}/activate` | Set as active (deactivates all others) |
-
-### Other Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | `{"status": "ok"}` |
-| `GET` | `/dashboard` | Interactive grid dashboard (Jinja2) |
-| `GET` | `/trays` | Tray management page (Jinja2) |
-| `GET` | `/trend` | Historical chart page (Jinja2) |
-| `GET` | `/api/trend` | JSON trend data; query: `from_date`, `to_date` (Thai Buddhist) |
-| `GET` | `/api/sessions` | Session history; query: `tray_id`, `from_date`, `to_date` |
-| `GET` | `/settings` | Calibration UI (grid + color) |
-| `POST` | `/settings/grid` | Recompute `grid_config.json` from 4 corner clicks |
-| `POST` | `/settings/colors` | Save `color.json` from reference row image |
-| `GET` | `/test` | Manual upload test page |
-| `POST` | `/api/test-upload` | Full pipeline — no DB write, no Telegram |
-
-### `POST /api/test-upload`
-
-Runs the full pipeline without DB write or Telegram. Returns:
-```json
-{
-  "status":    "success",
-  "count":     12,
-  "summary":   {"L0": 3, ...},
-  "is_clean":  false,
-  "errors":    {"duplicate_slots": [], "wrong_color_slots": ["R01C05"]},
-  "slots":     [{"position_index": 1, "color_result": 0, "is_error": false, "error_reason": null}, ...],
-  "image_url": "/static/test/<uuid>.jpg"
-}
-```
+### `lab_to_hex(L_cv, a_cv, b_cv) -> str` (`server/pipeline.py`)
+- Converts OpenCV 8-bit Lab encoding to `"#rrggbb"`
+- Path: OpenCV Lab → standard Lab → XYZ D65 → linear sRGB → gamma sRGB → hex
+- Used for both reference and sample bottles in scan results and Sheets
 
 ---
 
-## Pi Client State Machine
+## Google Sheets Integration
 
-### Relay (3-channel LED tower)
+Single spreadsheet (`spreadsheet_id`) with two tabs:
 
-```
-Boot              → Green ON  (idle)
-Button pressed    → Yellow ON (processing) — stays until result
-Clean result      → Green ON  (idle)
-Any error         → Red ON    — stays until next button press
-```
+### Tab "SlotAssignment"
+Cleared and rewritten whenever `POST /api/slots` saves the config.
+Columns: `cell_index | slot_id | is_reference | ref_level | row | col`
 
-`_relay(GPIO, "idle" | "processing" | "error")` — turns one relay ON, others OFF, with 50 ms gap.
-Active-LOW: `GPIO.LOW` = relay energised (configurable via `cfg.relay_active_low`).
+### Tab "Results"
+One batch appended per successful `/analyze` call. Never overwritten — full history accumulates.
 
-### LCD + TM1637
+**Summary row:** `scan_id | timestamp | detected_count | total_assigned | missing_slots | L0 | L1 | L2 | L3 | L4`
 
-| State | LCD Line 1 | LCD Line 2 | TM1637 |
-|-------|-----------|-----------|--------|
-| Boot | `Urine Analyzer` | `Ready` | `0000` |
-| Capturing | `Capturing...` | — | `8888` |
-| Uploading | `Uploading...` | `Please wait` | spinning `-   ` |
-| Analyzing (after ~4 s) | `Analyzing...` | `AI running` | spinning |
-| OK result | `Count: N` | colour summary | `000N` |
-| Error slots | `Count: N` | scrolling `ERR @ R01C05  R03C12` | `000N` |
-| Network error | `ERR: SRV OFF` | `Check network` | `----` |
-| Timeout | `ERR: TIMEOUT` | `Server slow` | `----` |
-| HTTP error | `ERR: HTTP N` | — | `----` |
-| Camera fail | `ERR: CAMERA` | `Capture failed` | `----` |
-| AI error | `ERR: AI FAIL` | — | `----` |
+**Detail rows (one per assigned cell):** `scan_id | slot_id | cell_index | is_reference | ref_level | detected | color_level | delta_e | confident | L | a | b | hex`
 
-TM1637 spinner uses a daemon thread (`_tm_spin`) cycling `["-   ", " -  ", "  - ", "   -"]` at 250 ms/frame.
-LCD line 2 scrolls error coordinates: `f"R{row:02d}C{col:02d}"` for each `is_error=True` slot.
+The `hex` column cell background is set to the actual detected color via the Sheets API `userEnteredFormat.backgroundColor` — a visual color swatch directly in the spreadsheet.
 
-Request timeout: **60 seconds**. Latency is logged at INFO/SUCCESS level using `time.perf_counter()`.
+Both calls are fire-and-forget (`try/except` wrapper) — a Google API failure never blocks the pipeline response.
 
 ---
 
-## Visual Logging
+## Settings Page (`/settings`)
 
-Every scan generates `logs/img/URINE_SCAN_<YYYYMMDD_HHMMSS>.jpg` via `save_visual_log()` in `app/shared/processor.py`. `_render_annotated_canvas()` draws:
+Interactive visual grid. Each cell = one `(row, col)` position in the tray.
 
-1. Dynamic grid lines computed from 195 slot centres
-2. **Green bounding rectangle** per detected bottle
-3. **Error slot labels** (position label from `layout_json`) — only on `is_error=True` slots
-4. Single PIL pass for Thai text rendering (BGR→RGB→BGR once)
+- Click any cell → popup with: slot_id input, reference checkbox, level dropdown (L0–L4)
+- Popup **Save** → updates local JS state → re-renders cell → closes popup
+- Popup **Clear** → removes cell from state → renders as empty
+- **Load Saved** → `GET /api/slots` → reload and re-render (discards unsaved edits)
+- **Reset All** → clear all cells in local state (not saved until **Save** is clicked)
+- **Save** → `POST /api/slots` → persists to `slot_config.json` + writes to Google Sheets
 
-Files older than 30 days are cleaned up at server startup.
-
-The dashboard (`dashboard.html`) auto-refreshes via `setInterval(loadLatest, 10000)` — polling `/api/latest` every 10 seconds. The "อัพเดท" button triggers an immediate refresh.
-
----
-
-## Camera Calibration (Pi side)
-
-`configs/camera_params.yaml` stores intrinsics calibrated at full sensor resolution:
-```yaml
-metadata:
-  focus_value: 1.0                 # diopters ≈ 1/distance_metres; 100 cm → 1.0
-  sensor_resolution: {width: 4608, height: 2592}
-calibration:
-  camera_matrix: {fx, fy, cx, cy}  # at sensor_resolution
-  dist_coeffs: [k1, k2, p1, p2, k3]
-```
-
-`CameraUndistorter` (in `utils/camera_undistort.py`):
-1. Scales K from sensor → capture resolution automatically
-2. Pre-computes `cv2.initUndistortRectifyMap` once at startup (`alpha=0` — no black borders)
-3. `undistort_frame(frame)` = single `cv2.remap()` per frame (real-time safe)
-
-`lock_focus_picamera2()` sets `AfMode=Manual` + `LensPosition=focus_value` on startup to prevent optical centre shifts between frames.
+Color coding: L0 = `#fff9c4`, L1 = `#ffe082`, L2 = `#ffb74d`, L3 = `#ef9a9a`, L4 = `#b71c1c` (white text), Sample = white, Empty = `#374151`
 
 ---
 
-## Grid Calibration
+## Result Detail Page (`/result/{scan_id}`)
 
-Grid detection is manual — no U-Net at runtime.
-
-**One-time calibration flow (`/settings` page):**
-1. User loads a tray capture and clicks 4 corners (TL→TR→BR→BL) on the canvas.
-2. JS `initGrid()` computes a 14×17 bilinear grid point array matching `_corners_to_grid_pts()` in Python.
-3. User optionally drags H/V lines to fine-tune; the adjusted `grid_pts` array is POSTed.
-4. `POST /settings/grid` calls `_grid_pts_to_result(grid_pts)` and saves the result to `trays.grid_json`.
-
-**Per-scan grid loading (`/analyze`, `/api/test-upload`):**
-```python
-tray_grid_json = active_tray.grid_json   # read inside DB session
-if not tray_grid_json:
-    raise HTTPException(400, "กรุณาปรับเทียบกริดก่อนสแกน")
-result = _grid_pts_to_result(tray_grid_json["grid_pts"])
-# result.sample_centres → 195 (x,y) in full-image coords
-# result.ref_centres    → 15  (x,y) in full-image coords
-```
-
-`utils/grid_detector.py` retains the `GridDetectionResult` dataclass (shared between calibration and future uses) but `GridDetector` class is not instantiated at startup.
+Three panels:
+1. **Annotated image** — grid lines, green circles on detected bottles, red circles on missing assigned cells, slot_id labels
+2. **Slot results table** — per slot: color swatch, level badge, ΔE, confidence; color-coded by level
+3. **Color matching scatter plot** (Chart.js) — CIE Lab a*/b* space; reference cells as large markers, detected bottles as small labeled markers; tooltips show slot_id, Lab values, ΔE
+4. **Raw JSON** — collapsible `<details><pre>` block
 
 ---
 
-## Telegram Reports
+## Pi Client (`client/pi_client.py`)
 
-`_build_thai_caption()` + `_send_telegram_report()` are inlined in `server_app.py`.
+The Pi does **exactly three things**: capture, send, display.
 
-Report includes:
-- Thai Buddhist calendar year (Gregorian + 543)
-- Active tray name
-- Bottle count per level (L0–L4)
-- Error summary (only shown when errors present)
-- Dashboard URL
+```
+Boot
+  │  GPIO.setmode(BCM), relay green, LCD "Urine Analyzer / Ready", TM1637 0000
+  │
+  └── wait GPIO.wait_for_edge(trigger_pin, FALLING)
+        │
+        ▼ _on_button_press()
+          ├── relay yellow
+          ├── LCD "Capturing..."  /  TM1637 8888
+          ├── picam2.capture_array() → undistort_frame() → encode JPEG
+          ├── LCD "Uploading..."  /  TM1637 spinner daemon
+          ├── requests.post(SERVER_URL + "/analyze",
+          │       files={"file": ("frame.jpg", jpeg_bytes, "image/jpeg")},
+          │       headers={"X-Auth-Token": API_KEY},
+          │       timeout=60)
+          │         ├── HTTP 200 → _show_result(response.json())
+          │         └── error   → _show_error(error_type)
+          └── wait for next button press
+```
 
-Credentials from `configs/config.toml` `[telegram]` section; overrideable via `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` env vars / `.env`.
+### LCD 16×4 Display States
+
+| State | Line 1 | Line 2 | Line 3 | Line 4 |
+|---|---|---|---|---|
+| Boot | `Urine Analyzer ` | `Ready          ` | ` ` | ` ` |
+| Capturing | `Capturing...   ` | ` ` | ` ` | ` ` |
+| Uploading | `Uploading...   ` | `Please wait    ` | ` ` | ` ` |
+| Analyzing (>4 s) | `Analyzing...   ` | `AI running     ` | ` ` | ` ` |
+| OK result | `Count: NN/NNN  ` | `L0:N L1:N L2:N ` | `L3:N L4:N      ` | `Status: OK     ` |
+| Missing slots | `Count: NN/NNN  ` | `L0:N L1:N L2:N ` | `L3:N L4:N      ` | `Miss: A03 B07..` |
+| Network error | `ERR: SRV OFF   ` | `Check network  ` | ` ` | ` ` |
+| Timeout | `ERR: TIMEOUT   ` | `Server slow    ` | ` ` | ` ` |
+| HTTP error | `ERR: HTTP NNN  ` | ` ` | ` ` | ` ` |
+| Camera fail | `ERR: CAMERA    ` | `Capture failed ` | ` ` | ` ` |
+| Server error | `ERR: AI FAIL   ` | ` ` | ` ` | ` ` |
+
+Line 4 scrolls slot_ids for missing bottles: `_lcd_scroll(line=4, text)` — daemon thread at 300 ms/step.
+
+### TM1637 States
+
+| State | Display |
+|---|---|
+| Boot | `0000` |
+| Capturing | `8888` (all segments on) |
+| Upload / analyze | Spinning `- - - -` at 250 ms |
+| Result | `NNNN` (detected count, zero-padded) |
+| Error | `----` |
+
+### Relay States
+
+```
+Boot              → Green ON
+Button pressed    → Yellow ON  (until result received)
+All slots found   → Green ON
+Any missing slot  → Red ON     (until next button press)
+Any error         → Red ON
+```
+
+Active-LOW relay: `GPIO.LOW` energises. Always turn previous channel OFF with 50 ms gap before turning new channel ON.
 
 ---
 
-## Startup Lifecycle
+## Key Functions Reference
 
-### Server
-
-```
-main.py --role server
-  └── server_app.py: create_app()  (_lifespan)
-        ├── _run_migrations()        — idempotent ALTER TABLE for each new column
-        ├── Base.metadata.create_all()  — creates new tables (trays, scan_sessions, …)
-        ├── _cleanup_old_logs()      — delete log images older than 30 days
-        ├── _YoloInference.load()    — load best.pt once into app.state.yolo
-        └── routes registered:       (no U-Net loaded — grid read from DB per scan)
-              POST /analyze, GET /dashboard, GET /trays, GET /api/trays, …
-              GET /settings, POST /settings/grid, GET /api/latest-capture,
-              GET /api/settings/grid-corners
-```
-
-### Client
-
-```
-main.py --role client
-  └── client_app.py: run_client(server_url)
-        ├── CameraUndistorter("configs/camera_params.yaml")  — load calibration
-        ├── lock_focus_picamera2()   — AfMode=Manual, LensPosition from YAML
-        ├── GPIO.setmode(BCM)
-        ├── _relay_setup()           — set relay pins as OUTPUT, all OFF
-        ├── LCD: "Urine Analyzer / Ready"
-        ├── TM1637: 0000
-        ├── Relay: Green ON
-        └── while True:
-              GPIO.wait_for_edge(FALLING, bouncetime=cfg.button_debounce_ms)
-              └── _on_button_press()
-                    ├── picam2.capture_array()
-                    ├── undistorter.undistort_frame(raw)
-                    └── requests.post(/analyze, file=jpeg_bytes)
-```
+| Function | File | Notes |
+|----------|------|-------|
+| `detect_grid(image, rows, cols, config)` | `utils/grid_circle_detector.py` | Full standalone pipeline → `{grid_pts, detected_count, reconstructed_count}` |
+| `extract_bottle_color(frame, cx, cy, r, ...)` | `utils/color_analysis.py` | Annular ring CIE Lab median — cx/cy in full-image coords |
+| `build_reference_baseline(frame, ref_positions)` | `utils/color_analysis.py` | Dynamic per-frame baseline from multiple ref cells per level |
+| `classify_sample(sample_lab, baseline, margin)` | `utils/color_analysis.py` | Nearest-centroid + margin-of-victory confidence |
+| `delta_e_cie76(lab1, lab2)` | `utils/color_analysis.py` | CIE76 perceptual distance |
+| `crop_sample_roi(img, top, bottom, left, right)` | `app/shared/processor.py` | Fixed-margin crop → (roi, x1, y1) |
+| `letterbox_white_padding(img, 640)` | `app/shared/processor.py` | White fill letterbox → (padded, scale, pad_x, pad_y) |
+| `run_pipeline(jpeg_bytes, slot_cfg)` | `server/pipeline.py` | Full pipeline → (scan_result dict, annotated_jpeg bytes) |
+| `lab_to_hex(L_cv, a_cv, b_cv)` | `server/pipeline.py` | OpenCV 8-bit Lab → `"#rrggbb"` |
+| `load_slot_config(path)` | `server/slot_config.py` | Load `slot_config.json` → SlotConfig |
+| `save_slot_config(cfg, path)` | `server/slot_config.py` | Persist SlotConfig → JSON file |
+| `active_cell_indices(cfg)` | `server/slot_config.py` | `set[int]` — all assigned cells |
+| `reference_cells(cfg)` | `server/slot_config.py` | `{cell_index: ref_level}` |
+| `sample_cells(cfg)` | `server/slot_config.py` | `{cell_index: slot_id}` |
+| `upload_image(jpeg_bytes, filename, folder_id, ...)` | `server/integrations/drive.py` | Upload to Google Drive → file_id |
+| `write_slot_config_to_sheet(cfg, spreadsheet_id, tab, ...)` | `server/integrations/sheets.py` | Clear + rewrite SlotAssignment tab |
+| `append_result_to_sheet(scan_result, spreadsheet_id, tab, ...)` | `server/integrations/sheets.py` | Append summary + detail rows; set hex cell backgrounds |
+| `CameraUndistorter(yaml_path)` | `utils/camera_undistort.py` | Pre-computes remap maps |
+| `CameraUndistorter.undistort_frame(frame)` | `utils/camera_undistort.py` | Single `cv2.remap()` per frame |
 
 ---
 
 ## Error Handling Rules
 
-1. `requests.post` must catch `ConnectionError`, `Timeout`, `HTTPError`, and bare `Exception` — never crash the main loop.
-2. Model inference errors → HTTP 500 `{"status": "error", "message": "..."}`.
-3. Missing active tray → HTTP 400 `{"detail": "กรุณาเลือกถาดก่อนสแกน"}`.
-4. `GPIO.cleanup()` **must** run in a `finally` block.
-5. `_relay_all_off(GPIO)` must be called before `GPIO.cleanup()`.
-6. Camera (`picam2`) must be closed in a `try/finally` inside `_capture_image()`.
-7. DB sessions must use context manager (`with Session() as session:`).
-8. `_run_migrations()` wraps every `ALTER TABLE` in `try/except` — safe on repeated startup.
-9. `/analyze` raises HTTP 400 with a clear Thai message if `active_tray.grid_json` is None (uncalibrated tray).
+1. `requests.post` (Pi client) must catch `ConnectionError`, `Timeout`, `HTTPError`, and bare `Exception` — never crash the main loop.
+2. YOLO inference errors → HTTP 500 with `{"status": "error", "message": "..."}`.
+3. HoughCircles finding zero circles → fall back to uniform grid from image dimensions + rows/cols (handled inside `estimate_grid_spacing`).
+4. Google Drive upload failure → log warning, continue; `image_url` still points to local static file.
+5. Google Sheets append failure → log warning, do not fail the HTTP response.
+6. `GPIO.cleanup()` must run in a `finally` block on the Pi.
+7. Camera (`picam2`) must be closed in `try/finally` inside `_capture_image()`.
+8. Empty `slot_cfg.cells` → `/analyze` returns HTTP 400 — user must configure slots first.
 
 ---
 
@@ -585,16 +600,10 @@ Use `loguru` exclusively. Never use `print()` or stdlib `logging`.
 ```python
 from loguru import logger
 logger.info("...")
-logger.debug("...")
 logger.warning("...")
 logger.error("...")
 logger.success("...")
 logger.exception("...")   # includes traceback
-```
-
-Log format in `main.py`:
-```python
-logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="DEBUG")
 ```
 
 ---
@@ -602,51 +611,27 @@ logger.add("logs/app_{time}.log", rotation="10 MB", retention="7 days", level="D
 ## What NOT To Do
 
 - Do not use `pip install` — always `uv add` or edit `pyproject.toml` then `uv sync`
-- Do not import `picamera2` or `RPi.GPIO` in `server_app.py`
-- Do not import `openvino` — the project uses PyTorch / ultralytics
-- Do not instantiate `GridDetector` at startup — U-Net is not used; grid is loaded from `trays.grid_json` in DB
-- Do not hardcode pin numbers, thresholds, or file paths — read from `cfg`
+- Do not use deep learning for grid detection — only `cv2.HoughCircles` or blob/contour methods
+- Do not use YOLO to infer grid structure — YOLO is detection only; grid comes from OpenCV
+- Do not hardcode `rows`, `cols`, folder IDs, or thresholds in logic files
 - Do not use black padding in `letterbox_white_padding` — must be white `(255, 255, 255)`
-- Do not run inference on the Pi — the Pi only captures + undistorts + POSTs
+- Do not run inference on the Pi — capture + undistort + POST only
 - Do not letterbox the full frame — `crop_sample_roi()` must be called first
-- Do not block the GPIO event loop with long `time.sleep()` — use daemon threads
-- Do not store images outside `app/web/static/captures/` (prod) or `app/web/static/test/` (test) or `logs/img/` (visual logs)
-- Do not include a port in `SERVER_URL` when using Cloudflare Tunnel (uses port 443)
-- Do not commit `.env`, `data/`, `models/`, `logs/`, `color.json`, or `grid_config.json`
-- Do not add `_render_annotated_canvas()` drawing logic into `server_app.py` — it belongs in `processor.py`
-- Do not re-implement Telegram in `bot/telegram_bot.py` — the active implementation is inlined in `server_app.py`
-- Do not add ArUco detection — tray identification is handled via the DB active-tray mechanism
-- Do not hardcode grid dimensions (13×15) in dashboard JS — read `tray.rows` / `tray.cols` from `/api/latest`
-- Do not use a fixed absolute ΔE threshold for `classify_sample` confidence — use the margin-of-victory check `(second_best_ΔE − best_ΔE) > margin`
-- Do not use `ref_inner_crop_px` — reference and sample bottles use the same `outer_crop_px` / `inner_crop_px` to avoid systematic Lab bias
+- Do not commit `credentials/token.json`, `credentials/client_secrets.json`, `.env`, or `models/`
+- Do not use a fixed absolute ΔE threshold for `classify_sample` — use margin-of-victory
+- Do not use fixed column-zone color expectations (L0 = cols 1-3, etc.) — reference levels come from `slot_config.json`
+- Do not import OpenVINO — project uses PyTorch/ultralytics
+- Do not use `gspread` — use `google-api-python-client` directly for consistency with Drive
+- Do not block the GPIO event loop with LCD/TM1637 writes — use daemon threads for scroll and spinner
+- Do not call relay channel ON before previous channel is OFF — always turn off first with 50 ms gap
+- Do not omit `missing_slots` from the API response — the Pi relay and LCD line 4 depend on it
+- Do not put Google Drive or Sheets logic on the Pi — Pi has no Google credentials; server handles all cloud interaction
+- Do not install `google-api-python-client`, `google-auth-*` on the Pi — they belong in the `server` extra only
+- Do not sample color from the center point — always use `extract_bottle_color()` which samples the annular ring median
+- Do not use a single endpoint for Pi vs browser test uploads — `/analyze` serves both identically
+- Do not add a separate `/test-upload` endpoint — use `/analyze` for all image submissions
+- Do not store scan results only in memory — persist `<scan_id>.json` and `<scan_id>.jpg` to `server/static/results/`
 
 ---
 
-## Key Functions Reference
-
-| Function | File | Purpose |
-|----------|------|---------|
-| `crop_sample_roi(img, top, bottom, left, right)` | `app/shared/processor.py` | Crop ROI before letterbox; returns `(roi, x1, y1)` |
-| `letterbox_white_padding(img, 640)` | `app/shared/processor.py` | Resize + white-pad to 640×640 |
-| `scale_coordinates(boxes, scale, px, py, roi_x1, roi_y1)` | `app/shared/processor.py` | Map 640-space boxes back to full-image coords |
-| `_render_annotated_canvas(img, slots, layout_map, …)` | `app/shared/processor.py` | Draw overlays; labels only on error slots |
-| `save_visual_log(img, slots, …, layout_map)` | `app/shared/processor.py` | Save annotated JPEG to disk |
-| `generate_visual_report(img, slots, …, layout_map)` | `app/shared/processor.py` | Return annotated JPEG bytes |
-| `_grid_pts_to_result(grid_pts_list)` | `app/server_app.py` | Convert 14×17 bilinear grid → GridDetectionResult (195 sample + 15 ref centres) |
-| `_build_ref_positions(ref_centres, spacing)` | `app/server_app.py` | Map 15 ref centres → `{level: [(cx,cy,r),...]}` for baseline extraction |
-| `CameraUndistorter(yaml_path, capture_size)` | `utils/camera_undistort.py` | Pre-compute remap maps |
-| `CameraUndistorter.undistort_frame(frame)` | `utils/camera_undistort.py` | cv2.remap + ROI crop |
-| `lock_focus_picamera2(picam2, focus_value)` | `utils/camera_undistort.py` | Set AfMode=Manual + LensPosition |
-| `load_params(yaml_path)` | `utils/camera_undistort.py` | Parse camera_params.yaml |
-| `build_kmeans_centroids(path)` | `utils/color_analysis.py` | Load color.json → Lab centroids per class |
-| `classify_sample(lab, baseline, margin)` | `utils/color_analysis.py` | Nearest-centroid → (level, delta_e, confident); margin-of-victory confidence |
-| `extract_bottle_color(frame, cx, cy, radius, outer_crop_px, inner_crop_px)` | `utils/color_analysis.py` | Annular ring Lab median — excludes plastic edge (outer) and center glare (inner) |
-| `build_reference_baseline(frame, ref_positions)` | `utils/color_analysis.py` | Sample reference row → {level: (L,a,b)} per color level |
-| `_refine_baseline_from_slots(img, slot_hits, initial_baseline, min_samples)` | `app/server_app.py` | Replace reference centroid with median of actual sample-area bottles per zone |
-| `_build_slot_rows(slot_hits, classified, layout_map)` | `app/server_app.py` | Build 195 slot dicts; flags wrong color ("สีผิด") and duplicate labels ("วางเลขซ้ำ") |
-| `_generate_default_layout(rows, cols)` | `app/server_app.py` | Auto-generate layout_json for a new tray |
-| `_expected_level_from_position(position_index)` | `app/server_app.py` | Column-zone → expected colour level |
-
----
-
-_Keep this file in sync when architecture, pin assignments, or API contracts change._
+_Keep this file in sync when architecture, config keys, or API contracts change._
