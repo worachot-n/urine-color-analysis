@@ -41,7 +41,11 @@ _API_KEY = os.environ.get("API_KEY", "test")
 # Try importing Google integrations — silently disabled if not configured
 # ---------------------------------------------------------------------------
 try:
-    from server.integrations.sheets import write_slot_config_to_sheet, append_result_to_sheet
+    from server.integrations.sheets import (
+        write_slot_config_to_sheet,
+        append_result_to_sheet,
+        read_slot_config_from_sheet,
+    )
     from server.integrations.drive import upload_image as drive_upload_image
     _GOOGLE_AVAILABLE = True
 except ImportError:
@@ -128,6 +132,11 @@ async def result_detail_page(request: Request, scan_id: str):
     return templates.TemplateResponse(request, "result.html", {"scan": scan})
 
 
+@app.get("/auto_grid", response_class=HTMLResponse)
+async def auto_grid_page(request: Request):
+    return templates.TemplateResponse(request, "auto_grid.html", {"active_page": "auto_grid"})
+
+
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     slot_cfg = load_slot_config()
@@ -186,6 +195,46 @@ async def post_slots(request: Request):
     except Exception as e:
         logger.error("slots: save failed: {}", e)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/auto_grid")
+async def api_auto_grid(file: UploadFile = File(...)):
+    """Run full pipeline using slot config loaded from Google Sheets."""
+    import base64
+
+    jpeg_bytes = await file.read()
+    if not jpeg_bytes:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    slot_cfg = None
+    if _GOOGLE_AVAILABLE:
+        gcfg = _google_cfg()
+        sid  = gcfg.get("spreadsheet_id", "")
+        tab  = gcfg.get("slots_tab", "SlotAssignment")
+        sa   = gcfg.get("service_account_file", "credentials.json")
+        if sid:
+            slot_cfg = read_slot_config_from_sheet(sid, tab, sa)
+
+    if slot_cfg is None or not slot_cfg.cells:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not load slot config from Google Sheets. Check spreadsheet_id and service account in config.toml.",
+        )
+
+    try:
+        scan_result, annotated_jpeg = run_pipeline(jpeg_bytes, slot_cfg)
+    except Exception as e:
+        logger.exception("auto_grid: pipeline error")
+        raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
+
+    scan_result["image_b64"] = base64.b64encode(annotated_jpeg).decode()
+    logger.success(
+        "auto_grid: detected={}/{} missing={}",
+        scan_result["detected_count"],
+        scan_result["total_assigned"],
+        scan_result["missing_slots"],
+    )
+    return JSONResponse(content=scan_result)
 
 
 @app.post("/analyze")

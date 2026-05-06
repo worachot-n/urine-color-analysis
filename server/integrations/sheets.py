@@ -228,6 +228,66 @@ def append_result_to_sheet(
         logger.warning("sheets: append_result failed: {}", e)
 
 
+def read_slot_config_from_sheet(
+    spreadsheet_id: str,
+    tab: str,
+    service_account_file: str = "credentials.json",
+):
+    """
+    Read the SlotAssignment tab and return a SlotConfig.
+    Returns None if the sheet is unreachable or empty.
+    Column order (matches writer): cell_index | slot_id | is_reference | ref_level | row | col
+    """
+    try:
+        from server.slot_config import SlotConfig, CellConfig
+
+        service = _build_service(service_account_file)
+        if service is None:
+            return None
+
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab}!A:F",
+        ).execute()
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            return None
+
+        cells: dict[int, CellConfig] = {}
+        cols_set: set[int] = set()
+
+        for row in rows[1:]:
+            if len(row) < 4:
+                continue
+            try:
+                cell_idx  = int(row[0])
+                slot_id   = str(row[1])
+                is_ref    = row[2].strip().lower() == "true"
+                ref_level = int(row[3]) if row[3].strip() else None
+                if len(row) > 5 and row[5]:
+                    cols_set.add(int(row[5]))
+                cells[cell_idx] = CellConfig(
+                    slot_id=slot_id,
+                    is_reference=is_ref,
+                    ref_level=ref_level,
+                )
+            except (ValueError, IndexError):
+                continue
+
+        if not cells:
+            return None
+
+        max_cell  = max(cells.keys())
+        grid_cols = max(cols_set) if cols_set else 15
+        grid_rows = (max_cell - 1) // grid_cols + 1
+
+        logger.info("sheets: loaded {} cells from {}", len(cells), tab)
+        return SlotConfig(rows=grid_rows, cols=grid_cols, cells=cells)
+    except Exception as e:
+        logger.warning("sheets: read_slot_config failed: {}", e)
+        return None
+
+
 def _get_sheet_id(service, spreadsheet_id: str, tab_name: str) -> int:
     """Return the numeric sheetId for a tab by name; 0 if not found."""
     try:
