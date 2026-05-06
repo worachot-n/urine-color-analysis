@@ -63,6 +63,10 @@
         <span class="text-gray-400">Assigned slots</span>
         <span id="stat-assigned" class="ml-2 text-blue-400 font-bold text-base"></span>
       </div>
+      <div>
+        <span class="text-gray-400">Rotation corrected</span>
+        <span id="stat-angle" class="ml-2 text-purple-400 font-bold text-base"></span>
+      </div>
     </div>
 
     <!-- Annotated image -->
@@ -125,7 +129,8 @@ runBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error(data.detail || 'Server error');
 
     spinner.classList.add('hidden');
-    statusText.textContent = `Done — HoughCircles: ${data.detected_count} detected, ${data.reconstructed_count} inferred.`;
+    const angleStr = data.grid_angle_deg ? ` (rotation ${data.grid_angle_deg}°)` : '';
+    statusText.textContent = `Done — HoughCircles: ${data.detected_count} detected, ${data.reconstructed_count} inferred${angleStr}.`;
     statusText.className = 'text-sm text-green-400';
     renderResult(data);
   } catch (err) {
@@ -137,10 +142,11 @@ runBtn.addEventListener('click', async () => {
 });
 
 function renderResult(d) {
-  document.getElementById('stat-detected').textContent     = d.detected_count;
+  document.getElementById('stat-detected').textContent      = d.detected_count;
   document.getElementById('stat-reconstructed').textContent = d.reconstructed_count;
-  document.getElementById('stat-total').textContent        = d.total_cells;
-  document.getElementById('stat-assigned').textContent     = d.assigned_cells;
+  document.getElementById('stat-total').textContent         = d.total_cells;
+  document.getElementById('stat-assigned').textContent      = d.assigned_cells;
+  document.getElementById('stat-angle').textContent         = (d.grid_angle_deg || 0) + '°';
 
   if (d.image_b64) {
     document.getElementById('grid-img').src = 'data:image/jpeg;base64,' + d.image_b64;

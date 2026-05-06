@@ -7,14 +7,15 @@ non-square aspect ratios).
 
 Pipeline
 --------
-1. preprocess()            — grayscale + CLAHE normalisation
-2. detect_circles()        — HoughCircles with image-adaptive parameters
-3. find_grid_positions()   — Gaussian KDE projection + scipy peak detection
-                             for each axis independently
-4. fit_uniform_grid()      — extend partial detections to full n_rows × n_cols
-5. build_grid_pts()        — Cartesian product of row × col positions
-6. assign_detections()     — snap each detected circle to its nearest cell
-7. draw_grid()             — midpoint grid lines + circle markers
+1. preprocess()              — grayscale + CLAHE normalisation
+2. detect_circles()          — HoughCircles with image-adaptive parameters
+3. estimate_grid_angle()     — estimate tray rotation from row line-fits
+4. find_grid_positions()     — Gaussian KDE projection + scipy peak detection
+                               on rotation-corrected centres
+5. fit_uniform_grid()        — extend partial detections to full n_rows × n_cols
+6. build_grid_pts()          — Cartesian product, then rotate back to image space
+7. assign_detections()       — snap each detected circle to its nearest cell
+8. draw_grid()               — rotated midpoint grid lines + circle markers
 
 Public API
 ----------
@@ -54,9 +55,9 @@ class AutoGridConfig:
     hough_param2: int   = 22    # accumulator threshold (lower → more permissive)
 
     # Fractions of the expected circle spacing
-    min_dist_frac:  float = 0.55   # min_dist   = est_spacing × frac
-    radius_min_frac: float = 0.22  # min_radius = est_spacing × frac
-    radius_max_frac: float = 0.52  # max_radius = est_spacing × frac
+    min_dist_frac:   float = 0.55   # min_dist   = est_spacing × frac
+    radius_min_frac: float = 0.22   # min_radius = est_spacing × frac
+    radius_max_frac: float = 0.52   # max_radius = est_spacing × frac
 
     # --- Projection KDE ---
     kde_bw_frac:        float = 0.30  # KDE bandwidth = est_spacing × frac
@@ -65,6 +66,10 @@ class AutoGridConfig:
 
     # --- Grid snap ---
     snap_tol_frac: float = 0.45   # max distance to snap = est_spacing × frac
+
+    # --- Rotation correction ---
+    # Minimum rotation angle (degrees) to bother correcting
+    min_correct_angle_deg: float = 0.20
 
     # --- Visualisation (BGR) ---
     color_detected:      tuple = (0, 220,  0)    # green  — HoughCircles hit
@@ -80,12 +85,7 @@ class AutoGridConfig:
 # ---------------------------------------------------------------------------
 
 def _preprocess(image: np.ndarray) -> np.ndarray:
-    """
-    CLAHE on the Lab L-channel then convert to blurred greyscale.
-
-    CLAHE normalises white caps, yellow caps, and dark backgrounds to
-    similar luminance contrast before Canny / HoughCircles.
-    """
+    """CLAHE on the Lab L-channel then convert to blurred greyscale."""
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2Lab)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     lab[:, :, 0] = clahe.apply(lab[:, :, 0])
@@ -136,7 +136,62 @@ def _detect_circles(
 
 
 # ---------------------------------------------------------------------------
-# Step 3: 1-D axis-position estimation via projection KDE
+# Step 3: Rotation estimation and correction
+# ---------------------------------------------------------------------------
+
+def _rotate_points(pts: np.ndarray, angle_rad: float, origin: np.ndarray) -> np.ndarray:
+    """Rotate 2-D points around `origin` by `angle_rad` radians (CCW positive)."""
+    c, s = float(np.cos(angle_rad)), float(np.sin(angle_rad))
+    R = np.array([[c, -s], [s, c]], dtype=np.float64)
+    return ((pts.astype(np.float64) - origin) @ R.T + origin).astype(np.float32)
+
+
+def _estimate_grid_angle(centers: np.ndarray, est_dy: float) -> float:
+    """
+    Estimate the tray rotation angle (radians) from detected circle centres.
+
+    Groups circles into approximate rows by Y proximity (± est_dy/2),
+    fits a line per row, and returns the median row slope angle.
+    """
+    if len(centers) < 6:
+        return 0.0
+
+    sorted_pts = centers[np.argsort(centers[:, 1])]
+
+    # Group into rows
+    rows: list[list] = []
+    cur_row: list = [sorted_pts[0].tolist()]
+    cur_mean_y = float(sorted_pts[0][1])
+    for pt in sorted_pts[1:]:
+        if abs(float(pt[1]) - cur_mean_y) < est_dy * 0.5:
+            cur_row.append(pt.tolist())
+            cur_mean_y = float(np.mean([p[1] for p in cur_row]))
+        else:
+            rows.append(cur_row)
+            cur_row = [pt.tolist()]
+            cur_mean_y = float(pt[1])
+    rows.append(cur_row)
+
+    angles = []
+    for row_pts_list in rows:
+        if len(row_pts_list) < 3:
+            continue
+        row_np = np.array(row_pts_list, dtype=np.float64)
+        x = row_np[:, 0]
+        y = row_np[:, 1]
+        A = np.vstack([x, np.ones_like(x)]).T
+        result = np.linalg.lstsq(A, y, rcond=None)
+        m = float(result[0][0])
+        angles.append(float(np.arctan(m)))
+
+    if len(angles) < 2:
+        return 0.0
+
+    return float(np.median(angles))
+
+
+# ---------------------------------------------------------------------------
+# Step 4: 1-D axis-position estimation via projection KDE
 # ---------------------------------------------------------------------------
 
 def _kde_1d(values: np.ndarray, size: int, bandwidth: float) -> np.ndarray:
@@ -160,7 +215,6 @@ def _find_peaks_builtin(density: np.ndarray, min_dist: int, min_height: float) -
     i = 1
     while i < n - 1:
         if density[i] >= min_height and density[i] >= density[i - 1] and density[i] >= density[i + 1]:
-            # Find the true local max within the next min_dist window
             end = min(n, i + min_dist)
             local_max = i + int(np.argmax(density[i:end]))
             peaks.append(float(local_max))
@@ -182,7 +236,6 @@ def _estimate_fundamental_spacing(diffs: np.ndarray, est_spacing: float) -> floa
 
     sp = float(np.median(valid))
 
-    # De-aliasing: check if sp/2 or sp/3 is better supported
     for divisor in (2, 3):
         candidate = sp / divisor
         if candidate < min_sp:
@@ -224,7 +277,6 @@ def _extend_to_full_grid(
     if origin_frac < 0:
         origin_frac += spacing
 
-    # Centre the n_total grid on the detected cluster
     centre_detected = float(np.mean(detected))
     centre_idx = (n_total - 1) / 2.0
     start_i = int(round((centre_detected - origin_frac) / spacing - centre_idx))
@@ -244,12 +296,6 @@ def _find_grid_positions(
 ) -> np.ndarray:
     """
     Find the `n_expected` grid positions along a single axis.
-
-    1. Build a Gaussian KDE histogram of the detected coordinates.
-    2. Find peaks (scipy or built-in fallback).
-    3. If enough peaks found, return the n_expected strongest.
-    4. If fewer peaks, extend a fitted regular grid to n_expected.
-    5. If no circles at all, fall back to a uniform grid across the image.
 
     Returns sorted float32 array of length n_expected.
     """
@@ -273,30 +319,27 @@ def _find_grid_positions(
         peak_pos = _find_peaks_builtin(density, min_sep, min_h)
 
     if len(peak_pos) == 0:
-        # No peaks at all — uniform fallback across detected range
         lo, hi = float(coords.min()), float(coords.max())
         return np.linspace(lo, hi, n_expected, dtype=np.float32)
 
     peak_heights = density[peak_pos.astype(int)]
 
     if len(peak_pos) >= n_expected:
-        # More peaks than needed — keep the n_expected tallest
         top = np.argsort(peak_heights)[-n_expected:]
         return np.sort(peak_pos[top]).astype(np.float32)
 
-    # Fewer peaks than expected — extend the fitted regular grid
     return _extend_to_full_grid(peak_pos, n_expected, est_spacing)
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Grid points and assignment
+# Step 5: Grid points and assignment
 # ---------------------------------------------------------------------------
 
 def _build_grid_pts(
     row_positions: np.ndarray,
     col_positions: np.ndarray,
 ) -> np.ndarray:
-    """Return (n_rows × n_cols, 2) float32 Cartesian product."""
+    """Return (n_rows × n_cols, 2) float32 Cartesian product (row-major)."""
     pts = np.array(
         [[cx, ry] for ry in row_positions for cx in col_positions],
         dtype=np.float32,
@@ -325,69 +368,83 @@ def _assign_detections(
 
 
 # ---------------------------------------------------------------------------
-# Step 5: Annotation
+# Step 6: Annotation — rotated midpoint grid lines
 # ---------------------------------------------------------------------------
 
 def _draw_grid(
     image: np.ndarray,
-    grid_pts: np.ndarray,
+    grid_pts: np.ndarray,   # (n_rows*n_cols, 2) float32 in image space
     is_detected: np.ndarray,
-    row_positions: np.ndarray,
-    col_positions: np.ndarray,
+    n_rows: int,
+    n_cols: int,
     avg_radius: float,
     config: AutoGridConfig,
 ) -> np.ndarray:
     """
     Draw the annotated grid on a copy of `image`.
 
-    Grid lines are drawn at the midpoint between consecutive rows/columns.
-    The outermost lines are drawn half-spacing OUTSIDE the edge circles so
-    the grid cell is visually larger than the circle inside it.
+    Grid lines are computed from the actual grid point positions (which may
+    be rotated), so lines follow the real grid orientation rather than
+    being forced axis-aligned.
+
+    Boundary lines are drawn at midpoints between consecutive rows/columns;
+    the outermost boundaries extend half-spacing beyond the edge circles.
 
     Green circles  = detected by HoughCircles
     Orange circles = reconstructed (inferred from grid fit)
     """
     canvas = image.copy()
-    n_rows = len(row_positions)
-    n_cols = len(col_positions)
-    h, w   = canvas.shape[:2]
-    r      = max(5, int(avg_radius))
-    lw     = max(1, config.line_thickness)
+    r  = max(5, int(avg_radius))
+    lw = max(1, config.line_thickness)
 
-    # ── Horizontal lines ─────────────────────────────────────────────────
-    dy_top    = (row_positions[1] - row_positions[0])  * 0.5 if n_rows > 1 else avg_radius
-    dy_bottom = (row_positions[-1] - row_positions[-2]) * 0.5 if n_rows > 1 else avg_radius
-    dx_left   = (col_positions[1] - col_positions[0])  * 0.5 if n_cols > 1 else avg_radius
-    dx_right  = (col_positions[-1] - col_positions[-2]) * 0.5 if n_cols > 1 else avg_radius
+    pts = grid_pts.reshape(n_rows, n_cols, 2)  # (n_rows, n_cols, 2)
 
-    h_ys = (
-        [row_positions[0] - dy_top]
-        + [(row_positions[i] + row_positions[i + 1]) / 2.0 for i in range(n_rows - 1)]
-        + [row_positions[-1] + dy_bottom]
-    )
-    x0 = int(round(col_positions[0]  - dx_left))
-    x1 = int(round(col_positions[-1] + dx_right))
-    for y in h_ys:
-        cv2.line(canvas, (x0, int(round(y))), (x1, int(round(y))),
-                 config.color_h_lines, lw, cv2.LINE_AA)
+    # ── Horizontal boundary lines (n_rows + 1) ───────────────────────────
+    for bi in range(n_rows + 1):
+        if bi == 0:
+            # Outer top edge: reflect row 0 through row 1
+            if n_rows > 1:
+                row_pts = pts[0] + (pts[0] - pts[1]) * 0.5
+            else:
+                row_pts = pts[0] - np.array([[0, avg_radius]])
+        elif bi == n_rows:
+            # Outer bottom edge: reflect last row through second-to-last
+            if n_rows > 1:
+                row_pts = pts[-1] + (pts[-1] - pts[-2]) * 0.5
+            else:
+                row_pts = pts[-1] + np.array([[0, avg_radius]])
+        else:
+            row_pts = (pts[bi - 1] + pts[bi]) * 0.5
 
-    # ── Vertical lines ───────────────────────────────────────────────────
-    v_xs = (
-        [col_positions[0] - dx_left]
-        + [(col_positions[i] + col_positions[i + 1]) / 2.0 for i in range(n_cols - 1)]
-        + [col_positions[-1] + dx_right]
-    )
-    y0 = int(round(row_positions[0]  - dy_top))
-    y1 = int(round(row_positions[-1] + dy_bottom))
-    for x in v_xs:
-        cv2.line(canvas, (int(round(x)), y0), (int(round(x)), y1),
-                 config.color_v_lines, lw, cv2.LINE_AA)
+        # Draw line from left boundary point to right boundary point
+        x0, y0 = int(round(float(row_pts[0, 0]))),  int(round(float(row_pts[0, 1])))
+        x1, y1 = int(round(float(row_pts[-1, 0]))), int(round(float(row_pts[-1, 1])))
+        cv2.line(canvas, (x0, y0), (x1, y1), config.color_h_lines, lw, cv2.LINE_AA)
+
+    # ── Vertical boundary lines (n_cols + 1) ─────────────────────────────
+    for bi in range(n_cols + 1):
+        if bi == 0:
+            if n_cols > 1:
+                col_pts = pts[:, 0] + (pts[:, 0] - pts[:, 1]) * 0.5
+            else:
+                col_pts = pts[:, 0] - np.array([[avg_radius, 0]])
+        elif bi == n_cols:
+            if n_cols > 1:
+                col_pts = pts[:, -1] + (pts[:, -1] - pts[:, -2]) * 0.5
+            else:
+                col_pts = pts[:, -1] + np.array([[avg_radius, 0]])
+        else:
+            col_pts = (pts[:, bi - 1] + pts[:, bi]) * 0.5
+
+        x0, y0 = int(round(float(col_pts[0, 0]))),  int(round(float(col_pts[0, 1])))
+        x1, y1 = int(round(float(col_pts[-1, 0]))), int(round(float(col_pts[-1, 1])))
+        cv2.line(canvas, (x0, y0), (x1, y1), config.color_v_lines, lw, cv2.LINE_AA)
 
     # ── Circle markers ───────────────────────────────────────────────────
-    for pt, detected in zip(grid_pts, is_detected):
-        cx_i = int(round(pt[0]))
-        cy_i = int(round(pt[1]))
-        color = config.color_detected if detected else config.color_reconstructed
+    for pt, det in zip(grid_pts, is_detected):
+        cx_i = int(round(float(pt[0])))
+        cy_i = int(round(float(pt[1])))
+        color = config.color_detected if det else config.color_reconstructed
         cv2.circle(canvas, (cx_i, cy_i), r, color, config.circle_thickness, cv2.LINE_AA)
 
     return canvas
@@ -408,6 +465,10 @@ def detect_grid_full(
 
     No letterboxing.  No YOLO.  Pure classical CV.
 
+    Handles slightly rotated trays: estimates the grid rotation angle from
+    row line-fits, corrects for it during grid fitting, then rotates the
+    grid points back to the original image coordinate system.
+
     Args:
         image:  Full-resolution (or ROI-cropped) BGR image.
         n_rows: Expected number of grid rows (from slot config).
@@ -421,9 +482,10 @@ def detect_grid_full(
           "result_image":        BGR annotated image (same resolution as input)
           "detected_count":      int
           "reconstructed_count": int
-          "col_positions":       (n_cols,) float32
-          "row_positions":       (n_rows,) float32
+          "col_positions":       (n_cols,) float32  (in rotation-corrected space)
+          "row_positions":       (n_rows,) float32  (in rotation-corrected space)
           "avg_radius_px":       float
+          "grid_angle_deg":      float  — estimated tray rotation angle
         }
     """
     if config is None:
@@ -445,13 +507,27 @@ def detect_grid_full(
 
     avg_radius = float(np.median(radii)) if len(radii) > 0 else est_spacing * 0.38
 
-    # ── 2. Projection KDE → axis positions ───────────────────────────────
-    if len(centers) >= 3:
+    # ── 2. Estimate tray rotation and correct circle coordinates ──────────
+    angle = _estimate_grid_angle(centers, est_dy) if len(centers) >= 6 else 0.0
+    min_angle = np.radians(config.min_correct_angle_deg)
+
+    if abs(angle) > min_angle:
+        logger.info("auto_grid: estimated rotation={:.3f}°, applying correction",
+                    np.degrees(angle))
+        img_origin = np.array([w / 2.0, h / 2.0])
+        centers_fit = _rotate_points(centers, -angle, img_origin)
+    else:
+        angle = 0.0
+        img_origin = np.array([w / 2.0, h / 2.0])
+        centers_fit = centers
+
+    # ── 3. Projection KDE → axis positions (on corrected coords) ──────────
+    if len(centers_fit) >= 3:
         col_positions = _find_grid_positions(
-            centers[:, 0], n_cols, w, est_dx, config
+            centers_fit[:, 0], n_cols, w, est_dx, config
         )
         row_positions = _find_grid_positions(
-            centers[:, 1], n_rows, h, est_dy, config
+            centers_fit[:, 1], n_rows, h, est_dy, config
         )
     else:
         logger.warning(
@@ -461,10 +537,15 @@ def detect_grid_full(
         col_positions = np.linspace(est_dx * 0.5, w - est_dx * 0.5, n_cols, dtype=np.float32)
         row_positions = np.linspace(est_dy * 0.5, h - est_dy * 0.5, n_rows, dtype=np.float32)
 
-    # ── 3. Build grid_pts ─────────────────────────────────────────────────
-    grid_pts = _build_grid_pts(row_positions, col_positions)
+    # ── 4. Build grid in corrected space, rotate back to image space ───────
+    grid_pts_corrected = _build_grid_pts(row_positions, col_positions)
 
-    # ── 4. Assign detected circles to cells ───────────────────────────────
+    if abs(angle) > min_angle:
+        grid_pts = _rotate_points(grid_pts_corrected, angle, img_origin)
+    else:
+        grid_pts = grid_pts_corrected
+
+    # ── 5. Assign detected circles to cells (use original centers) ─────────
     snap_dist   = min(est_dx, est_dy) * config.snap_tol_frac
     is_detected = _assign_detections(centers, grid_pts, snap_dist)
 
@@ -472,14 +553,13 @@ def detect_grid_full(
     reconstructed_count = len(grid_pts) - detected_count
 
     logger.info(
-        "auto_grid: detected={} reconstructed={} avg_r={:.1f}px",
-        detected_count, reconstructed_count, avg_radius,
+        "auto_grid: detected={} reconstructed={} rotation={:.2f}° avg_r={:.1f}px",
+        detected_count, reconstructed_count, np.degrees(angle), avg_radius,
     )
 
-    # ── 5. Draw annotated image ───────────────────────────────────────────
+    # ── 6. Draw annotated image ───────────────────────────────────────────
     result_image = _draw_grid(
-        image, grid_pts, is_detected,
-        row_positions, col_positions, avg_radius, config,
+        image, grid_pts, is_detected, n_rows, n_cols, avg_radius, config,
     )
 
     return {
@@ -491,4 +571,5 @@ def detect_grid_full(
         "col_positions":       col_positions,
         "row_positions":       row_positions,
         "avg_radius_px":       avg_radius,
+        "grid_angle_deg":      float(np.degrees(angle)),
     }

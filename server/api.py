@@ -299,6 +299,7 @@ async def api_auto_grid(file: UploadFile = File(...)):
         "reconstructed_count":   grid_result["reconstructed_count"],
         "total_cells":           slot_cfg.rows * slot_cfg.cols,
         "assigned_cells":        len(slot_cfg.cells),
+        "grid_angle_deg":        round(grid_result.get("grid_angle_deg", 0.0), 2),
     })
 
 
