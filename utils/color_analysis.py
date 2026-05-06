@@ -20,8 +20,15 @@ import numpy as np
 from pathlib import Path
 from loguru import logger
 
-from configs.config import OUTER_CROP_PX, INNER_CROP_PX, CONFIDENCE_MARGIN, \
-                           GLARE_L_THRESHOLD, GLARE_MIN_VALID_PX
+import tomllib
+_cfg = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb"))
+_ca = _cfg.get("color_analysis", {})
+_ip = _cfg.get("image_processing", {})
+OUTER_CROP_PX: int       = int(_ca.get("outer_crop_px", 15))
+INNER_CROP_PX: int       = int(_ca.get("inner_crop_px", 10))
+CONFIDENCE_MARGIN: float = float(_ca.get("confidence_margin", 3.0))
+GLARE_L_THRESHOLD: float = float(_ip.get("glare_l_threshold", 220))
+GLARE_MIN_VALID_PX: int  = int(_ip.get("glare_min_valid_px", 10))
 
 # OpenCV 8-bit Lab representation of pure white (L=255, a=128, b=128)
 WHITE_LAB = (255.0, 128.0, 128.0)

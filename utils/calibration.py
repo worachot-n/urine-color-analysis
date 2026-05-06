@@ -43,12 +43,13 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-from configs.config import (
-    CAPTURE_RESOLUTION,
-    AWB_LOCK,
-    AE_LOCK,
-    CAMERA_ROTATE_180,
-)
+import tomllib
+_cfg = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb"))
+_cam = _cfg["camera"]
+CAPTURE_RESOLUTION: tuple = tuple(_cam["capture_resolution"])
+AWB_LOCK: bool            = bool(_cam["awb_lock"])
+AE_LOCK: bool             = bool(_cam["ae_lock"])
+CAMERA_ROTATE_180: bool   = bool(_cam["rotate_180"])
 
 # Grid dimensions in lines (not cells).
 # 16 v-lines → 15 column cells   (no ZZ dead zone)

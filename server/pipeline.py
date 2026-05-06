@@ -26,11 +26,20 @@ from utils.color_analysis import (
 )
 from app.shared.processor import crop_sample_roi, letterbox_white_padding
 from server.slot_config import SlotConfig, active_cell_indices, reference_cells, sample_cells
-from configs.config import (
-    SAMPLE_ROI_TOP, SAMPLE_ROI_BOTTOM, SAMPLE_ROI_LEFT, SAMPLE_ROI_RIGHT,
-    YOLO_MODEL_PATH, YOLO_CONF_THRESHOLD, YOLO_IOU_THRESHOLD, YOLO_IMGSZ,
-    CONFIDENCE_MARGIN,
-)
+import tomllib
+_cfg = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb"))
+_y    = _cfg["yolo"]
+_sroi = _cfg.get("sample_roi", {})
+_ca   = _cfg.get("color_analysis", {})
+YOLO_MODEL_PATH: str       = _y["model_path"]
+YOLO_CONF_THRESHOLD: float = float(_y["conf_threshold"])
+YOLO_IOU_THRESHOLD: float  = float(_y["iou_threshold"])
+YOLO_IMGSZ: int            = int(_y["imgsz"])
+CONFIDENCE_MARGIN: float   = float(_ca.get("confidence_margin", 3.0))
+SAMPLE_ROI_TOP: int        = int(_sroi.get("top", 0))
+SAMPLE_ROI_BOTTOM: int     = int(_sroi.get("bottom", 0))
+SAMPLE_ROI_LEFT: int       = int(_sroi.get("left", 0))
+SAMPLE_ROI_RIGHT: int      = int(_sroi.get("right", 0))
 
 
 # ---------------------------------------------------------------------------

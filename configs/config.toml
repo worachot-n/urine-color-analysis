@@ -53,34 +53,13 @@ rotate_180         = true           # Camera is mounted upside-down
 jpeg_quality       = 95             # JPEG encode quality sent to server (0-100)
 
 # =============================================================================
-# IMAGE PROCESSING — Red Cap Detection
+# IMAGE PROCESSING — CLAHE + Glare Handling
 # =============================================================================
 [image_processing]
-
-# HSV ranges for red — widened saturation to 50 to catch printed ring variants under shadow
-hsv_red_lower_1    = [0,   50,  50]
-hsv_red_upper_1    = [10, 255, 255]
-hsv_red_lower_2    = [160,  50,  50]
-hsv_red_upper_2    = [180, 255, 255]
-
-# Morphological cleanup
-morph_kernel_size    = 5
-gaussian_blur_kernel = [5, 5]
-morph_close_large    = 21    # wider close to bridge large glare-caused ring gaps
-
-# Contour-based circle detection (replaces HoughCircles)
-min_contour_area      = 80     # pixels² — accept smaller arc fragments after large closing pass
-max_contour_area      = 20000  # pixels² — maximum valid ring contour
-circularity_threshold = 0.45   # 4π·Area/Perimeter² — relaxed to accept broken/arc-shaped rings
-
-# Two-step bottle presence verification
-red_ring_min_pixels = 30   # min non-zero pixels in slot bbox on closed red mask
-
-# Glare / specular reflection handling
-clahe_clip_limit   = 2.0   # CLAHE clip limit for V-channel normalization
+clahe_clip_limit   = 2.0   # CLAHE clip limit for L-channel normalization (pre-HoughCircles + pre-YOLO)
 clahe_tile_size    = 8     # CLAHE tile grid size (NxN)
-glare_l_threshold  = 220   # OpenCV 8-bit Lab L* cutoff (255=white); pixels above = glare
-glare_min_valid_px = 10    # Min non-glare pixels required to use masked median
+glare_l_threshold  = 220   # OpenCV 8-bit Lab L* cutoff; pixels above treated as glare
+glare_min_valid_px = 10    # Min non-glare pixels required to use masked median for color extraction
 
 # =============================================================================
 # COLOR ANALYSIS
@@ -99,18 +78,6 @@ color_levels       = 5     # Number of distinct color levels (L0-L4)
 refs_per_level     = 3     # Reference bottles per level in reference row
 
 # =============================================================================
-# GRID CONFIGURATION
-# =============================================================================
-[grid]
-config_file     = "grid_config.json"
-color_json_file = "color.json"
-cols            = 16               # 16 columns of lines (col 0 = ZZ dead zone)
-rows            = 14               # 14 rows of lines (row 0 = reference, 1-12 = samples)
-groups          = ["A1", "A2", "A3", "A4"]
-slots_per_group = 9                # Slots 1-9 per group
-levels          = [0, 1, 2, 3, 4]
-
-# =============================================================================
 # NETWORK / HOTSPOT
 # =============================================================================
 [network]
@@ -118,13 +85,6 @@ hotspot_ssid         = "signal"
 hotspot_password     = "angad@1234"
 hotspot_ip           = "10.42.0.1"   # nmcli hotspot default on Pi OS / NetworkManager
 wifi_connect_timeout = 30            # Seconds to wait for WiFi association
-
-# =============================================================================
-# WEB SERVER
-# =============================================================================
-[web_server]
-port               = 5000
-captive_portal_port = 8080   # Port 80 reserved; use 8080 for WiFi setup portal
 
 # =============================================================================
 # TELEGRAM
@@ -174,14 +134,6 @@ right  = 800    # if > frame width − left, no right-side crop is applied
 watchdog_timeout_sec = 60   # Max seconds per processing cycle
 
 # =============================================================================
-# U-NET GRID SEGMENTATION
-# =============================================================================
-[unet]
-model_path     = "models/unet_grid.pt"
-input_size     = 640
-mask_threshold = 0.5
-
-# =============================================================================
 # GOOGLE INTEGRATION (server-side only)
 # 1. Create a Service Account in Google Cloud Console.
 # 2. Grant it Editor access to your Spreadsheet and Viewer/Contributor to your Drive folder.
@@ -201,5 +153,4 @@ results_tab          = "Results"
 [debug]
 enabled = true
 log_dir = "logs/"          # Text logs directory
-img_dir = "logs/img/"      # Annotated scan images
-db_path = "logs/scan_results.db"  # SQLite fallback (used when DATABASE_URL is unset)
+img_dir = "logs/img/"      # Annotated scan images (used by YOLO detector debug output)

@@ -30,14 +30,28 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-from configs.config import (
-    YOLO_IMGSZ, YOLO_CONF_THRESHOLD, YOLO_IOU_THRESHOLD, YOLO_AUGMENT,
-    YOLO_CONSENSUS_MIN, YOLO_CONSENSUS_IOU, YOLO_SLOT_MAX_DIST,
-    YOLO_CLAHE_CLIP, YOLO_CLAHE_TILE, YOLO_ROI_PADDING,
-    YOLO_BOX_MIN_PX, YOLO_BOX_MAX_PX,
-    SAMPLE_ROI_TOP, SAMPLE_ROI_BOTTOM, SAMPLE_ROI_LEFT, SAMPLE_ROI_RIGHT,
-    IMG_DIR,
-)
+import tomllib
+_cfg = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb"))
+_y    = _cfg["yolo"]
+_sroi = _cfg.get("sample_roi", {})
+_dbg  = _cfg.get("debug", {})
+YOLO_IMGSZ: int            = int(_y["imgsz"])
+YOLO_CONF_THRESHOLD: float = float(_y["conf_threshold"])
+YOLO_IOU_THRESHOLD: float  = float(_y["iou_threshold"])
+YOLO_AUGMENT: bool         = bool(_y["augment"])
+YOLO_CONSENSUS_MIN: int    = int(_y["consensus_min_votes"])
+YOLO_CONSENSUS_IOU: float  = float(_y["consensus_iou"])
+YOLO_SLOT_MAX_DIST: float  = float(_y["slot_max_dist_ratio"])
+YOLO_CLAHE_CLIP: float     = float(_y["clahe_clip_limit"])
+YOLO_CLAHE_TILE: int       = int(_y["clahe_tile_size"])
+YOLO_ROI_PADDING: int      = int(_y.get("roi_padding_px", 10))
+YOLO_BOX_MIN_PX: int       = int(_y.get("box_min_px", 120))
+YOLO_BOX_MAX_PX: int       = int(_y.get("box_max_px", 220))
+SAMPLE_ROI_TOP: int        = int(_sroi.get("top", 0))
+SAMPLE_ROI_BOTTOM: int     = int(_sroi.get("bottom", 0))
+SAMPLE_ROI_LEFT: int       = int(_sroi.get("left", 0))
+SAMPLE_ROI_RIGHT: int      = int(_sroi.get("right", 0))
+IMG_DIR: str               = _dbg.get("img_dir", "logs/img/")
 
 class YoloBottleDetector:
     """

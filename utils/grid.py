@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-from configs.config import GRID_CONFIG_FILE
+GRID_CONFIG_FILE = "grid_config.json"
 
 # Grid line counts (must match calibration.py _N_HLINES/_N_VLINES)
 _NH = 14   # 14 horizontal lines → 13 row spans  (0=ref, 1-12=samples)
