@@ -174,11 +174,10 @@ async def post_slots(request: Request):
             gcfg = _google_cfg()
             sid = gcfg.get("spreadsheet_id", "")
             tab = gcfg.get("slots_tab", "SlotAssignment")
-            creds_file = gcfg.get("credentials_file", "client_secrets.json")
-            token_file = gcfg.get("token_file", "token.json")
+            sa_file = gcfg.get("service_account_file", "credentials.json")
             if sid:
                 try:
-                    write_slot_config_to_sheet(cfg, sid, tab, creds_file, token_file)
+                    write_slot_config_to_sheet(cfg, sid, tab, sa_file)
                 except Exception as e:
                     logger.warning("slots: Google Sheets sync failed: {}", e)
 
@@ -224,8 +223,7 @@ async def analyze(
     # Google Drive + Sheets (fire-and-forget)
     if _GOOGLE_AVAILABLE:
         gcfg = _google_cfg()
-        creds_file = gcfg.get("credentials_file", "client_secrets.json")
-        token_file = gcfg.get("token_file", "token.json")
+        sa_file = gcfg.get("service_account_file", "credentials.json")
 
         folder_id = gcfg.get("drive_folder_id", "")
         if folder_id:
@@ -234,8 +232,7 @@ async def analyze(
                     annotated_jpeg,
                     f"{scan_id}.jpg",
                     folder_id,
-                    creds_file,
-                    token_file,
+                    sa_file,
                 )
             except Exception as e:
                 logger.warning("analyze: Drive upload failed: {}", e)
@@ -245,7 +242,7 @@ async def analyze(
         if spreadsheet_id:
             try:
                 append_result_to_sheet(
-                    scan_result, spreadsheet_id, results_tab, creds_file, token_file
+                    scan_result, spreadsheet_id, results_tab, sa_file
                 )
             except Exception as e:
                 logger.warning("analyze: Sheets append failed: {}", e)

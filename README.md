@@ -74,8 +74,7 @@ urine-color-analysis/
 │   └── config.py                 # TOML loader
 │
 ├── credentials/
-│   ├── client_secrets.json       # OAuth2 client ID + secret (git-ignored)
-│   └── token.json                # OAuth2 token, auto-written after first auth (git-ignored)
+│   └── credentials.json          # Service account key JSON (git-ignored)
 │
 ├── models/
 │   └── best.pt                   # YOLO weights (git-ignored)
@@ -134,7 +133,7 @@ uv run main.py --role client
 | Extra | Key packages |
 |-------|-------------|
 | `common` | `requests`, `pydantic-settings`, `loguru`, `numpy`, `pyyaml`, `python-dotenv`, `Pillow`, `psutil` |
-| `server` | `fastapi`, `uvicorn`, `opencv-python`, `ultralytics`, `torch`, `torchvision`, `scikit-image`, `scipy`, `jinja2`, `python-multipart`, `google-api-python-client`, `google-auth-httplib2`, `google-auth-oauthlib` |
+| `server` | `fastapi`, `uvicorn`, `opencv-python`, `ultralytics`, `torch`, `torchvision`, `scikit-image`, `scipy`, `jinja2`, `python-multipart`, `google-api-python-client`, `google-auth-httplib2` |
 | `pi` | `picamera2`, `RPi.GPIO`, `rpi-lcd`, `raspberrypi-tm1637`, `smbus2` |
 
 ---
@@ -165,12 +164,11 @@ left   = 200   # skip dead-zone column
 right  = 800
 
 [google]
-credentials_file = "client_secrets.json"
-token_file       = "token.json"
-drive_folder_id  = ""          # Google Drive folder ID for annotated images
-spreadsheet_id   = ""          # Single Google Spreadsheet ID (two tabs inside)
-slots_tab        = "SlotAssignment"
-results_tab      = "Results"
+service_account_file = "credentials/credentials.json"   # Service account key JSON
+drive_folder_id      = ""          # Google Drive folder ID for annotated images
+spreadsheet_id       = ""          # Single Google Spreadsheet ID (two tabs inside)
+slots_tab            = "SlotAssignment"
+results_tab          = "Results"
 ```
 
 ### `configs/camera_params.yaml` — lens calibration
@@ -347,20 +345,17 @@ Detail row (one per assigned cell): `scan_id | slot_id | cell_index | is_referen
 
 The `hex` column cell background is set to the detected color via `userEnteredFormat.backgroundColor` — a visual color swatch directly in the spreadsheet.
 
-### Google OAuth2 First-Time Setup
+### Google Service Account Setup
 
-```toml
-# configs/config.toml
-[google]
-credentials_file = "client_secrets.json"   # download from Google Cloud Console
-token_file       = "token.json"
-drive_folder_id  = "..."
-spreadsheet_id   = "..."
-```
+1. In Google Cloud Console, create a Service Account.
+2. Download its JSON key — save as `credentials/credentials.json`.
+3. Share your Drive folder with the service account email (Contributor).
+4. Share your Spreadsheet with the service account email (Editor).
+5. Fill in `drive_folder_id` and `spreadsheet_id` in `configs/config.toml`.
 
-On first use, the server opens a browser consent URL and writes `token.json` automatically. Subsequent runs auto-refresh. Never commit `token.json` or `client_secrets.json`.
+No browser step, no `token.json`. The server authenticates automatically on every start.
 
-Scopes: `https://www.googleapis.com/auth/drive.file` + `https://www.googleapis.com/auth/spreadsheets`
+Never commit `credentials/credentials.json`.
 
 ---
 

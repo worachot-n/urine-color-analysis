@@ -18,7 +18,7 @@ Read this file before modifying any file in this repository.
 | Test endpoint | `/test-upload` (separate) | `/analyze` (single endpoint) | No divergence between Pi and browser paths |
 | Slot assignment | DB-driven fixed layout | `server/slot_config.json` — user-editable via `/settings` | Not all 195 cells used; user assigns slot_ids |
 | Telegram bot | Inline in `server_app.py` | Removed | Out of scope for v3; add later if needed |
-| Google auth | Service account JSON | OAuth2 (`google-auth-oauthlib`) → stored `token.json` | Works with personal Google accounts |
+| Google auth | Service account JSON | Service account JSON (`google-auth`) — headless, no browser | Fully automated; no token refresh needed |
 | Color result | Level only | Level + Lab values + hex color + ΔE scatter plot | Visualizes why each bottle was classified |
 
 **Everything preserved from v2:**
@@ -91,7 +91,7 @@ Grid is **ground truth**. YOLO detections are assigned to pre-computed grid slot
 | Logging | `loguru` — use throughout, **never `print()`** |
 | Cloud storage | Google Drive API v3 (`google-api-python-client`) |
 | Cloud data | Google Sheets API v4 (`google-api-python-client`) |
-| Google auth | OAuth2 flow (`google-auth-oauthlib`) → stored `token.json`; refresh via `google-auth-httplib2` |
+| Google auth | Service account (`google-auth`) — `credentials.json` only; no browser, no token file |
 | Multipart upload | `python-multipart` (FastAPI file ingestion) |
 | Web UI | Jinja2 templates + Tailwind CSS (CDN) + Chart.js (CDN) |
 | Pi camera | `picamera2` (libcamera) |
@@ -144,8 +144,7 @@ urine-color-analysis/
 ├── models/
 │   └── best.pt                   # YOLO weights (git-ignored)
 ├── credentials/
-│   ├── client_secrets.json       # OAuth2 client ID + secret (git-ignored)
-│   └── token.json                # OAuth2 token, auto-written after first auth (git-ignored)
+│   └── credentials.json          # Service account key JSON (git-ignored)
 ├── pyproject.toml                # uv project — extras: common / pi / server
 └── logs/
     └── app_*.log                 # Rotating text logs
@@ -167,7 +166,7 @@ server = [
     "fastapi", "uvicorn[standard]", "opencv-python", "python-multipart", "jinja2",
     "ultralytics>=8.4.24", "torch>=2.0", "torchvision>=0.15",
     # Google integration (SERVER ONLY — never install on Pi)
-    "google-api-python-client>=2.0", "google-auth-httplib2>=0.2", "google-auth-oauthlib>=1.0"
+    "google-api-python-client>=2.0", "google-auth-httplib2>=0.2"
 ]
 pi = [
     "picamera2", "RPi.GPIO", "rpi-lcd", "raspberrypi-tm1637", "smbus2"
@@ -187,29 +186,34 @@ uv run --extra server --extra common uvicorn server.api:app --reload
 # Open http://localhost:8000/upload
 ```
 
-### Google OAuth2 First-Time Setup
+### Google Service Account Setup
 
-Fill in `configs/config.toml [google]`, then trigger any Google API call — the server will open a browser consent URL and write `token.json` automatically. Subsequent runs auto-refresh via `google-auth-httplib2`.
+1. In Google Cloud Console, create a Service Account with no special roles.
+2. Download its JSON key — save as `credentials/credentials.json`.
+3. Share your target Google Drive folder with the service account email (Contributor role).
+4. Share your Google Spreadsheet with the service account email (Editor role).
+5. Fill in `configs/config.toml [google]`:
 
 ```toml
 [google]
-credentials_file = "client_secrets.json"
-token_file       = "token.json"
-drive_folder_id  = "..."          # Google Drive folder ID
-spreadsheet_id   = "..."          # Single spreadsheet; two tabs inside
-slots_tab        = "SlotAssignment"
-results_tab      = "Results"
+service_account_file = "credentials/credentials.json"
+drive_folder_id      = "..."   # Google Drive folder ID
+spreadsheet_id       = "..."   # Single spreadsheet; two tabs inside
+slots_tab            = "SlotAssignment"
+results_tab          = "Results"
 ```
 
-Scopes required:
+No browser step, no `token.json`. The server authenticates fully automatically on every start.
+
+Scopes used (set inside the integration modules):
 ```python
-SCOPES = [
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/spreadsheets",
-]
+# sheets.py
+["https://www.googleapis.com/auth/spreadsheets"]
+# drive.py
+["https://www.googleapis.com/auth/drive.file"]
 ```
 
-Never commit `token.json` or `client_secrets.json`.
+Never commit `credentials/credentials.json`.
 
 ---
 
@@ -617,7 +621,7 @@ logger.exception("...")   # includes traceback
 - Do not use black padding in `letterbox_white_padding` — must be white `(255, 255, 255)`
 - Do not run inference on the Pi — capture + undistort + POST only
 - Do not letterbox the full frame — `crop_sample_roi()` must be called first
-- Do not commit `credentials/token.json`, `credentials/client_secrets.json`, `.env`, or `models/`
+- Do not commit `credentials/credentials.json`, `.env`, or `models/`
 - Do not use a fixed absolute ΔE threshold for `classify_sample` — use margin-of-victory
 - Do not use fixed column-zone color expectations (L0 = cols 1-3, etc.) — reference levels come from `slot_config.json`
 - Do not import OpenVINO — project uses PyTorch/ultralytics

@@ -8,9 +8,10 @@ Both calls are fire-and-forget; any failure is logged but never surfaces to
 the caller.
 
 Config (configs/config.toml [google]):
-    spreadsheet_id = "..."
-    slots_tab      = "SlotAssignment"
-    results_tab    = "Results"
+    spreadsheet_id       = "..."
+    slots_tab            = "SlotAssignment"
+    results_tab          = "Results"
+    service_account_file = "credentials.json"
 """
 
 from __future__ import annotations
@@ -23,38 +24,23 @@ _SCOPES = [
 ]
 
 
-def _get_creds(credentials_file: str, token_file: str):
+def _get_creds(service_account_file: str):
     try:
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
+        from google.oauth2 import service_account as sa
 
-        creds = None
-        token_path = Path(token_file)
-        if token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(token_path), _SCOPES)
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if not Path(credentials_file).exists():
-                    logger.debug("sheets: client_secrets.json not found — skipping")
-                    return None
-                flow = InstalledAppFlow.from_client_secrets_file(credentials_file, _SCOPES)
-                creds = flow.run_local_server(port=0)
-            token_path.write_text(creds.to_json())
-
-        return creds
+        if not Path(service_account_file).exists():
+            logger.debug("sheets: {} not found — skipping", service_account_file)
+            return None
+        return sa.Credentials.from_service_account_file(service_account_file, scopes=_SCOPES)
     except Exception as e:
         logger.debug("sheets: credential load failed: {}", e)
         return None
 
 
-def _build_service(credentials_file: str, token_file: str):
+def _build_service(service_account_file: str):
     try:
         from googleapiclient.discovery import build
-        creds = _get_creds(credentials_file, token_file)
+        creds = _get_creds(service_account_file)
         if creds is None:
             return None
         return build("sheets", "v4", credentials=creds)
@@ -77,12 +63,11 @@ def write_slot_config_to_sheet(
     cfg,  # SlotConfig
     spreadsheet_id: str,
     tab: str,
-    credentials_file: str = "client_secrets.json",
-    token_file: str = "token.json",
+    service_account_file: str = "credentials.json",
 ) -> None:
     """Clear and rewrite the SlotAssignment tab with current slot config."""
     try:
-        service = _build_service(credentials_file, token_file)
+        service = _build_service(service_account_file)
         if service is None:
             return
 
@@ -118,12 +103,11 @@ def append_result_to_sheet(
     scan_result: dict,
     spreadsheet_id: str,
     tab: str,
-    credentials_file: str = "client_secrets.json",
-    token_file: str = "token.json",
+    service_account_file: str = "credentials.json",
 ) -> None:
     """Append one summary row + N detail rows to the Results tab."""
     try:
-        service = _build_service(credentials_file, token_file)
+        service = _build_service(service_account_file)
         if service is None:
             return
 
