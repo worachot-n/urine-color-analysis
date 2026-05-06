@@ -9,6 +9,8 @@ Routes:
     GET  /settings          — Slot assignment page
     GET  /api/slots         — Return slot_config.json as JSON
     POST /api/slots         — Save slot config
+    GET  /auto_grid         — Grid debug page (CV only, no YOLO)
+    POST /api/auto_grid     — Run HoughCircles + grid reconstruction only
     GET  /health            — {"status": "ok"}
 """
 
@@ -199,13 +201,26 @@ async def post_slots(request: Request):
 
 @app.post("/api/auto_grid")
 async def api_auto_grid(file: UploadFile = File(...)):
-    """Run full pipeline using slot config loaded from Google Sheets."""
+    """
+    Classical-CV-only grid debug endpoint.
+
+    Runs ONLY HoughCircles + grid reconstruction (no YOLO, no color analysis).
+    Returns the annotated grid image from detect_grid() with slot labels overlaid,
+    so the user can visually verify that circle detection and grid spacing are correct.
+    Slot config (rows, cols, cell assignments) is loaded from Google Sheets.
+    """
     import base64
+    import tomllib
+    import cv2
+    import numpy as np
+    from utils.grid_circle_detector import detect_grid
+    from app.shared.processor import crop_sample_roi, letterbox_white_padding
 
     jpeg_bytes = await file.read()
     if not jpeg_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    # Load slot config from Google Sheets (provides rows, cols, slot assignments)
     slot_cfg = None
     if _GOOGLE_AVAILABLE:
         gcfg = _google_cfg()
@@ -221,20 +236,62 @@ async def api_auto_grid(file: UploadFile = File(...)):
             detail="Could not load slot config from Google Sheets. Check spreadsheet_id and service account in config.toml.",
         )
 
-    try:
-        scan_result, annotated_jpeg = run_pipeline(jpeg_bytes, slot_cfg)
-    except Exception as e:
-        logger.exception("auto_grid: pipeline error")
-        raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
+    # Decode image
+    arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Failed to decode image")
 
-    scan_result["image_b64"] = base64.b64encode(annotated_jpeg).decode()
-    logger.success(
-        "auto_grid: detected={}/{} missing={}",
-        scan_result["detected_count"],
-        scan_result["total_assigned"],
-        scan_result["missing_slots"],
+    # Same ROI crop + letterbox as the main pipeline so results are comparable
+    _sroi = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb")).get("sample_roi", {})
+    roi, _, _ = crop_sample_roi(
+        frame,
+        int(_sroi.get("top", 0)), int(_sroi.get("bottom", 0)),
+        int(_sroi.get("left", 0)), int(_sroi.get("right", 0)),
     )
-    return JSONResponse(content=scan_result)
+    padded, _scale, _pad_x, _pad_y = letterbox_white_padding(roi, 640)
+
+    # ── Classical CV only: HoughCircles → spacing → RANSAC → reconstruct grid ──
+    try:
+        grid_result = detect_grid(padded, slot_cfg.rows, slot_cfg.cols)
+    except Exception as e:
+        logger.exception("auto_grid: detect_grid failed")
+        raise HTTPException(status_code=500, detail=f"Grid detection error: {e}")
+
+    grid_pts = grid_result["grid_pts"]              # (rows*cols, 2) in 640-space
+    canvas   = grid_result["result_image"].copy()   # already has circles + midpoint grid lines
+
+    # Overlay slot labels at each assigned cell's detected/reconstructed position
+    n_pts = len(grid_pts)
+    for cell_idx, cell in sorted(slot_cfg.cells.items()):
+        if cell_idx < 1 or cell_idx > n_pts:
+            continue
+        gx = int(grid_pts[cell_idx - 1, 0])
+        gy = int(grid_pts[cell_idx - 1, 1])
+        label = cell.slot_id
+        # Yellow for reference cells, white for sample cells
+        color = (0, 220, 255) if cell.is_reference else (255, 255, 255)
+        cv2.putText(canvas, label, (gx - 13, gy + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(canvas, label, (gx - 13, gy + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1, cv2.LINE_AA)
+
+    ok, enc = cv2.imencode(".jpg", canvas, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    img_b64 = base64.b64encode(enc.tobytes()).decode() if ok else ""
+
+    logger.success(
+        "auto_grid (CV only): detected={} reconstructed={} grid={}×{}",
+        grid_result["detected_count"],
+        grid_result["reconstructed_count"],
+        slot_cfg.rows, slot_cfg.cols,
+    )
+    return JSONResponse(content={
+        "image_b64":        img_b64,
+        "detected_count":   grid_result["detected_count"],
+        "reconstructed_count": grid_result["reconstructed_count"],
+        "total_cells":      slot_cfg.rows * slot_cfg.cols,
+        "assigned_cells":   len(slot_cfg.cells),
+    })
 
 
 @app.post("/analyze")

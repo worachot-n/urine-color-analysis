@@ -3,9 +3,15 @@
 {% block title %}Auto Grid — Urine Analyzer{% endblock %}
 
 {% block content %}
-<div class="max-w-5xl mx-auto">
+<div class="max-w-4xl mx-auto">
   <h1 class="text-2xl font-bold mb-1">Auto Grid Debug</h1>
-  <p class="text-gray-400 text-sm mb-6">Slot config is loaded from Google Sheets (SlotAssignment tab). No local slot_config.json is used.</p>
+  <p class="text-gray-400 text-sm mb-1">Classical CV only — HoughCircles + grid reconstruction. No YOLO.</p>
+  <p class="text-gray-500 text-xs mb-6">
+    Green circles = detected by HoughCircles &nbsp;|&nbsp;
+    Orange circles = reconstructed (inferred) &nbsp;|&nbsp;
+    Grid lines = midpoints between circles (outer edges extend beyond edge circles).<br>
+    Slot config loaded from <strong class="text-gray-300">Google Sheets → SlotAssignment tab</strong>.
+  </p>
 
   <!-- Upload zone -->
   <div class="max-w-xl">
@@ -22,10 +28,10 @@
       <div id="file-name" class="mt-2 text-blue-400 text-sm hidden"></div>
     </div>
 
-    <button id="analyze-btn"
+    <button id="run-btn"
             class="mt-4 w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
             disabled>
-      Run Auto Grid
+      Detect Grid (CV only)
     </button>
 
     <div id="status" class="mt-3 hidden">
@@ -36,58 +42,48 @@
     </div>
   </div>
 
-  <!-- Result panel (hidden until analysis) -->
-  <div id="result-panel" class="hidden mt-8 space-y-6">
+  <!-- Result panel -->
+  <div id="result-panel" class="hidden mt-8 space-y-4">
 
-    <!-- Summary bar -->
-    <div class="bg-gray-800 rounded-xl p-4 flex flex-wrap gap-4 items-center">
-      <span id="res-detected" class="text-lg font-semibold"></span>
-      <div class="flex gap-2 flex-wrap" id="level-badges"></div>
-    </div>
-
-    <!-- Missing slots -->
-    <div id="missing-wrap" class="hidden bg-red-900/40 border border-red-700 rounded-xl p-4">
-      <p class="font-semibold text-red-300 mb-1">Missing slots</p>
-      <p id="missing-list" class="text-sm text-red-200 font-mono"></p>
+    <!-- Stats bar -->
+    <div class="bg-gray-800 rounded-xl p-4 flex flex-wrap gap-6 text-sm">
+      <div>
+        <span class="text-gray-400">HoughCircles detected</span>
+        <span id="stat-detected" class="ml-2 text-green-400 font-bold text-base"></span>
+      </div>
+      <div>
+        <span class="text-gray-400">Reconstructed (inferred)</span>
+        <span id="stat-reconstructed" class="ml-2 text-yellow-400 font-bold text-base"></span>
+      </div>
+      <div>
+        <span class="text-gray-400">Total grid cells</span>
+        <span id="stat-total" class="ml-2 text-gray-200 font-bold text-base"></span>
+      </div>
+      <div>
+        <span class="text-gray-400">Assigned slots</span>
+        <span id="stat-assigned" class="ml-2 text-blue-400 font-bold text-base"></span>
+      </div>
     </div>
 
     <!-- Annotated image -->
     <div>
-      <h2 class="text-lg font-semibold mb-2">Annotated Image</h2>
-      <img id="annotated-img" src="" alt="Annotated" class="rounded-xl w-full max-w-3xl border border-gray-700"/>
-    </div>
-
-    <!-- Slot table -->
-    <div>
-      <h2 class="text-lg font-semibold mb-2">Slot Results</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm border-collapse">
-          <thead>
-            <tr class="bg-gray-800 text-gray-400 text-left">
-              <th class="px-3 py-2 rounded-tl">Slot ID</th>
-              <th class="px-3 py-2">Color</th>
-              <th class="px-3 py-2">Detected</th>
-              <th class="px-3 py-2">Level</th>
-              <th class="px-3 py-2">ΔE</th>
-              <th class="px-3 py-2 rounded-tr">Confident</th>
-            </tr>
-          </thead>
-          <tbody id="slot-tbody"></tbody>
-        </table>
-      </div>
+      <h2 class="text-lg font-semibold mb-2">Grid Detection Result (640×640 letterboxed space)</h2>
+      <img id="grid-img" src="" alt="Grid result"
+           class="rounded-xl border border-gray-700 w-full max-w-2xl"
+           style="image-rendering: pixelated;"/>
     </div>
 
   </div>
 </div>
 
 <script>
-const dropZone   = document.getElementById('drop-zone');
-const fileInput  = document.getElementById('file-input');
-const analyzeBtn = document.getElementById('analyze-btn');
+const dropZone  = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const runBtn    = document.getElementById('run-btn');
 const fileNameEl = document.getElementById('file-name');
-const statusEl   = document.getElementById('status');
+const statusEl  = document.getElementById('status');
 const statusText = document.getElementById('status-text');
-const spinner    = document.getElementById('spinner');
+const spinner   = document.getElementById('spinner');
 const resultPanel = document.getElementById('result-panel');
 
 let selectedFile = null;
@@ -107,20 +103,17 @@ function selectFile(f) {
   selectedFile = f;
   fileNameEl.textContent = f.name;
   fileNameEl.classList.remove('hidden');
-  analyzeBtn.disabled = false;
+  runBtn.disabled = false;
   resultPanel.classList.add('hidden');
 }
 
-const LEVEL_COLORS = ['#fff9c4','#ffe082','#ffb74d','#ef9a9a','#b71c1c'];
-const LEVEL_TEXT   = ['#333','#333','#333','#333','#fff'];
-
-analyzeBtn.addEventListener('click', async () => {
+runBtn.addEventListener('click', async () => {
   if (!selectedFile) return;
-  analyzeBtn.disabled = true;
+  runBtn.disabled = true;
   resultPanel.classList.add('hidden');
   statusEl.classList.remove('hidden');
   spinner.classList.remove('hidden');
-  statusText.textContent = 'Loading slot config from Google Sheets and running pipeline…';
+  statusText.textContent = 'Loading slot config from Google Sheets and running HoughCircles…';
   statusText.className = 'text-sm text-blue-400';
 
   const fd = new FormData();
@@ -132,77 +125,26 @@ analyzeBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error(data.detail || 'Server error');
 
     spinner.classList.add('hidden');
-    statusText.textContent = 'Done — slot config loaded from Google Sheets.';
+    statusText.textContent = `Done — HoughCircles: ${data.detected_count} detected, ${data.reconstructed_count} inferred.`;
     statusText.className = 'text-sm text-green-400';
     renderResult(data);
   } catch (err) {
     spinner.classList.add('hidden');
     statusText.textContent = 'Error: ' + err.message;
     statusText.className = 'text-sm text-red-400';
-    analyzeBtn.disabled = false;
+    runBtn.disabled = false;
   }
 });
 
 function renderResult(d) {
-  // Summary
-  document.getElementById('res-detected').textContent =
-    `Detected: ${d.detected_count} / ${d.total_assigned}`;
+  document.getElementById('stat-detected').textContent     = d.detected_count;
+  document.getElementById('stat-reconstructed').textContent = d.reconstructed_count;
+  document.getElementById('stat-total').textContent        = d.total_cells;
+  document.getElementById('stat-assigned').textContent     = d.assigned_cells;
 
-  const badgeWrap = document.getElementById('level-badges');
-  badgeWrap.innerHTML = '';
-  for (let lvl = 0; lvl < 5; lvl++) {
-    const count = (d.summary || {})[`L${lvl}`] ?? 0;
-    const badge = document.createElement('span');
-    badge.style.background = LEVEL_COLORS[lvl];
-    badge.style.color = LEVEL_TEXT[lvl];
-    badge.className = 'px-2 py-0.5 rounded text-xs font-bold';
-    badge.textContent = `L${lvl}: ${count}`;
-    badgeWrap.appendChild(badge);
-  }
-
-  // Missing
-  const missingWrap = document.getElementById('missing-wrap');
-  const missingList = (d.missing_slots || []);
-  if (missingList.length) {
-    missingWrap.classList.remove('hidden');
-    document.getElementById('missing-list').textContent = missingList.join('  ');
-  } else {
-    missingWrap.classList.add('hidden');
-  }
-
-  // Annotated image (base64)
   if (d.image_b64) {
-    document.getElementById('annotated-img').src = 'data:image/jpeg;base64,' + d.image_b64;
+    document.getElementById('grid-img').src = 'data:image/jpeg;base64,' + d.image_b64;
   }
-
-  // Slot table
-  const tbody = document.getElementById('slot-tbody');
-  tbody.innerHTML = '';
-  const slots = d.slots || {};
-  Object.entries(slots).sort((a,b) => a[0].localeCompare(b[0])).forEach(([slotId, s]) => {
-    const tr = document.createElement('tr');
-    tr.className = 'border-t border-gray-700 hover:bg-gray-800';
-
-    const lvl = s.color_level;
-    const bg  = lvl !== null && lvl !== undefined ? LEVEL_COLORS[lvl] : '#374151';
-    const fg  = lvl !== null && lvl !== undefined ? LEVEL_TEXT[lvl]   : '#9ca3af';
-
-    tr.innerHTML = `
-      <td class="px-3 py-1.5 font-mono">${slotId}</td>
-      <td class="px-3 py-1.5">
-        ${s.hex ? `<span class="inline-block w-5 h-5 rounded border border-gray-600" style="background:${s.hex}" title="${s.hex}"></span>` : '—'}
-      </td>
-      <td class="px-3 py-1.5">${s.detected ? '<span class="text-green-400">✓</span>' : '<span class="text-red-400">✗</span>'}</td>
-      <td class="px-3 py-1.5">
-        ${lvl !== null && lvl !== undefined
-          ? `<span class="px-1.5 py-0.5 rounded text-xs font-bold" style="background:${bg};color:${fg}">L${lvl}</span>`
-          : '—'}
-      </td>
-      <td class="px-3 py-1.5 tabular-nums">${s.delta_e !== null && s.delta_e !== undefined ? s.delta_e.toFixed(1) : '—'}</td>
-      <td class="px-3 py-1.5">${s.confident ? '<span class="text-green-400">✓</span>' : '<span class="text-gray-500">—</span>'}</td>
-    `;
-    tbody.appendChild(tr);
-  });
 
   resultPanel.classList.remove('hidden');
   resultPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
