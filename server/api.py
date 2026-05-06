@@ -220,20 +220,34 @@ async def api_auto_grid(file: UploadFile = File(...)):
     if not jpeg_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    # Load slot config from Google Sheets (provides rows, cols, slot assignments)
-    slot_cfg = None
+    # Grid dimensions come from the local slot_config.json (always correct rows/cols).
+    # Cell assignments come from Google Sheets (user-edited via /settings → Save).
+    local_cfg = load_slot_config()
+
+    sheets_cfg = None
     if _GOOGLE_AVAILABLE:
         gcfg = _google_cfg()
         sid  = gcfg.get("spreadsheet_id", "")
         tab  = gcfg.get("slots_tab", "SlotAssignment")
         sa   = gcfg.get("service_account_file", "credentials.json")
         if sid:
-            slot_cfg = read_slot_config_from_sheet(sid, tab, sa)
+            sheets_cfg = read_slot_config_from_sheet(sid, tab, sa)
 
-    if slot_cfg is None or not slot_cfg.cells:
+    # Prefer Sheets assignments; fall back to local if Sheets unavailable
+    if sheets_cfg is not None and sheets_cfg.cells:
+        from server.slot_config import SlotConfig
+        slot_cfg = SlotConfig(
+            rows=local_cfg.rows,
+            cols=local_cfg.cols,
+            cells=sheets_cfg.cells,
+        )
+    elif local_cfg.cells:
+        slot_cfg = local_cfg
+        logger.warning("auto_grid: Google Sheets unavailable — using local slot_config.json")
+    else:
         raise HTTPException(
             status_code=400,
-            detail="Could not load slot config from Google Sheets. Check spreadsheet_id and service account in config.toml.",
+            detail="No slot config available. Visit /settings to assign slots first.",
         )
 
     # Decode image
