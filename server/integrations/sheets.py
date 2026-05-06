@@ -71,7 +71,7 @@ def write_slot_config_to_sheet(
         if service is None:
             return
 
-        header = ["cell_index", "slot_id", "is_reference", "ref_level", "row", "col"]
+        header = ["cell_index", "slot_id", "is_reference", "ref_level", "row", "col", "grid_rows", "grid_cols"]
         rows = [header]
         for cell_idx, cell in sorted(cfg.cells.items()):
             row_num = (cell_idx - 1) // cfg.cols + 1
@@ -83,6 +83,8 @@ def write_slot_config_to_sheet(
                 str(cell.ref_level) if cell.ref_level is not None else "",
                 row_num,
                 col_num,
+                cfg.rows,
+                cfg.cols,
             ])
 
         sheet = service.spreadsheets()
@@ -236,7 +238,7 @@ def read_slot_config_from_sheet(
     """
     Read the SlotAssignment tab and return a SlotConfig.
     Returns None if the sheet is unreachable or empty.
-    Column order (matches writer): cell_index | slot_id | is_reference | ref_level | row | col
+    Column order: cell_index | slot_id | is_reference | ref_level | row | col | grid_rows | grid_cols
     """
     try:
         from server.slot_config import SlotConfig, CellConfig
@@ -247,7 +249,7 @@ def read_slot_config_from_sheet(
 
         result = service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
-            range=f"{tab}!A:F",
+            range=f"{tab}!A:H",
         ).execute()
         rows = result.get("values", [])
         if len(rows) < 2:
@@ -255,6 +257,8 @@ def read_slot_config_from_sheet(
 
         cells: dict[int, CellConfig] = {}
         cols_set: set[int] = set()
+        grid_rows_stored: int | None = None
+        grid_cols_stored: int | None = None
 
         for row in rows[1:]:
             if len(row) < 4:
@@ -266,6 +270,10 @@ def read_slot_config_from_sheet(
                 ref_level = int(row[3]) if row[3].strip() else None
                 if len(row) > 5 and row[5]:
                     cols_set.add(int(row[5]))
+                if len(row) > 6 and row[6] and grid_rows_stored is None:
+                    grid_rows_stored = int(row[6])
+                if len(row) > 7 and row[7] and grid_cols_stored is None:
+                    grid_cols_stored = int(row[7])
                 cells[cell_idx] = CellConfig(
                     slot_id=slot_id,
                     is_reference=is_ref,
@@ -277,11 +285,12 @@ def read_slot_config_from_sheet(
         if not cells:
             return None
 
+        # Prefer explicit dimensions stored in the sheet; fall back to inference
+        grid_cols = grid_cols_stored or (max(cols_set) if cols_set else 15)
         max_cell  = max(cells.keys())
-        grid_cols = max(cols_set) if cols_set else 15
-        grid_rows = (max_cell - 1) // grid_cols + 1
+        grid_rows = grid_rows_stored or ((max_cell - 1) // grid_cols + 1)
 
-        logger.info("sheets: loaded {} cells from {}", len(cells), tab)
+        logger.info("sheets: loaded {} cells from {} (grid {}×{})", len(cells), tab, grid_rows, grid_cols)
         return SlotConfig(rows=grid_rows, cols=grid_cols, cells=cells)
     except Exception as e:
         logger.warning("sheets: read_slot_config failed: {}", e)

@@ -242,14 +242,18 @@ async def api_auto_grid(file: UploadFile = File(...)):
     if frame is None:
         raise HTTPException(status_code=400, detail="Failed to decode image")
 
-    # ROI crop only — NO letterbox (letterbox is YOLO-only)
+    # ROI crop — NO letterbox (letterbox is YOLO-only).
+    # Use top=0 so the reference row at the top of the tray is included in the
+    # debug view. Normal pipeline uses top=220 to exclude it from sample analysis.
     _sroi = tomllib.load(
         open(Path(__file__).parent.parent / "configs" / "config.toml", "rb")
     ).get("sample_roi", {})
     roi, _, _ = crop_sample_roi(
         frame,
-        int(_sroi.get("top", 0)), int(_sroi.get("bottom", 0)),
-        int(_sroi.get("left", 0)), int(_sroi.get("right", 0)),
+        0,
+        int(_sroi.get("bottom", 0)),
+        int(_sroi.get("left", 0)),
+        int(_sroi.get("right", 0)),
     )
 
     # Full-resolution classical CV: HoughCircles → KDE peaks → grid reconstruction
