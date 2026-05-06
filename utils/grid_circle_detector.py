@@ -167,8 +167,16 @@ def estimate_grid_spacing(
     """
     Estimate grid spacing (dx, dy) and initial origin (origin_x, origin_y).
 
-    Known grid dimensions (n_rows, n_cols) are used to cross-validate and
-    provide a fallback when too few circles are detected.
+    Known grid dimensions (n_rows, n_cols) provide a last-resort fallback only
+    when fewer than 4 circles are detected.  When circles are available the
+    measured spacing is trusted directly — the image-dimension fallback is wrong
+    whenever the tray does not fill the full letterboxed image (which is the
+    common case after aspect-ratio padding).
+
+    The initial origin is derived from the detected circles themselves (modular
+    median) rather than a fixed dx/2 offset, so that RANSAC voting in
+    reconstruct_grid snaps circles correctly regardless of where the tray sits
+    within the frame.
 
     Returns:
         (dx, dy, origin_x, origin_y)
@@ -183,9 +191,12 @@ def estimate_grid_spacing(
         dx_est = _estimate_axis_spacing(xs, config.min_spacing_px)
         dy_est = _estimate_axis_spacing(ys, config.min_spacing_px)
 
-        # Cross-validate against image-dimension fallback; prefer fallback if >30% off
-        dx = dx_est if abs(dx_est - dx_fallback) / dx_fallback < 0.30 else dx_fallback
-        dy = dy_est if abs(dy_est - dy_fallback) / dy_fallback < 0.30 else dy_fallback
+        # Trust the measured value as long as it is physically plausible.
+        # The old ±30% cross-validation against w/n_cols was wrong whenever the
+        # tray occupies less than the full letterboxed width/height (which is
+        # always the case after aspect-ratio padding adds white bars).
+        dx = dx_est if config.min_spacing_px < dx_est < w else dx_fallback
+        dy = dy_est if config.min_spacing_px < dy_est < h else dy_fallback
     else:
         logger.warning(
             "estimate_grid_spacing: only {} circles detected — using image-dimension fallback",
@@ -193,12 +204,20 @@ def estimate_grid_spacing(
         )
         dx, dy = dx_fallback, dy_fallback
 
-    # Initial origin: first circle centre is ~half-spacing from image edge
-    origin_x = dx / 2.0
-    origin_y = dy / 2.0
+    # Better initial origin: derive from the fractional grid position of every
+    # detected circle.  Each circle at cx satisfies cx ≡ origin_x (mod dx), so
+    # median(cx mod dx) is a robust, data-driven estimate.  This is far better
+    # than the old dx/2 heuristic, which failed whenever the tray was not
+    # anchored at the image top-left corner.
+    if len(centers) >= 4:
+        origin_x = float(np.median(centers[:, 0] % dx))
+        origin_y = float(np.median(centers[:, 1] % dy))
+    else:
+        origin_x = dx / 2.0
+        origin_y = dy / 2.0
 
     logger.info(
-        "estimate_grid_spacing: dx={:.1f}  dy={:.1f}  origin=({:.0f},{:.0f})",
+        "estimate_grid_spacing: dx={:.1f}  dy={:.1f}  origin=({:.1f},{:.1f})",
         dx, dy, origin_x, origin_y,
     )
     return dx, dy, origin_x, origin_y
@@ -428,6 +447,9 @@ def detect_grid(
         n_rows: Expected number of grid rows (from settings).
         n_cols: Expected number of grid columns (from settings).
         config: Optional GridCircleConfig; defaults used if None.
+                When None, HoughCircles parameters are derived from the image
+                dimensions and expected grid spacing so they stay valid for any
+                input resolution.
 
     Returns:
         {
@@ -438,7 +460,21 @@ def detect_grid(
         }
     """
     if config is None:
-        config = GridCircleConfig()
+        h, w = image.shape[:2]
+        # Expected spacing in the shortest axis — the binding constraint for
+        # min_dist and circle radius.  Using min() keeps us conservative: the
+        # y-spacing is often smaller than x-spacing after letterbox padding
+        # (white bars on top/bottom shorten the effective tray height in pixels).
+        expected_spacing = min(w / n_cols, h / n_rows)
+        config = GridCircleConfig(
+            min_dist   = max(8,  int(expected_spacing * 0.55)),
+            min_radius = max(5,  int(expected_spacing * 0.20)),
+            max_radius = max(15, int(expected_spacing * 0.65)),
+        )
+        logger.debug(
+            "detect_grid: adaptive params — spacing≈{:.1f}  min_dist={}  r=[{},{}]",
+            expected_spacing, config.min_dist, config.min_radius, config.max_radius,
+        )
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     centers = detect_circles(gray, config)
