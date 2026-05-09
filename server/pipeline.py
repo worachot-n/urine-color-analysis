@@ -36,6 +36,7 @@ YOLO_CONF_THRESHOLD: float = float(_y["conf_threshold"])
 YOLO_IOU_THRESHOLD: float  = float(_y["iou_threshold"])
 YOLO_IMGSZ: int            = int(_y["imgsz"])
 CONFIDENCE_MARGIN: float   = float(_ca.get("confidence_margin", 3.0))
+MAX_DELTA_E: float         = float(_ca.get("max_delta_e", 18.0))
 SAMPLE_ROI_TOP: int        = int(_sroi.get("top", 0))
 SAMPLE_ROI_BOTTOM: int     = int(_sroi.get("bottom", 0))
 SAMPLE_ROI_LEFT: int       = int(_sroi.get("left", 0))
@@ -352,7 +353,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             lab = None
 
         if lab and baseline:
-            level, delta_e, confident = classify_sample(lab, baseline, CONFIDENCE_MARGIN)
+            level, delta_e, confident = classify_sample(lab, baseline, CONFIDENCE_MARGIN, MAX_DELTA_E)
             hex_color = lab_to_hex(*lab)
         else:
             level, delta_e, confident, hex_color = None, None, False, None
@@ -384,6 +385,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         "missing_slots":   missing_slots,
         "summary":         summary,
         "reference_labs":  reference_labs,
+        "max_delta_e":     MAX_DELTA_E,
         "slots":           result_slots,
         "image_url":       f"/static/results/{scan_id}.jpg",
         "timestamp":       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

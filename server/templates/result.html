@@ -61,6 +61,8 @@
                 {% else %}bg-red-800 text-white{% endif %}">
                 L{{ d.color_level }}
               </span>
+              {% elif d.detected %}
+              <span class="text-gray-400 text-xs" title="Detected, but ΔE exceeds max_delta_e">out of range</span>
               {% else %}
               <span class="text-red-400 text-xs">miss</span>
               {% endif %}
@@ -95,8 +97,9 @@
     <canvas id="scatter-chart"></canvas>
   </div>
   <p class="text-xs text-gray-500 mt-2">
-    ◇ Centroid (mean of references) · × Reference bottles · ● Detected samples ·
-    Dashed circle = classification zone (radius = ½ distance to nearest centroid) ·
+    ◇ Centroid (mean of references) · × Reference bottles · ● Classified samples ·
+    ⊗ Out-of-range (rejected by max ΔE threshold) ·
+    Dashed circle = classification zone (radius = max ΔE from config) ·
     Lines connect each sample to its assigned level
   </p>
 </div>
@@ -131,38 +134,35 @@ for (const [lvl, refs] of Object.entries(refLabs)) {
   };
 }
 
-// ── Decision radius per centroid: half the distance to the nearest other
-//    centroid in a*/b* space (Voronoi midpoint), floored at 4 ΔE units ──
-const decisionRadii = {};
+// ── Classification radius from server config (max_delta_e from
+//    config.toml). Same radius for every centroid — visually shows
+//    "anything inside this circle gets classified to L*x*". ──
+const MAX_DELTA_E = scanData.max_delta_e ?? 18;
 const centroidEntries = Object.entries(centroidByLevel);
-for (const [lvl, c] of centroidEntries) {
-  let minDist = Infinity;
-  for (const [other, oc] of centroidEntries) {
-    if (other === lvl) continue;
-    minDist = Math.min(minDist, Math.hypot(c.x - oc.x, c.y - oc.y));
-  }
-  decisionRadii[lvl] = Math.max(4, isFinite(minDist) ? minDist / 2 : 8);
-}
 
-// ── Group detected samples by classified level ──
+// ── Group detected samples: classified by level, plus an "out of range"
+//    bucket for those rejected by the max_delta_e threshold ──
 const samplesByLevel = {};
+const outOfRange     = [];
 for (const [slotId, d] of Object.entries(scanData.slots || {})) {
   if (!d.detected || d.lab == null) continue;
-  const lvl = d.color_level;
-  const key = lvl == null ? 'unknown' : String(lvl);
-  (samplesByLevel[key] ||= []).push({
+  const point = {
     x: d.lab[1] - 128,
     y: d.lab[2] - 128,
     hex: d.hex,
     label: slotId,
     delta_e: d.delta_e,
     confident: d.confident,
-    color_level: lvl,
-  });
+    color_level: d.color_level,
+  };
+  if (d.color_level == null) {
+    outOfRange.push(point);
+  } else {
+    (samplesByLevel[String(d.color_level)] ||= []).push(point);
+  }
 }
 
-// ── Build sample → centroid connection lines (only when sample has an
-//    assigned level whose centroid we know) ──
+// ── Sample → centroid connection lines (only for classified samples) ──
 const connectionLines = [];
 for (const [lvl, pts] of Object.entries(samplesByLevel)) {
   const c = centroidByLevel[lvl];
@@ -174,11 +174,12 @@ for (const [lvl, pts] of Object.entries(samplesByLevel)) {
 }
 
 // ── Decision-ring overlay data (passed to the custom plugin below) ──
+//    Fixed radius = MAX_DELTA_E; overlapping rings honestly show ambiguity zones.
 const decisionRings = [];
 for (const [lvl, c] of centroidEntries) {
   decisionRings.push({
     x: c.x, y: c.y,
-    r: decisionRadii[lvl],
+    r: MAX_DELTA_E,
     color: LEVEL_COLORS[parseInt(lvl)] || '#888',
   });
 }
@@ -263,9 +264,9 @@ function buildDatasets() {
 
   // Layer 3: detected samples (medium filled circles)
   for (const [lvl, pts] of Object.entries(samplesByLevel)) {
-    const color = lvl === 'unknown' ? '#aaa' : (LEVEL_COLORS[parseInt(lvl)] || '#aaa');
+    const color = LEVEL_COLORS[parseInt(lvl)] || '#aaa';
     datasets.push({
-      label: lvl === 'unknown' ? 'Samples (unclassified)' : `Samples L${lvl}`,
+      label: `Samples L${lvl}`,
       data: pts,
       pointStyle: 'circle',
       pointRadius: 7,
@@ -273,6 +274,20 @@ function buildDatasets() {
       backgroundColor: color,
       borderColor: '#fff',
       borderWidth: 1.5,
+    });
+  }
+
+  // Layer 4: out-of-range samples (grey × — rejected by max_delta_e)
+  if (outOfRange.length) {
+    datasets.push({
+      label: `Out of range (ΔE > ${MAX_DELTA_E})`,
+      data: outOfRange,
+      pointStyle: 'crossRot',
+      pointRadius: 8,
+      pointHoverRadius: 11,
+      borderColor: '#888',
+      borderWidth: 2.5,
+      backgroundColor: '#888',
     });
   }
 

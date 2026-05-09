@@ -70,6 +70,7 @@ inner_crop_px      = 10    # Pixels from bottle center to exclude (excludes glar
                             # Sampling region = annular ring between inner_crop_px and (radius - outer_crop_px)
 delta_e_threshold  = 15.0  # Legacy — kept for reference; confidence now uses margin
 confidence_margin  = 3.0   # second_best_ΔE − best_ΔE must exceed this for 'Confident'
+max_delta_e        = 18.0  # Reject classification if best chromaticity ΔE exceeds this — sample reported as out-of-range
 presence_threshold = 15.0  # Max ΔE to nearest reference level to confirm bottle present
                             # Background paper scores >>15; real bottles score <15
 contrast_threshold = 12.0  # Min ΔE to white paper — below this = ghost (old pipeline)

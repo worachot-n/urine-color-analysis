@@ -27,6 +27,7 @@ _ip = _cfg.get("image_processing", {})
 OUTER_CROP_PX: int       = int(_ca.get("outer_crop_px", 15))
 INNER_CROP_PX: int       = int(_ca.get("inner_crop_px", 10))
 CONFIDENCE_MARGIN: float = float(_ca.get("confidence_margin", 3.0))
+MAX_DELTA_E: float       = float(_ca.get("max_delta_e", 18.0))
 GLARE_L_THRESHOLD: float = float(_ip.get("glare_l_threshold", 220))
 GLARE_MIN_VALID_PX: int  = int(_ip.get("glare_min_valid_px", 10))
 
@@ -40,7 +41,7 @@ WHITE_LAB = (255.0, 128.0, 128.0)
 
 def delta_e_cie76(lab1, lab2):
     """
-    CIE76 Delta E between two CIE Lab colors.
+    CIE76 Delta E between two CIE Lab colors (full 3D Euclidean distance).
 
     Args:
         lab1: (L, a, b) tuple
@@ -50,6 +51,19 @@ def delta_e_cie76(lab1, lab2):
         Perceptual color distance (float). 0 = identical.
     """
     return float(np.sqrt(sum((a - b) ** 2 for a, b in zip(lab1, lab2))))
+
+
+def delta_e_chroma(lab1, lab2):
+    """
+    Chromaticity-only Delta E — Euclidean distance in the (a*, b*) plane.
+
+    Ignores L* (lightness). Used for urine-color level classification because
+    concentration manifests in hue (yellow → amber → red) while lightness varies
+    with bottle fill level and lighting drift. Robust to those nuisances.
+    """
+    da = lab1[1] - lab2[1]
+    db = lab1[2] - lab2[2]
+    return float(np.hypot(da, db))
 
 
 # ---------------------------------------------------------------------------
@@ -238,37 +252,41 @@ def build_kmeans_centroids(path="color.json"):
 # Classification
 # ---------------------------------------------------------------------------
 
-def classify_sample(sample_lab, baseline, margin=CONFIDENCE_MARGIN):
+def classify_sample(sample_lab, baseline, margin=CONFIDENCE_MARGIN, max_delta_e=MAX_DELTA_E):
     """
-    Classify a sample bottle by nearest-reference matching (minimum Delta E).
+    Classify a sample bottle by nearest-reference matching in chromaticity space.
 
-    Confidence uses a margin-of-victory check rather than a fixed threshold:
-    confident when (second_best_ΔE − best_ΔE) > margin. This is relative to
-    the current frame's lighting — the system always assigns the nearest level,
-    and margin only controls how unambiguous the match is.
+    Distance: chromaticity-only (a*, b*) — ignores L* so the result is robust
+    to bottle-fill and lighting variations that don't reflect concentration.
 
-    Args:
-        sample_lab: (L, a, b) of the sample bottle
-        baseline:   dict {level: (L, a, b)} from build_reference_baseline
-        margin:     Min gap between best and second-best ΔE for confidence
+    Rejection: if the best ΔE_chroma exceeds `max_delta_e`, the sample is
+    reported as out-of-range (level=None) instead of being forced to a noisy
+    nearest neighbour.
+
+    Confidence: still uses margin-of-victory (`second_best − best > margin`)
+    on top of the rejection check.
 
     Returns:
         (level, delta_e, confident)
-        - level:     int 0-4 — level with the absolute minimum Delta E
-        - delta_e:   float — distance to the closest standard
-        - confident: bool — True if margin of victory exceeds threshold
+        - level:     int 0-4 if classified, or None if out of range
+        - delta_e:   float — chromaticity distance to the closest reference
+        - confident: bool — True only when both within range AND margin met
     """
     if not baseline or sample_lab is None:
         return None, float('inf'), False
 
     deltas = {
-        level: delta_e_cie76(sample_lab, ref_lab)
+        level: delta_e_chroma(sample_lab, ref_lab)
         for level, ref_lab in baseline.items()
     }
 
     sorted_levels = sorted(deltas, key=lambda lvl: deltas[lvl])
     best_level = sorted_levels[0]
     best_delta = deltas[best_level]
+
+    # Absolute-distance rejection: every reference is too far → no honest match
+    if best_delta > max_delta_e:
+        return None, best_delta, False
 
     if len(sorted_levels) >= 2:
         second_best_delta = deltas[sorted_levels[1]]
