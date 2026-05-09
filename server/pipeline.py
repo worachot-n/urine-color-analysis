@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 from loguru import logger
 
-from utils.grid_circle_detector import detect_grid
+from utils.auto_grid_detector import detect_grid_full
 from utils.color_analysis import (
     extract_bottle_color,
     classify_sample,
@@ -288,32 +288,25 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
     if frame_full is None:
         raise ValueError("Failed to decode image")
 
-    # ── 2. Crop ROI ───────────────────────────────────────────────────────
+    # ── 2. Crop ROI — top=0 to include reference row (matches /auto_grid) ─
     roi, roi_x1, roi_y1 = crop_sample_roi(
-        frame_full, SAMPLE_ROI_TOP, SAMPLE_ROI_BOTTOM, SAMPLE_ROI_LEFT, SAMPLE_ROI_RIGHT
+        frame_full, 0, SAMPLE_ROI_BOTTOM, SAMPLE_ROI_LEFT, SAMPLE_ROI_RIGHT
     )
 
-    # ── 3. Letterbox for grid detection ──────────────────────────────────
+    # ── 3. Grid detection — full-resolution ROI (same as /auto_grid) ─────
+    grid_result = detect_grid_full(roi, slot_cfg.rows, slot_cfg.cols)
+    grid_pts_roi = grid_result["grid_pts"]   # (rows*cols, 2) in ROI coords
+
+    # Convert ROI → full-image coords (simple offset; no letterbox math)
+    grid_pts_full = grid_pts_roi.copy()
+    grid_pts_full[:, 0] += roi_x1
+    grid_pts_full[:, 1] += roi_y1
+
+    # Radius from actual HoughCircles detections (median of detected circle radii)
+    radius_full = float(grid_result["avg_radius_px"])
+
+    # ── 4. Letterbox ROI for YOLO (grid detection no longer uses this) ───
     padded, scale, pad_x, pad_y = letterbox_white_padding(roi, 640)
-
-    # ── 4. Grid detection ─────────────────────────────────────────────────
-    grid_result = detect_grid(padded, slot_cfg.rows, slot_cfg.cols)
-    grid_pts_640 = grid_result["grid_pts"]   # (rows*cols, 2) in padded coords
-
-    # Convert grid_pts from padded-640 to full-image coords
-    gx_full = (grid_pts_640[:, 0] - pad_x) / scale + roi_x1
-    gy_full = (grid_pts_640[:, 1] - pad_y) / scale + roi_y1
-    grid_pts_full = np.stack([gx_full, gy_full], axis=1)
-
-    # Estimated circle radius in full-image coords (40% of min grid spacing)
-    n_pts = grid_pts_640.shape[0]
-    if n_pts >= slot_cfg.cols + 1:
-        dx_640 = float(np.median(np.abs(np.diff(grid_pts_640[:slot_cfg.cols, 0]))))
-        dy_640 = float(np.median(np.abs(np.diff(grid_pts_640[::slot_cfg.cols, 1]))))
-    else:
-        dx_640 = 640.0 / slot_cfg.cols
-        dy_640 = 640.0 / slot_cfg.rows
-    radius_full = min(dx_640, dy_640) * 0.40 / scale
 
     # ── 5. YOLO detection ─────────────────────────────────────────────────
     yolo_boxes: list = []
