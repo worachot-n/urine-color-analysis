@@ -67,10 +67,10 @@ class AutoGridConfig:
     # neighbour diffs in the sorted X/Y coordinate lists.
     # Diffs are accepted only in [rough * spacing_lo_frac, rough * spacing_hi_frac].
     spacing_lo_frac: float = 0.10   # ignore diffs smaller than this fraction of rough
-    spacing_hi_frac: float = 1.10   # ignore diffs larger than this fraction of rough
+    spacing_hi_frac: float = 0.99   # ignore diffs larger than this fraction of rough
 
     # --- Projection KDE (uses REFINED spacing) ---
-    kde_bw_frac:        float = 0.20  # KDE bandwidth = refined_spacing × frac
+    kde_bw_frac:        float = 0.30  # KDE bandwidth = refined_spacing × frac
     peak_min_h_frac:    float = 0.04  # min peak height = max_density × frac
     peak_min_dist_frac: float = 0.60  # min separation = refined_spacing × frac
 
@@ -454,27 +454,43 @@ def _draw_grid(
 
     pts = grid_pts.reshape(n_rows, n_cols, 2)
 
-    # ── Horizontal boundary lines (n_rows + 1) ───────────────────────────
+    # Precompute boundary midpoint arrays for all 4 sides
+    top_pts   = pts[0]    + (pts[0]    - pts[1])    * 0.5   # (n_cols, 2) — above row 0
+    bot_pts   = pts[-1]   + (pts[-1]   - pts[-2])   * 0.5   # (n_cols, 2) — below last row
+    left_pts  = pts[:, 0] + (pts[:, 0] - pts[:, 1]) * 0.5  # (n_rows, 2) — left of col 0
+    right_pts = pts[:,-1] + (pts[:,-1] - pts[:,-2]) * 0.5  # (n_rows, 2) — right of last col
+
+    # 4 corner points: extrapolate half-spacing outward in both axes from each corner cell
+    TL = pts[0,  0 ] + (pts[0,  0 ] - pts[1,  0 ]) * 0.5 + (pts[0,  0 ] - pts[0,  1 ]) * 0.5
+    TR = pts[0, -1 ] + (pts[0, -1 ] - pts[1, -1 ]) * 0.5 + (pts[0, -1 ] - pts[0, -2 ]) * 0.5
+    BL = pts[-1,  0] + (pts[-1,  0] - pts[-2,  0]) * 0.5 + (pts[-1,  0] - pts[-1,  1]) * 0.5
+    BR = pts[-1, -1] + (pts[-1, -1] - pts[-2, -1]) * 0.5 + (pts[-1, -1] - pts[-1, -2]) * 0.5
+
+    # ── Horizontal lines (n_rows + 1): each spans from left boundary to right boundary ──
     for bi in range(n_rows + 1):
         if bi == 0:
-            row_pts = pts[0] + (pts[0] - pts[1]) * 0.5 if n_rows > 1 else pts[0] - np.array([[0.0, avg_radius]])
+            inner, le, re = top_pts, TL, TR
         elif bi == n_rows:
-            row_pts = pts[-1] + (pts[-1] - pts[-2]) * 0.5 if n_rows > 1 else pts[-1] + np.array([[0.0, avg_radius]])
+            inner, le, re = bot_pts, BL, BR
         else:
-            row_pts = (pts[bi - 1] + pts[bi]) * 0.5
-        pts_int = row_pts.astype(np.int32).reshape(-1, 1, 2)
-        cv2.polylines(canvas, [pts_int], False, config.color_h_lines, lw, cv2.LINE_AA)
+            inner = (pts[bi - 1] + pts[bi]) * 0.5
+            le    = (left_pts[bi - 1]  + left_pts[bi])  * 0.5
+            re    = (right_pts[bi - 1] + right_pts[bi]) * 0.5
+        line = np.vstack([le, inner, re]).astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(canvas, [line], False, config.color_h_lines, lw, cv2.LINE_AA)
 
-    # ── Vertical boundary lines (n_cols + 1) ─────────────────────────────
+    # ── Vertical lines (n_cols + 1): each spans from top boundary to bottom boundary ──
     for bi in range(n_cols + 1):
         if bi == 0:
-            col_pts = pts[:, 0] + (pts[:, 0] - pts[:, 1]) * 0.5 if n_cols > 1 else pts[:, 0] - np.array([[avg_radius, 0.0]])
+            inner, te, be = left_pts, TL, BL
         elif bi == n_cols:
-            col_pts = pts[:, -1] + (pts[:, -1] - pts[:, -2]) * 0.5 if n_cols > 1 else pts[:, -1] + np.array([[avg_radius, 0.0]])
+            inner, te, be = right_pts, TR, BR
         else:
-            col_pts = (pts[:, bi - 1] + pts[:, bi]) * 0.5
-        pts_int = col_pts.astype(np.int32).reshape(-1, 1, 2)
-        cv2.polylines(canvas, [pts_int], False, config.color_v_lines, lw, cv2.LINE_AA)
+            inner = (pts[:, bi - 1] + pts[:, bi]) * 0.5
+            te    = (top_pts[bi - 1] + top_pts[bi]) * 0.5
+            be    = (bot_pts[bi - 1] + bot_pts[bi]) * 0.5
+        line = np.vstack([te, inner, be]).astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(canvas, [line], False, config.color_v_lines, lw, cv2.LINE_AA)
 
     # ── Circle markers ───────────────────────────────────────────────────
     for pt, det in zip(grid_pts, is_detected):
