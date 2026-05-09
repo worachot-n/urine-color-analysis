@@ -97,9 +97,8 @@
     <canvas id="scatter-chart"></canvas>
   </div>
   <p class="text-xs text-gray-500 mt-2">
-    ◇ Mean of references (display only) · × Reference bottles · ● Classified samples ·
-    ⊗ Out-of-range · Each dashed circle = classification zone of one reference (radius = max ΔE).
-    A sample is assigned to the level of its nearest individual reference (k-NN, k=1).
+    ◇ Mean of references (display only) · × Reference bottles · ● Classified samples · ⊗ Out-of-range ·
+    Background colour shows the k-NN classification of every point in the plane (uncoloured = ΔE > max threshold).
     Lines connect each sample to its assigned level's mean.
   </p>
 </div>
@@ -173,52 +172,74 @@ for (const [lvl, pts] of Object.entries(samplesByLevel)) {
   }
 }
 
-// ── Decision-ring overlay data (passed to the custom plugin below) ──
-//    Match the server's k-NN classifier: one ring per INDIVIDUAL reference,
-//    radius = MAX_DELTA_E. The union of same-colour rings = that level's
-//    classification region. Scattered references → multi-lobed regions
-//    that honestly reflect what the classifier sees.
-const decisionRings = [];
+// ── Classification heatmap data — flattened list of every reference with
+//    its level colour. The custom plugin paints each pixel cell with the
+//    colour of the nearest reference's level (or leaves it uncoloured if
+//    that nearest distance exceeds MAX_DELTA_E). This is an exact rendering
+//    of the k-NN decision surface — no overlapping circles. ──
+const heatmapRefs = [];
 for (const [lvl, refs] of Object.entries(refPointsByLevel)) {
   const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
-  for (const r of refs) {
-    decisionRings.push({ x: r.x, y: r.y, r: MAX_DELTA_E, color });
-  }
+  for (const r of refs) heatmapRefs.push({ x: r.x, y: r.y, color });
 }
 
-// ── Custom plugin: draws decision rings and sample→centroid lines in data
-//    coordinates beneath all datasets. Uses chart.scales to convert Lab
-//    units to pixels so the rings' radii scale with zoom/resize. ──
+// ── Classification heatmap plugin — paints the chart-area background with
+//    the k-NN classification of every point on the plane. Each pixel cell
+//    is filled with the level colour of its nearest reference; cells whose
+//    nearest distance exceeds MAX_DELTA_E are left uncoloured (the chart's
+//    own background shows through, signalling an out-of-range zone). ──
+const HEATMAP_CELL_PX    = 4;     // resolution; lower = sharper, higher = cheaper
+const HEATMAP_FILL_ALPHA = '33';  // ≈20% — keeps fill subtle behind data points
+
+const heatmapPlugin = {
+  id: 'classificationHeatmap',
+  beforeDatasetsDraw(chart) {
+    const opts = chart.options.plugins.classificationHeatmap;
+    if (!opts || !opts.refs || !opts.refs.length) return;
+    const { ctx, chartArea, scales: { x, y } } = chart;
+    const refs = opts.refs;
+    const maxR = opts.maxDeltaE;
+    const cs   = HEATMAP_CELL_PX;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(chartArea.left, chartArea.top,
+             chartArea.right - chartArea.left,
+             chartArea.bottom - chartArea.top);
+    ctx.clip();
+
+    for (let px = chartArea.left; px < chartArea.right; px += cs) {
+      for (let py = chartArea.top; py < chartArea.bottom; py += cs) {
+        const ax = x.getValueForPixel(px + cs / 2);
+        const ay = y.getValueForPixel(py + cs / 2);
+        let best = Infinity, bestColor = null;
+        for (const r of refs) {
+          const d = Math.hypot(ax - r.x, ay - r.y);
+          if (d < best) { best = d; bestColor = r.color; }
+        }
+        if (best <= maxR) {
+          ctx.fillStyle = bestColor + HEATMAP_FILL_ALPHA;
+          ctx.fillRect(px, py, cs, cs);
+        }
+      }
+    }
+    ctx.restore();
+  },
+};
+
+// ── Connection-line plugin — thin sample→centroid lines drawn after the
+//    heatmap but beneath the data points. ──
 const overlayPlugin = {
   id: 'overlay',
   beforeDatasetsDraw(chart) {
     const o = chart.options.plugins.overlay;
-    if (!o) return;
+    if (!o || !o.lines) return;
     const ctx = chart.ctx;
     const xScale = chart.scales.x;
     const yScale = chart.scales.y;
-
-    // Rings
-    for (const ring of o.rings || []) {
-      const cx = xScale.getPixelForValue(ring.x);
-      const cy = yScale.getPixelForValue(ring.y);
-      const r  = Math.abs(xScale.getPixelForValue(ring.x + ring.r) - cx);
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, 2 * Math.PI);
-      ctx.fillStyle   = ring.color + '22';
-      ctx.fill();
-      ctx.setLineDash([6, 4]);
-      ctx.strokeStyle = ring.color + 'aa';
-      ctx.lineWidth   = 1.2;
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    // Connection lines
     ctx.save();
     ctx.setLineDash([]);
-    for (const ln of o.lines || []) {
+    for (const ln of o.lines) {
       ctx.beginPath();
       ctx.moveTo(xScale.getPixelForValue(ln.x1), yScale.getPixelForValue(ln.y1));
       ctx.lineTo(xScale.getPixelForValue(ln.x2), yScale.getPixelForValue(ln.y2));
@@ -300,12 +321,13 @@ const ctx = document.getElementById('scatter-chart').getContext('2d');
 new Chart(ctx, {
   type: 'scatter',
   data: { datasets: buildDatasets() },
-  plugins: [overlayPlugin],
+  plugins: [heatmapPlugin, overlayPlugin],   // heatmap first → drawn lowest
   options: {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      overlay: { rings: decisionRings, lines: connectionLines },
+      classificationHeatmap: { refs: heatmapRefs, maxDeltaE: MAX_DELTA_E },
+      overlay: { lines: connectionLines },
       legend:  { labels: { color: '#ccc', boxWidth: 14, usePointStyle: true } },
       tooltip: {
         callbacks: {
