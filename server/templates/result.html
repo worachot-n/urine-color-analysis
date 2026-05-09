@@ -91,10 +91,14 @@
 <!-- Color matching scatter plot -->
 <div class="bg-gray-800 rounded-xl p-4 mb-6">
   <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">Color Matching — CIE Lab a*/b* Space</h2>
-  <div class="relative" style="height:320px">
+  <div class="relative" style="height:420px">
     <canvas id="scatter-chart"></canvas>
   </div>
-  <p class="text-xs text-gray-500 mt-2">Large markers = reference clusters · Small markers = detected bottles · Hover for details</p>
+  <p class="text-xs text-gray-500 mt-2">
+    ◇ Centroid (mean of references) · × Reference bottles · ● Detected samples ·
+    Dashed circle = classification zone (radius = ½ distance to nearest centroid) ·
+    Lines connect each sample to its assigned level
+  </p>
 </div>
 
 <!-- Raw JSON -->
@@ -105,64 +109,170 @@
 
 <script>
 const LEVEL_COLORS = ['#f9e54d','#ffc107','#ff9800','#f44336','#b71c1c'];
-const LEVEL_NAMES  = ['L0','L1','L2','L3','L4'];
-
 const scanData = {{ scan | tojson }};
 
+// ── Build per-level reference points and centroids (k-means with k=1 per
+//    pre-labeled level group → arithmetic mean of each level's references) ──
+const refPointsByLevel = {};   // {level: [{x,y,hex,label}, ...]}
+const centroidByLevel  = {};   // {level: {x,y}}
+const refLabs = scanData.reference_labs || {};
+for (const [lvl, refs] of Object.entries(refLabs)) {
+  const pts = refs.filter(r => r.lab).map((r, i) => ({
+    x: r.lab[1] - 128,           // OpenCV a* → standard a*
+    y: r.lab[2] - 128,           // OpenCV b* → standard b*
+    hex: r.hex,
+    label: `REF L${lvl} #${i + 1}`,
+  }));
+  if (!pts.length) continue;
+  refPointsByLevel[lvl] = pts;
+  centroidByLevel[lvl] = {
+    x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+    y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+  };
+}
+
+// ── Decision radius per centroid: half the distance to the nearest other
+//    centroid in a*/b* space (Voronoi midpoint), floored at 4 ΔE units ──
+const decisionRadii = {};
+const centroidEntries = Object.entries(centroidByLevel);
+for (const [lvl, c] of centroidEntries) {
+  let minDist = Infinity;
+  for (const [other, oc] of centroidEntries) {
+    if (other === lvl) continue;
+    minDist = Math.min(minDist, Math.hypot(c.x - oc.x, c.y - oc.y));
+  }
+  decisionRadii[lvl] = Math.max(4, isFinite(minDist) ? minDist / 2 : 8);
+}
+
+// ── Group detected samples by classified level ──
+const samplesByLevel = {};
+for (const [slotId, d] of Object.entries(scanData.slots || {})) {
+  if (!d.detected || d.lab == null) continue;
+  const lvl = d.color_level;
+  const key = lvl == null ? 'unknown' : String(lvl);
+  (samplesByLevel[key] ||= []).push({
+    x: d.lab[1] - 128,
+    y: d.lab[2] - 128,
+    hex: d.hex,
+    label: slotId,
+    delta_e: d.delta_e,
+    confident: d.confident,
+    color_level: lvl,
+  });
+}
+
+// ── Build sample → centroid connection lines (only when sample has an
+//    assigned level whose centroid we know) ──
+const connectionLines = [];
+for (const [lvl, pts] of Object.entries(samplesByLevel)) {
+  const c = centroidByLevel[lvl];
+  if (!c) continue;
+  const color = LEVEL_COLORS[parseInt(lvl)] || '#aaa';
+  for (const p of pts) {
+    connectionLines.push({ x1: p.x, y1: p.y, x2: c.x, y2: c.y, color });
+  }
+}
+
+// ── Decision-ring overlay data (passed to the custom plugin below) ──
+const decisionRings = [];
+for (const [lvl, c] of centroidEntries) {
+  decisionRings.push({
+    x: c.x, y: c.y,
+    r: decisionRadii[lvl],
+    color: LEVEL_COLORS[parseInt(lvl)] || '#888',
+  });
+}
+
+// ── Custom plugin: draws decision rings and sample→centroid lines in data
+//    coordinates beneath all datasets. Uses chart.scales to convert Lab
+//    units to pixels so the rings' radii scale with zoom/resize. ──
+const overlayPlugin = {
+  id: 'overlay',
+  beforeDatasetsDraw(chart) {
+    const o = chart.options.plugins.overlay;
+    if (!o) return;
+    const ctx = chart.ctx;
+    const xScale = chart.scales.x;
+    const yScale = chart.scales.y;
+
+    // Rings
+    for (const ring of o.rings || []) {
+      const cx = xScale.getPixelForValue(ring.x);
+      const cy = yScale.getPixelForValue(ring.y);
+      const r  = Math.abs(xScale.getPixelForValue(ring.x + ring.r) - cx);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+      ctx.fillStyle   = ring.color + '22';
+      ctx.fill();
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = ring.color + 'aa';
+      ctx.lineWidth   = 1.2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Connection lines
+    ctx.save();
+    ctx.setLineDash([]);
+    for (const ln of o.lines || []) {
+      ctx.beginPath();
+      ctx.moveTo(xScale.getPixelForValue(ln.x1), yScale.getPixelForValue(ln.y1));
+      ctx.lineTo(xScale.getPixelForValue(ln.x2), yScale.getPixelForValue(ln.y2));
+      ctx.strokeStyle = ln.color + '55';
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+    }
+    ctx.restore();
+  },
+};
+
+// ── Build datasets in z-order: ref points (×), centroids (◇), samples (●) ──
 function buildDatasets() {
   const datasets = [];
 
-  // Reference clusters (large markers)
-  const refLabs = scanData.reference_labs || {};
-  for (const [lvl, refs] of Object.entries(refLabs)) {
-    const lvlInt = parseInt(lvl);
-    const color  = LEVEL_COLORS[lvlInt] || '#888';
-    const pts    = refs
-      .filter(r => r.lab)
-      .map(r => ({
-        x: r.lab[1] - 128,  // a* (OpenCV a - 128)
-        y: r.lab[2] - 128,  // b* (OpenCV b - 128)
-        hex: r.hex,
-        label: `REF L${lvlInt}`,
-      }));
-    if (pts.length) {
-      datasets.push({
-        label: `REF L${lvlInt}`,
-        data: pts,
-        backgroundColor: color + 'aa',
-        borderColor: color,
-        borderWidth: 2,
-        pointRadius: 14,
-        pointStyle: 'circle',
-      });
-    }
-  }
-
-  // Detected sample bottles (small markers, per level)
-  const byLevel = {};
-  for (const [slotId, d] of Object.entries(scanData.slots || {})) {
-    if (!d.detected || d.lab == null) continue;
-    const lvl = d.color_level ?? -1;
-    if (!byLevel[lvl]) byLevel[lvl] = [];
-    byLevel[lvl].push({
-      x: d.lab[1] - 128,
-      y: d.lab[2] - 128,
-      hex: d.hex,
-      label: slotId,
-      delta_e: d.delta_e,
+  // Layer 1: individual reference bottles (small × markers)
+  for (const [lvl, pts] of Object.entries(refPointsByLevel)) {
+    const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
+    datasets.push({
+      label: `Ref L${lvl}`,
+      data: pts,
+      pointStyle: 'crossRot',
+      pointRadius: 6,
+      pointHoverRadius: 9,
+      borderColor: color,
+      borderWidth: 2,
+      backgroundColor: color + '88',
     });
   }
-  for (const [lvl, pts] of Object.entries(byLevel)) {
-    const lvlInt = parseInt(lvl);
-    const color  = lvlInt >= 0 ? LEVEL_COLORS[lvlInt] : '#aaa';
+
+  // Layer 2: reference centroids (large filled diamonds)
+  for (const [lvl, c] of centroidEntries) {
+    const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
     datasets.push({
-      label: `Samples L${lvlInt >= 0 ? lvlInt : '?'}`,
+      label: `Centroid L${lvl}`,
+      data: [{ x: c.x, y: c.y, label: `Centroid L${lvl}`, isCentroid: true }],
+      pointStyle: 'rectRot',
+      pointRadius: 14,
+      pointHoverRadius: 17,
+      backgroundColor: color,
+      borderColor: '#111',
+      borderWidth: 2,
+    });
+  }
+
+  // Layer 3: detected samples (medium filled circles)
+  for (const [lvl, pts] of Object.entries(samplesByLevel)) {
+    const color = lvl === 'unknown' ? '#aaa' : (LEVEL_COLORS[parseInt(lvl)] || '#aaa');
+    datasets.push({
+      label: lvl === 'unknown' ? 'Samples (unclassified)' : `Samples L${lvl}`,
       data: pts,
+      pointStyle: 'circle',
+      pointRadius: 7,
+      pointHoverRadius: 10,
       backgroundColor: color,
       borderColor: '#fff',
-      borderWidth: 1,
-      pointRadius: 6,
-      pointStyle: 'circle',
+      borderWidth: 1.5,
     });
   }
 
@@ -173,22 +283,26 @@ const ctx = document.getElementById('scatter-chart').getContext('2d');
 new Chart(ctx, {
   type: 'scatter',
   data: { datasets: buildDatasets() },
+  plugins: [overlayPlugin],
   options: {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { labels: { color: '#ccc', boxWidth: 12 } },
+      overlay: { rings: decisionRings, lines: connectionLines },
+      legend:  { labels: { color: '#ccc', boxWidth: 14, usePointStyle: true } },
       tooltip: {
         callbacks: {
           label(ctx) {
             const d = ctx.raw;
-            const lines = [`${d.label}`, `a*: ${d.x.toFixed(1)}, b*: ${d.y.toFixed(1)}`];
+            const lines = [d.label, `a*: ${d.x.toFixed(1)}, b*: ${d.y.toFixed(1)}`];
             if (d.hex) lines.push(`hex: ${d.hex}`);
             if (d.delta_e != null) lines.push(`ΔE: ${d.delta_e.toFixed(1)}`);
+            if (d.confident === true)  lines.push('confidence: ✓ confident');
+            if (d.confident === false && d.color_level != null) lines.push('confidence: ~ borderline');
             return lines;
-          }
-        }
-      }
+          },
+        },
+      },
     },
     scales: {
       x: {
