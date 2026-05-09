@@ -382,7 +382,22 @@ def _find_grid_positions(
         lo, hi = float(coords.min()), float(coords.max())
         return np.linspace(lo, hi, n_expected, dtype=np.float32)
 
-    return _extend_to_full_grid(peak_pos, n_expected, est_spacing)
+    # RANSAC origin voting with the refined spacing from actual circle positions.
+    # Never re-estimate spacing from KDE peak diffs — those diffs are unreliable
+    # when extra spurious peaks appear (minimum KDE peak separation ≠ grid spacing).
+    # All detected peaks vote regardless of KDE height, so weak edge-row peaks
+    # are included and the grid is not shifted inward.
+    votes = peak_pos % est_spacing
+    votes[votes > est_spacing * 0.5] -= est_spacing
+    origin = float(np.median(votes))
+    if origin < 0:
+        origin += est_spacing
+    centre = float(np.median(peak_pos))
+    start_i = int(round((centre - origin) / est_spacing - (n_expected - 1) / 2.0))
+    return np.array(
+        [origin + (start_i + i) * est_spacing for i in range(n_expected)],
+        dtype=np.float32,
+    )
 
 
 # ---------------------------------------------------------------------------
