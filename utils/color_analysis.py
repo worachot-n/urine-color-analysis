@@ -171,6 +171,35 @@ def build_reference_baseline(frame, reference_positions):
     return baseline
 
 
+def build_reference_set(frame, reference_positions):
+    """
+    Like build_reference_baseline, but returns the RAW per-bottle Lab values
+    instead of averaging them per level. Used by k-NN classification so that
+    each individual reference bottle remains a distinct anchor point.
+
+    Args:
+        frame:               BGR image (full frame)
+        reference_positions: dict {level: [(cx, cy, radius), ...]}
+
+    Returns:
+        dict {level: [(L, a, b), (L, a, b), ...]} — every individual valid
+        reference Lab. Levels with no valid samples are omitted.
+    """
+    out = {}
+    for level, positions in reference_positions.items():
+        labs = []
+        for cx, cy, radius in positions:
+            lab = extract_bottle_color(frame, cx, cy, radius)
+            if lab is not None:
+                labs.append(lab)
+        if labs:
+            out[level] = labs
+            logger.info("Reference set L{}: {} valid bottle(s)", level, len(labs))
+        else:
+            logger.warning("Reference set L{}: no valid samples extracted", level)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Static baseline (from color.json)
 # ---------------------------------------------------------------------------
@@ -293,5 +322,59 @@ def classify_sample(sample_lab, baseline, margin=CONFIDENCE_MARGIN, max_delta_e=
         confident = (second_best_delta - best_delta) > margin
     else:
         confident = True   # only one reference level available
+
+    return best_level, best_delta, confident
+
+
+def classify_sample_nn(sample_lab, references_per_level,
+                       margin=CONFIDENCE_MARGIN, max_delta_e=MAX_DELTA_E):
+    """
+    Classify a sample by its NEAREST INDIVIDUAL REFERENCE in chromaticity space.
+
+    Per-level distance = min ΔE_chroma over that level's references — i.e.
+    each individual reference bottle anchors its own neighbourhood, and the
+    level whose closest reference is nearest wins. This is k=1 nearest-neighbour
+    over labelled references.
+
+    Why nearest-individual instead of nearest-centroid: when references for
+    one level fall at multiple chroma points (e.g. scattered L4 bottles due
+    to physical variation or lighting), the per-level mean may not match any
+    real bottle. k=1 NN preserves the multi-modal information embedded in
+    the reference set so a sample close to *any* L4 bottle classifies as L4.
+
+    Args:
+        sample_lab:           (L, a, b) tuple of the sample
+        references_per_level: dict {level: [(L,a,b), (L,a,b), ...]}
+                              from build_reference_set
+        margin:               Min gap between best and second-best level for confidence
+        max_delta_e:          Reject classification if best > max_delta_e
+
+    Returns:
+        (level, delta_e, confident)
+        - level:     int 0-4 if classified, None if best ΔE > max_delta_e
+        - delta_e:   chromaticity distance to the closest reference
+        - confident: True only when within range AND margin met
+    """
+    if not references_per_level or sample_lab is None:
+        return None, float('inf'), False
+
+    deltas = {
+        level: min(delta_e_chroma(sample_lab, ref) for ref in refs)
+        for level, refs in references_per_level.items()
+        if refs
+    }
+    if not deltas:
+        return None, float('inf'), False
+
+    sorted_levels = sorted(deltas, key=deltas.get)
+    best_level = sorted_levels[0]
+    best_delta = deltas[best_level]
+
+    if best_delta > max_delta_e:
+        return None, best_delta, False
+
+    confident = True
+    if len(sorted_levels) >= 2:
+        confident = (deltas[sorted_levels[1]] - best_delta) > margin
 
     return best_level, best_delta, confident

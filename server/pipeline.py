@@ -21,8 +21,8 @@ from loguru import logger
 from utils.auto_grid_detector import detect_grid_full, draw_grid_lines
 from utils.color_analysis import (
     extract_bottle_color,
-    classify_sample,
-    build_reference_baseline,
+    classify_sample_nn,
+    build_reference_set,
 )
 from app.shared.processor import crop_sample_roi, letterbox_white_padding
 from server.slot_config import SlotConfig, active_cell_indices, reference_cells, sample_cells
@@ -323,8 +323,8 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         cy = float(grid_pts_full[cell_idx - 1, 1])
         ref_positions.setdefault(ref_level, []).append((cx, cy, radius_full))
 
-    baseline = build_reference_baseline(frame_full, ref_positions)
-    logger.info("pipeline: baseline levels: {}", list(baseline.keys()))
+    ref_set = build_reference_set(frame_full, ref_positions)
+    logger.info("pipeline: reference set levels: {}", list(ref_set.keys()))
 
     # Reference Labs → hex (for scatter plot and Sheets)
     reference_labs: dict[str, list] = {}
@@ -352,8 +352,8 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         else:
             lab = None
 
-        if lab and baseline:
-            level, delta_e, confident = classify_sample(lab, baseline, CONFIDENCE_MARGIN, MAX_DELTA_E)
+        if lab and ref_set:
+            level, delta_e, confident = classify_sample_nn(lab, ref_set, CONFIDENCE_MARGIN, MAX_DELTA_E)
             hex_color = lab_to_hex(*lab)
         else:
             level, delta_e, confident, hex_color = None, None, False, None
