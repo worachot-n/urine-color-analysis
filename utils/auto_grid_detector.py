@@ -67,10 +67,10 @@ class AutoGridConfig:
     # neighbour diffs in the sorted X/Y coordinate lists.
     # Diffs are accepted only in [rough * spacing_lo_frac, rough * spacing_hi_frac].
     spacing_lo_frac: float = 0.10   # ignore diffs smaller than this fraction of rough
-    spacing_hi_frac: float = 0.99   # ignore diffs larger than this fraction of rough
+    spacing_hi_frac: float = 1.10   # ignore diffs larger than this fraction of rough
 
     # --- Projection KDE (uses REFINED spacing) ---
-    kde_bw_frac:        float = 0.30  # KDE bandwidth = refined_spacing × frac
+    kde_bw_frac:        float = 0.20  # KDE bandwidth = refined_spacing × frac
     peak_min_h_frac:    float = 0.04  # min peak height = max_density × frac
     peak_min_dist_frac: float = 0.60  # min separation = refined_spacing × frac
 
@@ -86,7 +86,7 @@ class AutoGridConfig:
     color_h_lines:       tuple = (255, 220, 50)
     color_v_lines:       tuple = (50,  200, 255)
     circle_thickness:    int   = 2
-    line_thickness:      int   = 2
+    line_thickness:      int   = 3
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +337,7 @@ def _extend_to_full_grid(
     if origin_frac < 0:
         origin_frac += spacing
 
-    centre_detected = float(np.mean(detected))
+    centre_detected = float(np.median(detected))
     centre_idx = (n_total - 1) / 2.0
     start_i = int(round((centre_detected - origin_frac) / spacing - centre_idx))
 
@@ -462,9 +462,8 @@ def _draw_grid(
             row_pts = pts[-1] + (pts[-1] - pts[-2]) * 0.5 if n_rows > 1 else pts[-1] + np.array([[0.0, avg_radius]])
         else:
             row_pts = (pts[bi - 1] + pts[bi]) * 0.5
-        x0, y0 = int(round(float(row_pts[0, 0]))),  int(round(float(row_pts[0, 1])))
-        x1, y1 = int(round(float(row_pts[-1, 0]))), int(round(float(row_pts[-1, 1])))
-        cv2.line(canvas, (x0, y0), (x1, y1), config.color_h_lines, lw, cv2.LINE_AA)
+        pts_int = row_pts.astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(canvas, [pts_int], False, config.color_h_lines, lw, cv2.LINE_AA)
 
     # ── Vertical boundary lines (n_cols + 1) ─────────────────────────────
     for bi in range(n_cols + 1):
@@ -474,9 +473,8 @@ def _draw_grid(
             col_pts = pts[:, -1] + (pts[:, -1] - pts[:, -2]) * 0.5 if n_cols > 1 else pts[:, -1] + np.array([[avg_radius, 0.0]])
         else:
             col_pts = (pts[:, bi - 1] + pts[:, bi]) * 0.5
-        x0, y0 = int(round(float(col_pts[0, 0]))),  int(round(float(col_pts[0, 1])))
-        x1, y1 = int(round(float(col_pts[-1, 0]))), int(round(float(col_pts[-1, 1])))
-        cv2.line(canvas, (x0, y0), (x1, y1), config.color_v_lines, lw, cv2.LINE_AA)
+        pts_int = col_pts.astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(canvas, [pts_int], False, config.color_v_lines, lw, cv2.LINE_AA)
 
     # ── Circle markers ───────────────────────────────────────────────────
     for pt, det in zip(grid_pts, is_detected):
