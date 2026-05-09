@@ -382,12 +382,6 @@ def _find_grid_positions(
         lo, hi = float(coords.min()), float(coords.max())
         return np.linspace(lo, hi, n_expected, dtype=np.float32)
 
-    peak_heights = density[peak_pos.astype(int)]
-
-    if len(peak_pos) >= n_expected:
-        top = np.argsort(peak_heights)[-n_expected:]
-        return np.sort(peak_pos[top]).astype(np.float32)
-
     return _extend_to_full_grid(peak_pos, n_expected, est_spacing)
 
 
