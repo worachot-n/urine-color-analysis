@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 from loguru import logger
 
-from utils.auto_grid_detector import detect_grid_full
+from utils.auto_grid_detector import detect_grid_full, draw_grid_lines
 from utils.color_analysis import (
     extract_bottle_color,
     classify_sample,
@@ -167,7 +167,6 @@ _LEVEL_COLORS_BGR = [
     (40, 20, 180),   # L4 — dark red
 ]
 _COLOR_MISSING = (0, 60, 220)   # red for missing assigned slots
-_COLOR_GRID    = (80, 80, 80)   # dark gray grid lines
 
 
 def _render_annotated(
@@ -183,7 +182,7 @@ def _render_annotated(
     Draw annotations on frame_full (in-place on a copy) and return JPEG bytes.
 
     Layers:
-      1. Grid lines connecting assigned cells (rows and columns separately)
+      1. Full grid lines (matches /auto_grid page rendering)
       2. Green circle + slot_id for detected bottles
       3. Red circle + slot_id for missing assigned sample cells
     """
@@ -193,37 +192,8 @@ def _render_annotated(
     lw = max(1, int(sc * 1.5))
     r  = max(10, int(radius_full))
 
-    active = active_cell_indices(slot_cfg)
-    rows_used = set()
-    cols_used = set()
-    for ci in active:
-        row_1 = (ci - 1) // slot_cfg.cols + 1
-        col_1 = (ci - 1) % slot_cfg.cols + 1
-        rows_used.add(row_1)
-        cols_used.add(col_1)
-
-    # ── 1. Grid lines ────────────────────────────────────────────────────
-    for row_1 in sorted(rows_used):
-        pts_in_row = sorted(
-            [ci for ci in active if (ci - 1) // slot_cfg.cols + 1 == row_1]
-        )
-        if len(pts_in_row) >= 2:
-            polyline_pts = np.array(
-                [grid_pts_full[ci - 1].astype(int) for ci in pts_in_row],
-                dtype=np.int32,
-            ).reshape(-1, 1, 2)
-            cv2.polylines(canvas, [polyline_pts], isClosed=False, color=_COLOR_GRID, thickness=lw)
-
-    for col_1 in sorted(cols_used):
-        pts_in_col = sorted(
-            [ci for ci in active if (ci - 1) % slot_cfg.cols + 1 == col_1]
-        )
-        if len(pts_in_col) >= 2:
-            polyline_pts = np.array(
-                [grid_pts_full[ci - 1].astype(int) for ci in pts_in_col],
-                dtype=np.int32,
-            ).reshape(-1, 1, 2)
-            cv2.polylines(canvas, [polyline_pts], isClosed=False, color=_COLOR_GRID, thickness=lw)
+    # ── 1. Full grid lines (same as /auto_grid page) ─────────────────────
+    draw_grid_lines(canvas, grid_pts_full, slot_cfg.rows, slot_cfg.cols, radius_full)
 
     # ── 2. Detected bottles ───────────────────────────────────────────────
     fsc = max(0.5, sc * 0.7)

@@ -427,31 +427,26 @@ def _assign_detections(
 # Step 7: Annotation
 # ---------------------------------------------------------------------------
 
-def _draw_grid(
-    image: np.ndarray,
+def draw_grid_lines(
+    canvas: np.ndarray,
     grid_pts: np.ndarray,   # (n_rows*n_cols, 2) float32 in image space
-    is_detected: np.ndarray,
     n_rows: int,
     n_cols: int,
     avg_radius: float,
-    config: AutoGridConfig,
-) -> np.ndarray:
+    config: Optional[AutoGridConfig] = None,
+) -> None:
     """
-    Draw the annotated grid on a copy of `image`.
+    Draw the full grid (n_rows+1 horizontal + n_cols+1 vertical lines)
+    IN-PLACE on `canvas`. No circle markers — reusable as an overlay on top
+    of other annotations.
 
-    Grid lines are computed from the actual grid point positions (which may
-    be rotated), so lines follow the real grid orientation rather than
-    being forced axis-aligned.  Boundary lines are drawn at midpoints between
-    consecutive rows/columns; the outermost lines extend half-spacing beyond
-    the edge circles.
-
-    Green circles  = detected by HoughCircles
-    Orange circles = reconstructed (inferred)
+    Boundary lines extend just outside the bottle radius so caps are never
+    cut by the outer frame; interior lines pass through the midpoints
+    between adjacent row/column centres.
     """
-    canvas = image.copy()
-    r  = max(5, int(avg_radius))
+    if config is None:
+        config = AutoGridConfig()
     lw = max(1, config.line_thickness)
-
     pts = grid_pts.reshape(n_rows, n_cols, 2)
 
     # Edge offset factor: push outer boundary outside the bottle radius so the
@@ -504,7 +499,25 @@ def _draw_grid(
         line = np.vstack([te, inner, be]).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(canvas, [line], False, config.color_v_lines, lw, cv2.LINE_AA)
 
-    # ── Circle markers ───────────────────────────────────────────────────
+
+def _draw_grid(
+    image: np.ndarray,
+    grid_pts: np.ndarray,   # (n_rows*n_cols, 2) float32 in image space
+    is_detected: np.ndarray,
+    n_rows: int,
+    n_cols: int,
+    avg_radius: float,
+    config: AutoGridConfig,
+) -> np.ndarray:
+    """
+    Draw the annotated grid on a copy of `image`: full grid lines plus a
+    per-cell circle marker (green = detected by HoughCircles, orange =
+    reconstructed/inferred).
+    """
+    canvas = image.copy()
+    draw_grid_lines(canvas, grid_pts, n_rows, n_cols, avg_radius, config)
+
+    r = max(5, int(avg_radius))
     for pt, det in zip(grid_pts, is_detected):
         cx_i = int(round(float(pt[0])))
         cy_i = int(round(float(pt[1])))
