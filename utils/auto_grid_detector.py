@@ -454,17 +454,29 @@ def _draw_grid(
 
     pts = grid_pts.reshape(n_rows, n_cols, 2)
 
-    # Precompute boundary midpoint arrays for all 4 sides
-    top_pts   = pts[0]    + (pts[0]    - pts[1])    * 0.5   # (n_cols, 2) — above row 0
-    bot_pts   = pts[-1]   + (pts[-1]   - pts[-2])   * 0.5   # (n_cols, 2) — below last row
-    left_pts  = pts[:, 0] + (pts[:, 0] - pts[:, 1]) * 0.5  # (n_rows, 2) — left of col 0
-    right_pts = pts[:,-1] + (pts[:,-1] - pts[:,-2]) * 0.5  # (n_rows, 2) — right of last col
+    # Edge offset factor: push outer boundary outside the bottle radius so the
+    # line never crosses cap edges. Interior boundaries (midpoints between
+    # adjacent rows/cols) are unaffected.
+    mid_r, mid_c = n_rows // 2, n_cols // 2
+    next_r = mid_r + 1 if mid_r + 1 < n_rows else 1
+    next_c = mid_c + 1 if mid_c + 1 < n_cols else 1
+    dy_px = float(np.linalg.norm(pts[next_r, mid_c] - pts[mid_r, mid_c])) if n_rows >= 2 else 1.0
+    dx_px = float(np.linalg.norm(pts[mid_r, next_c] - pts[mid_r, mid_c])) if n_cols >= 2 else 1.0
+    edge_margin = 4.0
+    fy = min(0.95, max(0.5, (avg_radius + edge_margin) / dy_px)) if dy_px > 0 else 0.5
+    fx = min(0.95, max(0.5, (avg_radius + edge_margin) / dx_px)) if dx_px > 0 else 0.5
 
-    # 4 corner points: extrapolate half-spacing outward in both axes from each corner cell
-    TL = pts[0,  0 ] + (pts[0,  0 ] - pts[1,  0 ]) * 0.5 + (pts[0,  0 ] - pts[0,  1 ]) * 0.5
-    TR = pts[0, -1 ] + (pts[0, -1 ] - pts[1, -1 ]) * 0.5 + (pts[0, -1 ] - pts[0, -2 ]) * 0.5
-    BL = pts[-1,  0] + (pts[-1,  0] - pts[-2,  0]) * 0.5 + (pts[-1,  0] - pts[-1,  1]) * 0.5
-    BR = pts[-1, -1] + (pts[-1, -1] - pts[-2, -1]) * 0.5 + (pts[-1, -1] - pts[-1, -2]) * 0.5
+    # Precompute boundary midpoint arrays for all 4 sides
+    top_pts   = pts[0]    + (pts[0]    - pts[1])    * fy   # (n_cols, 2) — above row 0
+    bot_pts   = pts[-1]   + (pts[-1]   - pts[-2])   * fy   # (n_cols, 2) — below last row
+    left_pts  = pts[:, 0] + (pts[:, 0] - pts[:, 1]) * fx  # (n_rows, 2) — left of col 0
+    right_pts = pts[:,-1] + (pts[:,-1] - pts[:,-2]) * fx  # (n_rows, 2) — right of last col
+
+    # 4 corner points: extrapolate outward in both axes from each corner cell
+    TL = pts[0,  0 ] + (pts[0,  0 ] - pts[1,  0 ]) * fy + (pts[0,  0 ] - pts[0,  1 ]) * fx
+    TR = pts[0, -1 ] + (pts[0, -1 ] - pts[1, -1 ]) * fy + (pts[0, -1 ] - pts[0, -2 ]) * fx
+    BL = pts[-1,  0] + (pts[-1,  0] - pts[-2,  0]) * fy + (pts[-1,  0] - pts[-1,  1]) * fx
+    BR = pts[-1, -1] + (pts[-1, -1] - pts[-2, -1]) * fy + (pts[-1, -1] - pts[-1, -2]) * fx
 
     # ── Horizontal lines (n_rows + 1): each spans from left boundary to right boundary ──
     for bi in range(n_rows + 1):
