@@ -43,6 +43,8 @@ from utils.color_analysis import (
     SOFT_PENALTY_FACTOR,
     SATURATION_L0_THRESHOLD,
     SATURATION_HIST_WEIGHT,
+    LOW_CONFIDENCE_SCORE_THRESHOLD,
+    REFERENCE_MIN_SATURATION,
 )
 from app.shared.processor import crop_sample_roi, letterbox_white_padding
 from server.slot_config import (
@@ -434,6 +436,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
 
         force_l0 = False
         soft_penalty_active = False
+        best_fit_flag = False
         concentration_index = None
         path_distance = None
 
@@ -462,6 +465,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
                 path_confident_distance=PATH_CONFIDENT_DISTANCE,
                 soft_penalty_path_de_threshold=SOFT_PENALTY_PATH_DE_THRESHOLD,
                 soft_penalty_factor=SOFT_PENALTY_FACTOR,
+                low_confidence_score=LOW_CONFIDENCE_SCORE_THRESHOLD,
             )
             level     = cls["level"]
             delta_e   = cls["chroma_de"]
@@ -472,6 +476,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             concentration_index = cls["concentration_index"]
             path_distance       = cls["path_distance"]
             soft_penalty_active = cls["soft_penalty"]
+            best_fit_flag       = cls["best_fit"]
         else:
             level, delta_e, hist_b, combined, confident, hex_color = (
                 None, None, None, None, False, None
@@ -487,6 +492,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             "hist_bhatt": _round(hist_b, 3),
             "combined":   _round(combined, 3),
             "confident":  confident,
+            "best_fit":   best_fit_flag,
             "force_l0":   force_l0,
             "soft_penalty": soft_penalty_active,
             "lab":        [round(v, 2) for v in lab] if lab else None,
@@ -523,6 +529,8 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             "lab_L":        W_LAB_L,
             "lab_a":        W_LAB_A,
             "lab_b":        W_LAB_B,
+            "low_confidence_score_threshold": LOW_CONFIDENCE_SCORE_THRESHOLD,
+            "reference_min_saturation":       REFERENCE_MIN_SATURATION,
         },
         "saturation_l0_threshold": SATURATION_L0_THRESHOLD,
         "ref_outliers_dropped":    ref_outliers_dropped,

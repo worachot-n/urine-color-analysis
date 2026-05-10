@@ -64,8 +64,6 @@
                 {% else %}bg-red-800 text-white{% endif %}">
                 L{{ d.color_level }}{% if d.force_l0 %}<span class="ml-1" title="Force-classified by saturation pre-check (achromatic)">•</span>{% endif %}
               </span>
-              {% elif d.detected %}
-              <span class="text-gray-400 text-xs" title="Detected, but ΔE exceeds max_delta_e">out of range</span>
               {% else %}
               <span class="text-red-400 text-xs">miss</span>
               {% endif %}
@@ -97,8 +95,9 @@
             </td>
             <td class="py-1.5 text-center">
               {% if d.detected %}
-                {% if d.confident %}<span class="text-green-400">✓</span>
-                {% else %}<span class="text-yellow-400">~</span>{% endif %}
+                {% if d.confident %}<span class="text-green-400" title="Confident — close to path AND score below low-confidence threshold">✓</span>
+                {% elif d.best_fit %}<span class="text-orange-400" title="Best-fit only — score above low-confidence threshold; nearest level is reported but expect noise">⚠</span>
+                {% else %}<span class="text-yellow-400" title="Borderline — between confident and best-fit-only">~</span>{% endif %}
               {% else %}<span class="text-red-400">✗</span>{% endif %}
             </td>
           </tr>
@@ -135,9 +134,9 @@
     <canvas id="trajectory-chart"></canvas>
   </div>
   <p class="text-xs text-gray-500 mt-2">
-    ━ Master Color Path (polyline through the per-level Lab centroids) · ◇ Reference centroids · ● Classified samples (coloured by level) · ⊗ Out-of-range (path Δ &gt; max) · • after L0 = force-classified by saturation pre-check.
+    ━ Master Color Path (polyline through the per-level Lab centroids) · ◇ Reference centroids · ● Classified samples (coloured by level) · • after L0 = force-classified by saturation pre-check.
     Each sample is plotted at its <strong>concentration index</strong> (1-D projection onto the path) and its raw L*. A "1.5" reads as halfway between L1 and L2.
-    Out-of-range only fires when perpendicular path Δ exceeds the threshold — minor histogram noise no longer triggers rejection thanks to soft-penalty weighting.
+    <strong>Force-Match:</strong> every detected bottle is assigned its nearest level along the path. ⚠ in the CONF column flags samples whose hybrid score is above the low-confidence threshold — the level is the closest available, but expect noise.
   </p>
 </div>
 
@@ -193,6 +192,7 @@ for (const [slotId, d] of Object.entries(scanData.slots || {})) {
     combined:       d.combined,
     path_distance:  d.path_distance,
     confident:      d.confident,
+    best_fit:       d.best_fit,
     color_level:    d.color_level,
     force_l0:       d.force_l0,
     soft_penalty:   d.soft_penalty,
@@ -328,7 +328,8 @@ new Chart(ctx, {
             if (d.soft_penalty)          lines.push('soft-penalty active (hist weight halved)');
             if (d.force_l0)              lines.push('force-L0 (saturation pre-check)');
             if (d.confident === true)    lines.push('confidence: ✓ confident');
-            if (d.confident === false && d.color_level != null) lines.push('confidence: ~ borderline');
+            else if (d.best_fit === true) lines.push('confidence: ⚠ best-fit only');
+            else if (d.color_level != null) lines.push('confidence: ~ borderline');
             return lines;
           },
         },

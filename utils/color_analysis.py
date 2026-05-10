@@ -46,11 +46,13 @@ _hra = _ca.get("hist_range_a", [80, 180])
 _hrb = _ca.get("hist_range_b", [80, 180])
 HIST_RANGE_A: tuple[float, float] = (float(_hra[0]), float(_hra[1]))
 HIST_RANGE_B: tuple[float, float] = (float(_hrb[0]), float(_hrb[1]))
-W_CHROMA: float           = float(_ca.get("weight_chroma", 0.5))
-W_HIST: float             = float(_ca.get("weight_hist", 0.5))
+W_CHROMA: float           = float(_ca.get("weight_chroma", 0.8))
+W_HIST: float             = float(_ca.get("weight_hist", 0.2))
 CHROMA_SCALE: float       = float(_ca.get("chroma_scale", 18.0))
-MAX_COMBINED_SCORE: float = float(_ca.get("max_combined_score", 0.85))
+MAX_COMBINED_SCORE: float = float(_ca.get("max_combined_score", 1.5))
 COMBINED_MARGIN: float    = float(_ca.get("combined_margin", 0.10))
+LOW_CONFIDENCE_SCORE_THRESHOLD: float = float(_ca.get("low_confidence_score_threshold", 0.6))
+REFERENCE_MIN_SATURATION: float       = float(_ca.get("reference_min_saturation", 0.15))
 
 # 1D Trajectory projection
 MAX_PATH_DISTANCE: float              = float(_ca.get("max_path_distance", 12.0))
@@ -211,15 +213,21 @@ def extract_bottle_color(frame, cx, cy, radius,
 def extract_bottle_features(frame, cx, cy, radius,
                              outer_crop_px=OUTER_CROP_PX,
                              inner_crop_px=INNER_CROP_PX,
-                             wb_offset=None):
+                             wb_offset=None,
+                             min_saturation=0.0):
     """
     Extract BOTH the raw median Lab and a WB-corrected (a*, b*) 2-D histogram
     of the annular ring in one pass.
 
     Args:
-        wb_offset: optional (Δa, Δb) shift to apply to ring pixels before
-                   histogramming, in OpenCV-Lab units (Δa = a_wb − 128).
-                   When None, the histogram is computed in raw Lab space.
+        wb_offset:      optional (Δa, Δb) shift to apply to ring pixels before
+                        histogramming, in OpenCV-Lab units (Δa = a_wb − 128).
+                        When None, the histogram is computed in raw Lab space.
+        min_saturation: hard cutoff on HSV saturation, in [0, 1]. Pixels with
+                        S/255 below this are dropped from BOTH the median and
+                        the histogram. Default 0 (no cutoff). Used by reference
+                        templates to keep them "pure" (no grey/glare pixels).
+                        On empty result, falls back to the unfiltered ring.
 
     Returns:
         (raw_lab, hist) where:
@@ -236,22 +244,43 @@ def extract_bottle_features(frame, cx, cy, radius,
     When `SATURATION_HIST_WEIGHT` is True, each pixel's contribution to the
     histogram is weighted by its HSV saturation (S/255). This suppresses
     near-grey ring pixels (plastic container artefacts, glare residuals) and
-    lets saturated liquid pixels dominate — making the per-bottle histogram
-    a closer fit to the actual colour signal.
+    lets saturated liquid pixels dominate.
     """
-    if SATURATION_HIST_WEIGHT:
+    need_hsv = SATURATION_HIST_WEIGHT or (min_saturation > 0.0)
+    if need_hsv:
         ring = _ring_pixels_lab(
             frame, cx, cy, radius, outer_crop_px, inner_crop_px, return_hsv=True,
         )
         if ring is None or ring[0] is None:
             return None, None
         pixels, hsv_pixels = ring
-        weights = hsv_pixels[:, 1].astype(np.float32) / 255.0
     else:
         pixels = _ring_pixels_lab(frame, cx, cy, radius, outer_crop_px, inner_crop_px)
         if pixels is None:
             return None, None
-        weights = None
+        hsv_pixels = None
+
+    # Hard saturation cutoff (templates only): drop pixels whose HSV S is below
+    # `min_saturation`. If too few pixels survive, revert to the full ring so
+    # we don't lose the bottle entirely on a uniformly desaturated reference.
+    sat_filtered = False
+    if min_saturation > 0.0 and hsv_pixels is not None:
+        sat_norm = hsv_pixels[:, 1].astype(np.float32) / 255.0
+        keep_mask = sat_norm >= float(min_saturation)
+        if int(keep_mask.sum()) >= GLARE_MIN_VALID_PX:
+            pixels = pixels[keep_mask]
+            hsv_pixels = hsv_pixels[keep_mask]
+            sat_filtered = True
+        else:
+            logger.warning(
+                "extract_bottle_features: only {}/{} pixels passed S≥{:.2f} cutoff "
+                "at ({},{}) — falling back to full ring",
+                int(keep_mask.sum()), len(sat_norm), min_saturation, int(cx), int(cy),
+            )
+
+    weights = None
+    if SATURATION_HIST_WEIGHT and hsv_pixels is not None:
+        weights = hsv_pixels[:, 1].astype(np.float32) / 255.0
 
     L = float(np.median(pixels[:, 0]))
     a = float(np.median(pixels[:, 1]))
@@ -796,7 +825,8 @@ def classify_sample_nn(sample_lab, references_per_level,
 
 def build_reference_histograms(frame, reference_positions, wb_offset=None,
                                 outer_crop_px=OUTER_CROP_PX,
-                                inner_crop_px=INNER_CROP_PX):
+                                inner_crop_px=INNER_CROP_PX,
+                                min_saturation=None):
     """
     Build one (a*, b*) template histogram per reference level by pooling all
     ring pixels of that level's bottles.
@@ -806,10 +836,16 @@ def build_reference_histograms(frame, reference_positions, wb_offset=None,
     keeps each bottle weighted equally regardless of how many valid pixels it
     contributed.
 
+    `min_saturation` (None → REFERENCE_MIN_SATURATION default) is a hard
+    cutoff: pixels with HSV S/255 below this are dropped before histogramming,
+    keeping the per-level template "pure" (no plastic/glare contamination).
+
     Returns:
         dict {level: np.ndarray (HIST_BINS_A, HIST_BINS_B) float32 sum-to-1}.
         Levels with no valid bottles are omitted.
     """
+    if min_saturation is None:
+        min_saturation = REFERENCE_MIN_SATURATION
     out: dict[int, np.ndarray] = {}
     for level, positions in reference_positions.items():
         accum = np.zeros((HIST_BINS_A, HIST_BINS_B), dtype=np.float32)
@@ -820,6 +856,7 @@ def build_reference_histograms(frame, reference_positions, wb_offset=None,
                 outer_crop_px=outer_crop_px,
                 inner_crop_px=inner_crop_px,
                 wb_offset=wb_offset,
+                min_saturation=min_saturation,
             )
             if hist is None:
                 continue
@@ -850,37 +887,32 @@ def classify_sample_hybrid(sample_lab, sample_hist,
                             weight_hist: float = W_HIST,
                             chroma_scale: float = CHROMA_SCALE,
                             max_score: float = MAX_COMBINED_SCORE,
-                            margin: float = COMBINED_MARGIN):
+                            margin: float = COMBINED_MARGIN,
+                            low_confidence_score: float = LOW_CONFIDENCE_SCORE_THRESHOLD):
     """
     Hybrid classifier — combines weighted Lab ΔE k-NN and Bhattacharyya
     histogram distance into one weighted score per level. Picks argmin.
 
-    score(level) = w_c · (chroma_de / chroma_scale)
-                 + w_h · bhatt(sample_hist, level_template)
-
-    where chroma_de = min `delta_e_weighted` over that level's individual
-    references (3-D Lab, not just chromaticity — see delta_e_weighted for the
-    per-axis weighting used). Dispersed reference clusters are honoured the
-    same way as classify_sample_nn (kNN with k=1).
-
-    Both metrics fall back gracefully:
-      - Missing histogram for a level   → that term contributes 1.0 (worst).
-      - Missing chroma references       → that term contributes 1.0 (worst).
-    A level with NEITHER is skipped entirely.
+    Force-Match: always returns the argmin level when at least one level has
+    refs/hist data. Hard rejection (`level=None`) only fires when no level can
+    be scored — a setup error, not a per-bottle issue. High-score classifications
+    are flagged via `best_fit=True` for the UI.
 
     Returns:
         dict {
-          "level":      int | None,    # None if best score > max_score
+          "level":      int | None,    # only None when no levels available
           "chroma_de":  float,
           "hist_bhatt": float,         # 0 = identical, 1 = no overlap
           "combined":   float,
           "confident":  bool,
+          "best_fit":   bool,          # True when combined > max_score / low_confidence threshold
           "per_level":  {lvl: {"chroma_de", "hist_bhatt", "combined"}},
         }
     """
     empty = {
         "level": None, "chroma_de": float("inf"), "hist_bhatt": 1.0,
-        "combined": float("inf"), "confident": False, "per_level": {},
+        "combined": float("inf"), "confident": False, "best_fit": False,
+        "per_level": {},
     }
     if sample_lab is None and sample_hist is None:
         return empty
@@ -915,27 +947,32 @@ def classify_sample_hybrid(sample_lab, sample_hist,
     sorted_levels = sorted(per_level, key=lambda k: per_level[k]["combined"])
     best = sorted_levels[0]
     best_score = per_level[best]["combined"]
+    best_chroma = per_level[best]["chroma_de"]
+    best_hist   = per_level[best]["hist_bhatt"]
 
-    if not np.isfinite(best_score) or best_score > max_score:
+    # Force-Match: always return the argmin level. The strict `combined > max_score
+    # → None` branch is gone; the score itself surfaces in the UI via best_fit.
+    if not np.isfinite(best_score):
         return {
             "level": None,
-            "chroma_de": per_level[best]["chroma_de"],
-            "hist_bhatt": per_level[best]["hist_bhatt"],
-            "combined": best_score,
-            "confident": False,
+            "chroma_de": best_chroma, "hist_bhatt": best_hist,
+            "combined": best_score, "confident": False, "best_fit": False,
             "per_level": per_level,
         }
 
-    confident = True
+    margin_ok = True
     if len(sorted_levels) >= 2:
-        confident = (per_level[sorted_levels[1]]["combined"] - best_score) > margin
+        margin_ok = (per_level[sorted_levels[1]]["combined"] - best_score) > margin
+    confident = margin_ok and (best_score < low_confidence_score)
+    best_fit  = (best_score > max_score) or (best_score >= low_confidence_score and not confident)
 
     return {
         "level": best,
-        "chroma_de": per_level[best]["chroma_de"],
-        "hist_bhatt": per_level[best]["hist_bhatt"],
+        "chroma_de": best_chroma,
+        "hist_bhatt": best_hist,
         "combined": best_score,
         "confident": confident,
+        "best_fit":  best_fit,
         "per_level": per_level,
     }
 
@@ -948,33 +985,37 @@ def classify_sample_path(sample_lab, sample_hist, master_path, reference_hists,
                           max_path_distance: float = MAX_PATH_DISTANCE,
                           path_confident_distance: float = PATH_CONFIDENT_DISTANCE,
                           soft_penalty_path_de_threshold: float = SOFT_PENALTY_PATH_DE_THRESHOLD,
-                          soft_penalty_factor: float = SOFT_PENALTY_FACTOR):
+                          soft_penalty_factor: float = SOFT_PENALTY_FACTOR,
+                          low_confidence_score: float = LOW_CONFIDENCE_SCORE_THRESHOLD):
     """
     Classify a sample by 1-D projection onto the Master Color Path.
 
     The path is the polyline through per-level Lab centroids; the sample is
     projected (under the weighted-Lab metric) onto the closest segment, and
-    its level is `round(concentration_index)`. Out-of-range when the
-    perpendicular distance exceeds `max_path_distance` OR the hybrid score
-    exceeds `max_score`.
+    its level is `round(concentration_index)`.
+
+    **Force-Match**: every detected sample is assigned its nearest level along
+    the path. The strict-rejection branch (`level=None` when path_distance or
+    combined exceed thresholds) is gone — high-error samples instead surface
+    `best_fit=True` for the UI to badge them as "best fit only". Rejection
+    only happens when the projection itself is unavailable (no master_path /
+    no references configured).
 
     Soft-penalty histogram weighting:
         path_distance < soft_penalty_path_de_threshold (default 5.0)
         → halve the histogram weight (default factor 0.5).
-    Rationale: a sample that's already very close to the path is chromatically
-    correct; a small histogram mismatch (residual glare, container noise)
-    should not trigger a "false out-of-range" rejection.
 
     Returns:
         dict with both legacy fields (`chroma_de`, `hist_bhatt`, `combined`,
         `confident`, `level`) for UI/Sheets compatibility, plus path-specific
-        fields (`concentration_index`, `path_distance`, `soft_penalty`).
+        fields (`concentration_index`, `path_distance`, `soft_penalty`,
+        `best_fit`).
     """
     empty = {
         "level": None, "concentration_index": None,
         "path_distance": float("inf"), "chroma_de": float("inf"),
         "hist_bhatt": 1.0, "combined": float("inf"),
-        "confident": False, "soft_penalty": False,
+        "confident": False, "soft_penalty": False, "best_fit": False,
     }
     if sample_lab is None or master_path is None:
         return empty
@@ -1004,18 +1045,22 @@ def classify_sample_path(sample_lab, sample_hist, master_path, reference_hists,
     h_weight = weight_hist * (soft_penalty_factor if soft_penalty_active else 1.0)
     combined = weight_chroma * chroma_term + h_weight * hist_bhatt
 
-    if path_distance > max_path_distance or combined > max_score:
-        return {
-            "level": None, "concentration_index": index,
-            "path_distance": path_distance, "chroma_de": path_distance,
-            "hist_bhatt": hist_bhatt, "combined": combined,
-            "confident": False, "soft_penalty": soft_penalty_active,
-        }
+    # Force-Match: the level is always the rounded concentration index. Confidence
+    # tiers (confident / best-fit / borderline) surface the score quality to the UI
+    # without changing the assigned level.
+    near_path = path_distance < path_confident_distance
+    low_score = combined < low_confidence_score
+    confident = near_path and low_score
+    best_fit  = (
+        path_distance > max_path_distance
+        or combined > max_score
+        or (combined >= low_confidence_score and not confident)
+    )
 
-    confident = path_distance < path_confident_distance
     return {
         "level": rounded_level, "concentration_index": index,
         "path_distance": path_distance, "chroma_de": path_distance,
         "hist_bhatt": hist_bhatt, "combined": combined,
-        "confident": confident, "soft_penalty": soft_penalty_active,
+        "confident": confident, "best_fit": best_fit,
+        "soft_penalty": soft_penalty_active,
     }
