@@ -48,8 +48,20 @@ HIST_RANGE_B: tuple[float, float] = (float(_hrb[0]), float(_hrb[1]))
 W_CHROMA: float           = float(_ca.get("weight_chroma", 0.5))
 W_HIST: float             = float(_ca.get("weight_hist", 0.5))
 CHROMA_SCALE: float       = float(_ca.get("chroma_scale", 18.0))
-MAX_COMBINED_SCORE: float = float(_ca.get("max_combined_score", 0.6))
+MAX_COMBINED_SCORE: float = float(_ca.get("max_combined_score", 0.75))
 COMBINED_MARGIN: float    = float(_ca.get("combined_margin", 0.10))
+
+# Weighted ΔE — ellipsoid acceptance zones (defaults: b* dominates, a* down-weighted)
+W_LAB_L: float                  = float(_ca.get("weight_lab_L", 0.5))
+W_LAB_A: float                  = float(_ca.get("weight_lab_a", 0.1))
+W_LAB_B: float                  = float(_ca.get("weight_lab_b", 1.0))
+SATURATION_L0_THRESHOLD: float  = float(_ca.get("saturation_l0_threshold", 0.05))
+
+if abs((W_CHROMA + W_HIST) - 1.0) > 1e-6:
+    logger.warning(
+        "color_analysis: weight_chroma + weight_hist = {:.3f} ≠ 1.0 — hybrid score will not be in [0, 1]",
+        W_CHROMA + W_HIST,
+    )
 
 # OpenCV 8-bit Lab representation of pure white (L=255, a=128, b=128)
 WHITE_LAB = (255.0, 128.0, 128.0)
@@ -84,6 +96,28 @@ def delta_e_chroma(lab1, lab2):
     da = lab1[1] - lab2[1]
     db = lab1[2] - lab2[2]
     return float(np.hypot(da, db))
+
+
+def delta_e_weighted(lab1, lab2, w_L=None, w_a=None, w_b=None):
+    """
+    Weighted Lab Δ — sqrt(w_L·ΔL² + w_a·Δa² + w_b·Δb²).
+
+    Ellipsoid acceptance zones in 3-D Lab space. Defaults from config:
+      w_b = 1.0 — b* (yellow) is the discrimination axis
+      w_L = 0.5 — lightness contributes weakly (fill / camera bias is partial signal)
+      w_a = 0.1 — a* (red-green) is mostly noise (skin, edge tints, hue drift)
+
+    Substituting defaults: a 20-unit a* mismatch contributes the same as a
+    ~6.3-unit b* mismatch — exactly the "tolerate hue, sweat the yellow" intent
+    behind the user's spec.
+    """
+    if w_L is None: w_L = W_LAB_L
+    if w_a is None: w_a = W_LAB_A
+    if w_b is None: w_b = W_LAB_B
+    dL = lab1[0] - lab2[0]
+    da = lab1[1] - lab2[1]
+    db = lab1[2] - lab2[2]
+    return float(np.sqrt(w_L*dL*dL + w_a*da*da + w_b*db*db))
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +234,48 @@ def extract_bottle_features(frame, cx, cy, radius,
     return (L, a, b), hist
 
 
+def is_achromatic(frame, cx, cy, radius,
+                  threshold=None,
+                  outer_crop_px=OUTER_CROP_PX,
+                  inner_crop_px=INNER_CROP_PX):
+    """
+    True iff the bottle ring is near-neutral (very low HSV saturation).
+
+    Use as a pre-classification short-circuit so "clear" / very pale samples
+    don't get routed through unstable hue-based metrics. Returns False on
+    extraction failure (caller falls through to the regular classifier).
+
+    threshold: median S cutoff in [0, 1]. None → SATURATION_L0_THRESHOLD.
+    """
+    thr = SATURATION_L0_THRESHOLD if threshold is None else float(threshold)
+
+    # Re-fetch the same ring crop in BGR so we can convert to HSV (the existing
+    # _ring_pixels_lab returns Lab already; we need raw BGR pixels for HSV).
+    r = int(radius)
+    x1 = max(0, int(cx) - r + outer_crop_px)
+    y1 = max(0, int(cy) - r + outer_crop_px)
+    x2 = min(frame.shape[1], int(cx) + r - outer_crop_px)
+    y2 = min(frame.shape[0], int(cy) + r - outer_crop_px)
+    if x2 <= x1 or y2 <= y1:
+        return False
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return False
+    h_crop, w_crop = crop.shape[:2]
+    Y, X = np.ogrid[:h_crop, :w_crop]
+    dist = np.sqrt((X - (int(cx) - x1)) ** 2 + (Y - (int(cy) - y1)) ** 2)
+    ring_mask = dist >= inner_crop_px
+    if ring_mask.sum() < GLARE_MIN_VALID_PX:
+        return False
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    s_pixels = hsv[:, :, 1][ring_mask]
+    if s_pixels.size == 0:
+        return False
+    median_s = float(np.median(s_pixels)) / 255.0
+    return median_s < thr
+
+
 def compute_white_balance_offset(frame, white_positions,
                                  outer_crop_px=OUTER_CROP_PX,
                                  inner_crop_px=INNER_CROP_PX):
@@ -274,6 +350,68 @@ def build_reference_baseline(frame, reference_positions):
         logger.info("Baseline L{}: Lab=({:.1f}, {:.1f}, {:.1f}) from {} ref(s)", level, L, a, b, len(labs))
 
     return baseline
+
+
+def filter_reference_outliers(frame, reference_positions,
+                                sigma=2.0, min_n=4,
+                                outer_crop_px=OUTER_CROP_PX,
+                                inner_crop_px=INNER_CROP_PX):
+    """
+    Drop reference positions whose b* deviates more than `sigma` standard
+    deviations from the level mean. Levels with fewer than `min_n` references
+    are passed through unchanged (σ is unstable for tiny samples). If filtering
+    would empty a level, the closest-to-mean reference is retained.
+
+    Args:
+        frame:               BGR image (full frame)
+        reference_positions: dict {level: [(cx, cy, radius), ...]}
+        sigma:               threshold in σ units (default 2.0)
+        min_n:               minimum N for σ-filter to apply (default 4)
+
+    Returns:
+        dict same shape as reference_positions, with outliers removed.
+        Per-level INFO log records kept/dropped counts.
+    """
+    out: dict[int, list] = {}
+    for level, positions in reference_positions.items():
+        if len(positions) < min_n:
+            out[level] = list(positions)
+            continue
+        b_vals = []
+        labs = []
+        for cx, cy, radius in positions:
+            lab = extract_bottle_color(frame, cx, cy, radius,
+                                        outer_crop_px=outer_crop_px,
+                                        inner_crop_px=inner_crop_px)
+            labs.append(lab)
+            b_vals.append(lab[2] if lab is not None else None)
+
+        valid = [(p, b) for p, b in zip(positions, b_vals) if b is not None]
+        if not valid:
+            out[level] = list(positions)
+            continue
+
+        b_arr = np.array([b for _, b in valid], dtype=np.float64)
+        mean_b = float(b_arr.mean())
+        std_b  = float(b_arr.std())
+        if std_b < 1e-6:
+            out[level] = list(positions)
+            continue
+
+        kept = [p for p, b in valid if abs(b - mean_b) <= sigma * std_b]
+        if not kept:
+            # Keep the single closest-to-mean ref so the level isn't lost.
+            closest = min(valid, key=lambda pb: abs(pb[1] - mean_b))[0]
+            kept = [closest]
+
+        dropped = len(positions) - len(kept)
+        if dropped:
+            logger.info(
+                "Reference outlier filter L{}: kept {}/{} (mean b*={:.1f}, σ={:.1f}, ±{:.1f}σ)",
+                level, len(kept), len(positions), mean_b, std_b, sigma,
+            )
+        out[level] = kept
+    return out
 
 
 def build_reference_set(frame, reference_positions):
@@ -547,14 +685,16 @@ def classify_sample_hybrid(sample_lab, sample_hist,
                             max_score: float = MAX_COMBINED_SCORE,
                             margin: float = COMBINED_MARGIN):
     """
-    Hybrid classifier — combines chromaticity ΔE k-NN and Bhattacharyya
+    Hybrid classifier — combines weighted Lab ΔE k-NN and Bhattacharyya
     histogram distance into one weighted score per level. Picks argmin.
 
     score(level) = w_c · (chroma_de / chroma_scale)
                  + w_h · bhatt(sample_hist, level_template)
 
-    where chroma_de = min ΔE_chroma over that level's individual references
-    (so dispersed reference clusters are honoured, same as classify_sample_nn).
+    where chroma_de = min `delta_e_weighted` over that level's individual
+    references (3-D Lab, not just chromaticity — see delta_e_weighted for the
+    per-axis weighting used). Dispersed reference clusters are honoured the
+    same way as classify_sample_nn (kNN with k=1).
 
     Both metrics fall back gracefully:
       - Missing histogram for a level   → that term contributes 1.0 (worst).
@@ -586,7 +726,7 @@ def classify_sample_hybrid(sample_lab, sample_hist,
     for lvl in levels:
         refs = references_per_level.get(lvl) or []
         if refs and sample_lab is not None:
-            chroma_de = min(delta_e_chroma(sample_lab, r) for r in refs)
+            chroma_de = min(delta_e_weighted(sample_lab, r) for r in refs)
         else:
             chroma_de = float("inf")
 

@@ -26,11 +26,17 @@ from utils.color_analysis import (
     build_reference_set,
     build_reference_histograms,
     classify_sample_hybrid,
+    is_achromatic,
+    filter_reference_outliers,
     W_CHROMA,
     W_HIST,
+    W_LAB_L,
+    W_LAB_A,
+    W_LAB_B,
     CHROMA_SCALE,
     MAX_COMBINED_SCORE,
     COMBINED_MARGIN,
+    SATURATION_L0_THRESHOLD,
 )
 from app.shared.processor import crop_sample_roi, letterbox_white_padding
 from server.slot_config import (
@@ -356,10 +362,20 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         cy = float(grid_pts_full[cell_idx - 1, 1])
         ref_positions.setdefault(ref_level, []).append((cx, cy, radius_full))
 
+    # Outlier filter (b*-based 2σ) BEFORE building either ref structure, so
+    # both ref_set and ref_hists see the same cleaned positions.
+    pre_counts = {lvl: len(ps) for lvl, ps in ref_positions.items()}
+    ref_positions = filter_reference_outliers(frame_full, ref_positions)
+    ref_outliers_dropped = {
+        lvl: pre_counts[lvl] - len(ref_positions.get(lvl, []))
+        for lvl in pre_counts
+        if pre_counts[lvl] - len(ref_positions.get(lvl, [])) > 0
+    }
+
     ref_set = build_reference_set(frame_full, ref_positions)
     ref_hists = build_reference_histograms(frame_full, ref_positions, wb_offset=wb_offset)
-    logger.info("pipeline: reference set levels: {} | hist templates: {}",
-                list(ref_set.keys()), list(ref_hists.keys()))
+    logger.info("pipeline: reference set levels: {} | hist templates: {} | outliers dropped: {}",
+                list(ref_set.keys()), list(ref_hists.keys()), ref_outliers_dropped)
 
     # Reference Labs → hex (for scatter plot and Sheets)
     reference_labs: dict[str, list] = {}
@@ -379,6 +395,12 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
     cell_to_slotid: dict[int, str] = sample_map.copy()
 
     result_slots: dict[str, dict] = {}
+
+    def _round(v, n=3):
+        if v is None or not np.isfinite(v):
+            return None
+        return round(float(v), n)
+
     for cell_idx, slot_id in sample_map.items():
         hit = slot_hits.get(cell_idx)
 
@@ -390,7 +412,20 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         else:
             lab, sample_hist = None, None
 
-        if lab is not None and (ref_set or ref_hists):
+        force_l0 = False
+        if lab is not None and hit is not None and is_achromatic(
+            frame_full, hit["cx"], hit["cy"], radius_full,
+        ):
+            # Near-neutral sample → force-classify L0 (clear) before hue noise
+            # can flip it to L1/L2. Skip the hybrid metric entirely.
+            level     = 0
+            delta_e   = 0.0
+            hist_b    = 0.0
+            combined  = 0.0
+            confident = True
+            hex_color = lab_to_hex(*lab)
+            force_l0  = True
+        elif lab is not None and (ref_set or ref_hists):
             cls = classify_sample_hybrid(
                 lab, sample_hist, ref_set, ref_hists,
                 weight_chroma=W_CHROMA,
@@ -410,11 +445,6 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
                 None, None, None, None, False, None
             )
 
-        def _round(v, n=3):
-            if v is None or not np.isfinite(v):
-                return None
-            return round(float(v), n)
-
         result_slots[slot_id] = {
             "cell_index": cell_idx,
             "detected":   hit is not None,
@@ -423,6 +453,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             "hist_bhatt": _round(hist_b, 3),
             "combined":   _round(combined, 3),
             "confident":  confident,
+            "force_l0":   force_l0,
             "lab":        [round(v, 2) for v in lab] if lab else None,
             "hex":        hex_color,
         }
@@ -454,7 +485,12 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             "hist":         W_HIST,
             "chroma_scale": CHROMA_SCALE,
             "max_score":    MAX_COMBINED_SCORE,
+            "lab_L":        W_LAB_L,
+            "lab_a":        W_LAB_A,
+            "lab_b":        W_LAB_B,
         },
+        "saturation_l0_threshold": SATURATION_L0_THRESHOLD,
+        "ref_outliers_dropped":    ref_outliers_dropped,
         "slots":           result_slots,
         "image_url":       f"/static/results/{scan_id}.jpg",
         "timestamp":       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

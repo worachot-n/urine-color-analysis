@@ -61,7 +61,7 @@
                 {% elif d.color_level == 2 %}bg-orange-400 text-white
                 {% elif d.color_level == 3 %}bg-red-400 text-white
                 {% else %}bg-red-800 text-white{% endif %}">
-                L{{ d.color_level }}
+                L{{ d.color_level }}{% if d.force_l0 %}<span class="ml-1" title="Force-classified by saturation pre-check (achromatic)">•</span>{% endif %}
               </span>
               {% elif d.detected %}
               <span class="text-gray-400 text-xs" title="Detected, but ΔE exceeds max_delta_e">out of range</span>
@@ -131,10 +131,10 @@
     <canvas id="scatter-chart"></canvas>
   </div>
   <p class="text-xs text-gray-500 mt-2">
-    ◇ Mean of references · × Reference bottles · ● Classified samples · ⊗ Out-of-range ·
-    Background colour shows the chromaticity-ΔE k-NN partition (uncoloured = ΔE &gt; max threshold).
-    Lines connect each sample to its assigned level's mean. Final classification combines this ΔE with the
-    histogram Bhattacharyya distance — see the Score column.
+    ◇ Mean of references · × Reference bottles · ● Classified samples · ⊗ Out-of-range · • after L0 = force-classified by saturation pre-check ·
+    Background colour shows the <strong>weighted-ΔE</strong> k-NN partition (uncoloured = ΔE &gt; chroma_scale).
+    Dashed ellipse around each centroid is that level's acceptance zone — wider along a*, narrower along b* (b* is the discrimination axis).
+    Lines connect each sample to its assigned level's mean. Final classification combines weighted ΔE with histogram Bhattacharyya — see Score.
   </p>
 </div>
 
@@ -168,10 +168,16 @@ for (const [lvl, refs] of Object.entries(refLabs)) {
   };
 }
 
-// ── Classification radius from server config (max_delta_e from
-//    config.toml). Same radius for every centroid — visually shows
-//    "anything inside this circle gets classified to L*x*". ──
-const MAX_DELTA_E = scanData.max_delta_e ?? 18;
+// ── Classifier knobs from server config: weighted ΔE in the a*/b* plane
+//    + chroma_scale as the ellipse semi-axis. ──
+const MAX_DELTA_E   = scanData.max_delta_e ?? 18;
+const W_LAB_A       = (scanData.weights && scanData.weights.lab_a) ?? 0.1;
+const W_LAB_B       = (scanData.weights && scanData.weights.lab_b) ?? 1.0;
+const CHROMA_SCALE  = (scanData.weights && scanData.weights.chroma_scale) ?? MAX_DELTA_E;
+// Ellipse semi-axes — points inside are within "chroma_scale" of the centroid
+// under the weighted metric (b* major axis when w_b > w_a).
+const ELLIPSE_RX    = CHROMA_SCALE / Math.sqrt(Math.max(W_LAB_A, 1e-6));   // a*-axis half-width
+const ELLIPSE_RY    = CHROMA_SCALE / Math.sqrt(Math.max(W_LAB_B, 1e-6));   // b*-axis half-width
 const centroidEntries = Object.entries(centroidByLevel);
 
 // ── Group detected samples: classified by level, plus an "out of range"
@@ -251,7 +257,11 @@ const heatmapPlugin = {
         const ay = y.getValueForPixel(py + cs / 2);
         let best = Infinity, bestColor = null;
         for (const r of refs) {
-          const d = Math.hypot(ax - r.x, ay - r.y);
+          // Weighted Euclidean distance — projection of the 3-D weighted ΔE
+          // onto the a*/b* plane (the L* term is dropped because the chart
+          // doesn't show it). w_b > w_a → narrower along b*, wider along a*.
+          const dax = ax - r.x, day = ay - r.y;
+          const d   = Math.sqrt(W_LAB_A * dax * dax + W_LAB_B * day * day);
           if (d < best) { best = d; bestColor = r.color; }
         }
         if (best <= maxR) {
@@ -264,29 +274,58 @@ const heatmapPlugin = {
   },
 };
 
-// ── Connection-line plugin — thin sample→centroid lines drawn after the
-//    heatmap but beneath the data points. ──
+// ── Connection-line + acceptance-zone plugin — drawn over the heatmap but
+//    beneath the data points. Renders both per-centroid dashed ellipses (the
+//    weighted-ΔE acceptance zone) and the sample→centroid connection lines. ──
 const overlayPlugin = {
   id: 'overlay',
   beforeDatasetsDraw(chart) {
     const o = chart.options.plugins.overlay;
-    if (!o || !o.lines) return;
+    if (!o) return;
     const ctx = chart.ctx;
     const xScale = chart.scales.x;
     const yScale = chart.scales.y;
     ctx.save();
-    ctx.setLineDash([]);
-    for (const ln of o.lines) {
-      ctx.beginPath();
-      ctx.moveTo(xScale.getPixelForValue(ln.x1), yScale.getPixelForValue(ln.y1));
-      ctx.lineTo(xScale.getPixelForValue(ln.x2), yScale.getPixelForValue(ln.y2));
-      ctx.strokeStyle = ln.color + '55';
-      ctx.lineWidth   = 1;
-      ctx.stroke();
+
+    // 1. Dashed acceptance ellipses (one per centroid)
+    if (o.ellipses && o.ellipses.length) {
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 1.2;
+      for (const e of o.ellipses) {
+        const cx_px = xScale.getPixelForValue(e.cx);
+        const cy_px = yScale.getPixelForValue(e.cy);
+        const rx_px = Math.abs(xScale.getPixelForValue(e.cx + e.rx) - cx_px);
+        const ry_px = Math.abs(yScale.getPixelForValue(e.cy + e.ry) - cy_px);
+        ctx.beginPath();
+        ctx.ellipse(cx_px, cy_px, rx_px, ry_px, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = e.color + 'aa';
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
+    // 2. Sample → centroid connection lines
+    if (o.lines && o.lines.length) {
+      ctx.lineWidth = 1;
+      for (const ln of o.lines) {
+        ctx.beginPath();
+        ctx.moveTo(xScale.getPixelForValue(ln.x1), yScale.getPixelForValue(ln.y1));
+        ctx.lineTo(xScale.getPixelForValue(ln.x2), yScale.getPixelForValue(ln.y2));
+        ctx.strokeStyle = ln.color + '55';
+        ctx.stroke();
+      }
     }
     ctx.restore();
   },
 };
+
+// ── Ellipse data — semi-axes set so points inside are within `chroma_scale`
+//    under the weighted ΔE metric. ──
+const acceptanceEllipses = [];
+for (const [lvl, c] of centroidEntries) {
+  const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
+  acceptanceEllipses.push({ cx: c.x, cy: c.y, rx: ELLIPSE_RX, ry: ELLIPSE_RY, color });
+}
 
 // ── Build datasets in z-order: ref points (×), centroids (◇), samples (●) ──
 function buildDatasets() {
@@ -363,8 +402,8 @@ new Chart(ctx, {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      classificationHeatmap: { refs: heatmapRefs, maxDeltaE: MAX_DELTA_E },
-      overlay: { lines: connectionLines },
+      classificationHeatmap: { refs: heatmapRefs, maxDeltaE: CHROMA_SCALE },
+      overlay: { lines: connectionLines, ellipses: acceptanceEllipses },
       legend:  { labels: { color: '#ccc', boxWidth: 14, usePointStyle: true } },
       tooltip: {
         callbacks: {
@@ -372,9 +411,10 @@ new Chart(ctx, {
             const d = ctx.raw;
             const lines = [d.label, `a*: ${d.x.toFixed(1)}, b*: ${d.y.toFixed(1)}`];
             if (d.hex) lines.push(`hex: ${d.hex}`);
-            if (d.delta_e != null)    lines.push(`ΔE: ${d.delta_e.toFixed(1)}`);
+            if (d.delta_e != null)    lines.push(`weighted ΔE: ${d.delta_e.toFixed(1)}`);
             if (d.hist_bhatt != null) lines.push(`Hist ΔB: ${d.hist_bhatt.toFixed(3)}`);
             if (d.combined != null)   lines.push(`Score: ${d.combined.toFixed(3)}`);
+            if (d.force_l0)           lines.push('force-L0 (saturation pre-check)');
             if (d.confident === true)  lines.push('confidence: ✓ confident');
             if (d.confident === false && d.color_level != null) lines.push('confidence: ~ borderline');
             return lines;
