@@ -37,9 +37,10 @@
             <th class="py-2 text-left">Slot</th>
             <th class="py-2 text-center">Color</th>
             <th class="py-2 text-center">Level</th>
-            <th class="py-2 text-center" title="Chromaticity ΔE to nearest reference">ΔE</th>
+            <th class="py-2 text-center" title="Concentration index along the Master Color Path (e.g. 1.5 = halfway between L1 and L2)">Idx</th>
+            <th class="py-2 text-center" title="Perpendicular distance from the Master Color Path (weighted Lab)">Path&nbsp;Δ</th>
             <th class="py-2 text-center" title="Histogram Bhattacharyya distance (0 = identical, 1 = no overlap)">Hist&nbsp;ΔB</th>
-            <th class="py-2 text-center" title="Hybrid score = w_c·(ΔE/scale) + w_h·Bhatt — lower is better">Score</th>
+            <th class="py-2 text-center" title="Hybrid score = w_c·(path_Δ/scale) + w_h·Bhatt — lower is better; histogram weight halved when path_Δ is very low">Score</th>
             <th class="py-2 text-center">Conf</th>
           </tr>
         </thead>
@@ -70,7 +71,10 @@
               {% endif %}
             </td>
             <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
-              {{ "%.1f"|format(d.delta_e) if d.delta_e is not none else '—' }}
+              {{ "%.2f"|format(d.concentration_index) if d.concentration_index is not none else '—' }}
+            </td>
+            <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
+              {{ "%.1f"|format(d.path_distance) if d.path_distance is not none else '—' }}{% if d.soft_penalty %}<span class="ml-1 text-blue-400" title="Soft-penalty active (path Δ very low → histogram weight halved)">↓</span>{% endif %}
             </td>
             <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
               {{ "%.3f"|format(d.hist_bhatt) if d.hist_bhatt is not none else '—' }}
@@ -111,10 +115,10 @@
   </div>
 </div>
 
-<!-- Color matching scatter plot -->
+<!-- Concentration trajectory chart -->
 <div class="bg-gray-800 rounded-xl p-4 mb-6">
   <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
-    <h2 class="text-sm font-semibold text-gray-400 uppercase">Color Matching — CIE Lab a*/b* Space</h2>
+    <h2 class="text-sm font-semibold text-gray-400 uppercase">Concentration Trajectory — Index along Master Path vs Lightness L*</h2>
     {% if scan.wb_offset %}
       <span class="text-xs px-2 py-1 rounded bg-blue-900 text-blue-200 font-mono"
             title="White-balance offset measured from is_white_reference cells (subtracted before histogram binning)">
@@ -128,13 +132,12 @@
     {% endif %}
   </div>
   <div class="relative" style="height:420px">
-    <canvas id="scatter-chart"></canvas>
+    <canvas id="trajectory-chart"></canvas>
   </div>
   <p class="text-xs text-gray-500 mt-2">
-    ◇ Mean of references · × Reference bottles · ● Classified samples · ⊗ Out-of-range · • after L0 = force-classified by saturation pre-check ·
-    Background colour shows the <strong>weighted-ΔE</strong> k-NN partition (uncoloured = ΔE &gt; chroma_scale).
-    Dashed ellipse around each centroid is that level's acceptance zone — wider along a*, narrower along b* (b* is the discrimination axis).
-    Lines connect each sample to its assigned level's mean. Final classification combines weighted ΔE with histogram Bhattacharyya — see Score.
+    ━ Master Color Path (polyline through the per-level Lab centroids) · ◇ Reference centroids · ● Classified samples (coloured by level) · ⊗ Out-of-range (path Δ &gt; max) · • after L0 = force-classified by saturation pre-check.
+    Each sample is plotted at its <strong>concentration index</strong> (1-D projection onto the path) and its raw L*. A "1.5" reads as halfway between L1 and L2.
+    Out-of-range only fires when perpendicular path Δ exceeds the threshold — minor histogram noise no longer triggers rejection thanks to soft-penalty weighting.
   </p>
 </div>
 
@@ -148,220 +151,113 @@
 const LEVEL_COLORS = ['#f9e54d','#ffc107','#ff9800','#f44336','#b71c1c'];
 const scanData = {{ scan | tojson }};
 
-// ── Build per-level reference points and centroids (k-means with k=1 per
-//    pre-labeled level group → arithmetic mean of each level's references) ──
-const refPointsByLevel = {};   // {level: [{x,y,hex,label}, ...]}
-const centroidByLevel  = {};   // {level: {x,y}}
-const refLabs = scanData.reference_labs || {};
-for (const [lvl, refs] of Object.entries(refLabs)) {
-  const pts = refs.filter(r => r.lab).map((r, i) => ({
-    x: r.lab[1] - 128,           // OpenCV a* → standard a*
-    y: r.lab[2] - 128,           // OpenCV b* → standard b*
-    hex: r.hex,
-    label: `REF L${lvl} #${i + 1}`,
-  }));
-  if (!pts.length) continue;
-  refPointsByLevel[lvl] = pts;
-  centroidByLevel[lvl] = {
-    x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
-    y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
-  };
-}
+// OpenCV-Lab encoding: L_cv∈[0,255], a/b∈[0,255] (128 = neutral).
+// Convert to standard CIE Lab for display: L* = L_cv·100/255, a* = a−128, b* = b−128.
+const labCvToL = (Lcv) => (Lcv * 100 / 255);
 
-// ── Classifier knobs from server config: weighted ΔE in the a*/b* plane
-//    + chroma_scale as the ellipse semi-axis. ──
-const MAX_DELTA_E   = scanData.max_delta_e ?? 18;
-const W_LAB_A       = (scanData.weights && scanData.weights.lab_a) ?? 0.1;
-const W_LAB_B       = (scanData.weights && scanData.weights.lab_b) ?? 1.0;
-const CHROMA_SCALE  = (scanData.weights && scanData.weights.chroma_scale) ?? MAX_DELTA_E;
-// Ellipse semi-axes — points inside are within "chroma_scale" of the centroid
-// under the weighted metric (b* major axis when w_b > w_a).
-const ELLIPSE_RX    = CHROMA_SCALE / Math.sqrt(Math.max(W_LAB_A, 1e-6));   // a*-axis half-width
-const ELLIPSE_RY    = CHROMA_SCALE / Math.sqrt(Math.max(W_LAB_B, 1e-6));   // b*-axis half-width
-const centroidEntries = Object.entries(centroidByLevel);
+// ── Master Color Path: polyline through per-level Lab centroids. The server
+//    sends `master_path = {levels: [int…], points: [[L,a,b]…]}` in OpenCV-Lab.
+//    For the chart we only need (level, L*) pairs for the path line and the
+//    centroid markers. Path is null if no references were extracted. ──
+const masterPath = scanData.master_path || null;
+const pathLine = masterPath
+  ? masterPath.levels.map((lvl, i) => ({
+      x: lvl,
+      y: labCvToL(masterPath.points[i][0]),
+      label: `L${lvl} centroid`,
+    }))
+  : [];
 
-// ── Group detected samples: classified by level, plus an "out of range"
-//    bucket for those rejected by the max_delta_e threshold ──
+// ── Group detected samples by classified level + out-of-range bucket ──
 const samplesByLevel = {};
 const outOfRange     = [];
+const forceL0Samples = [];   // separate marker for force-classified L0
+
 for (const [slotId, d] of Object.entries(scanData.slots || {})) {
   if (!d.detected || d.lab == null) continue;
+
+  const xIdx = d.concentration_index != null
+    ? d.concentration_index
+    : (d.color_level != null ? d.color_level : null);
+  if (xIdx == null) continue;
+
   const point = {
-    x: d.lab[1] - 128,
-    y: d.lab[2] - 128,
+    x: xIdx,
+    y: labCvToL(d.lab[0]),
     hex: d.hex,
     label: slotId,
-    delta_e: d.delta_e,
-    hist_bhatt: d.hist_bhatt,
-    combined: d.combined,
-    confident: d.confident,
-    color_level: d.color_level,
+    a_std: d.lab[1] - 128,
+    b_std: d.lab[2] - 128,
+    delta_e:        d.delta_e,
+    hist_bhatt:     d.hist_bhatt,
+    combined:       d.combined,
+    path_distance:  d.path_distance,
+    confident:      d.confident,
+    color_level:    d.color_level,
+    force_l0:       d.force_l0,
+    soft_penalty:   d.soft_penalty,
   };
-  if (d.color_level == null) {
+  if (d.force_l0) {
+    forceL0Samples.push(point);
+  } else if (d.color_level == null) {
     outOfRange.push(point);
   } else {
     (samplesByLevel[String(d.color_level)] ||= []).push(point);
   }
 }
 
-// ── Sample → centroid connection lines (only for classified samples) ──
-const connectionLines = [];
-for (const [lvl, pts] of Object.entries(samplesByLevel)) {
-  const c = centroidByLevel[lvl];
-  if (!c) continue;
-  const color = LEVEL_COLORS[parseInt(lvl)] || '#aaa';
-  for (const p of pts) {
-    connectionLines.push({ x1: p.x, y1: p.y, x2: c.x, y2: c.y, color });
-  }
-}
+// ── X-axis bounds: pad either side of the available level range. ──
+const levelMin = masterPath && masterPath.levels.length
+  ? Math.min(...masterPath.levels) - 0.4
+  : -0.4;
+const levelMax = masterPath && masterPath.levels.length
+  ? Math.max(...masterPath.levels) + 0.4
+  : 4.4;
 
-// ── Classification heatmap data — flattened list of every reference with
-//    its level colour. The custom plugin paints each pixel cell with the
-//    colour of the nearest reference's level (or leaves it uncoloured if
-//    that nearest distance exceeds MAX_DELTA_E). This is an exact rendering
-//    of the k-NN decision surface — no overlapping circles. ──
-const heatmapRefs = [];
-for (const [lvl, refs] of Object.entries(refPointsByLevel)) {
-  const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
-  for (const r of refs) heatmapRefs.push({ x: r.x, y: r.y, color });
-}
-
-// ── Classification heatmap plugin — paints the chart-area background with
-//    the k-NN classification of every point on the plane. Each pixel cell
-//    is filled with the level colour of its nearest reference; cells whose
-//    nearest distance exceeds MAX_DELTA_E are left uncoloured (the chart's
-//    own background shows through, signalling an out-of-range zone). ──
-const HEATMAP_CELL_PX    = 4;     // resolution; lower = sharper, higher = cheaper
-const HEATMAP_FILL_ALPHA = '33';  // ≈20% — keeps fill subtle behind data points
-
-const heatmapPlugin = {
-  id: 'classificationHeatmap',
-  beforeDatasetsDraw(chart) {
-    const opts = chart.options.plugins.classificationHeatmap;
-    if (!opts || !opts.refs || !opts.refs.length) return;
-    const { ctx, chartArea, scales: { x, y } } = chart;
-    const refs = opts.refs;
-    const maxR = opts.maxDeltaE;
-    const cs   = HEATMAP_CELL_PX;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(chartArea.left, chartArea.top,
-             chartArea.right - chartArea.left,
-             chartArea.bottom - chartArea.top);
-    ctx.clip();
-
-    for (let px = chartArea.left; px < chartArea.right; px += cs) {
-      for (let py = chartArea.top; py < chartArea.bottom; py += cs) {
-        const ax = x.getValueForPixel(px + cs / 2);
-        const ay = y.getValueForPixel(py + cs / 2);
-        let best = Infinity, bestColor = null;
-        for (const r of refs) {
-          // Weighted Euclidean distance — projection of the 3-D weighted ΔE
-          // onto the a*/b* plane (the L* term is dropped because the chart
-          // doesn't show it). w_b > w_a → narrower along b*, wider along a*.
-          const dax = ax - r.x, day = ay - r.y;
-          const d   = Math.sqrt(W_LAB_A * dax * dax + W_LAB_B * day * day);
-          if (d < best) { best = d; bestColor = r.color; }
-        }
-        if (best <= maxR) {
-          ctx.fillStyle = bestColor + HEATMAP_FILL_ALPHA;
-          ctx.fillRect(px, py, cs, cs);
-        }
-      }
-    }
-    ctx.restore();
-  },
-};
-
-// ── Connection-line + acceptance-zone plugin — drawn over the heatmap but
-//    beneath the data points. Renders both per-centroid dashed ellipses (the
-//    weighted-ΔE acceptance zone) and the sample→centroid connection lines. ──
-const overlayPlugin = {
-  id: 'overlay',
-  beforeDatasetsDraw(chart) {
-    const o = chart.options.plugins.overlay;
-    if (!o) return;
-    const ctx = chart.ctx;
-    const xScale = chart.scales.x;
-    const yScale = chart.scales.y;
-    ctx.save();
-
-    // 1. Dashed acceptance ellipses (one per centroid)
-    if (o.ellipses && o.ellipses.length) {
-      ctx.setLineDash([6, 4]);
-      ctx.lineWidth = 1.2;
-      for (const e of o.ellipses) {
-        const cx_px = xScale.getPixelForValue(e.cx);
-        const cy_px = yScale.getPixelForValue(e.cy);
-        const rx_px = Math.abs(xScale.getPixelForValue(e.cx + e.rx) - cx_px);
-        const ry_px = Math.abs(yScale.getPixelForValue(e.cy + e.ry) - cy_px);
-        ctx.beginPath();
-        ctx.ellipse(cx_px, cy_px, rx_px, ry_px, 0, 0, Math.PI * 2);
-        ctx.strokeStyle = e.color + 'aa';
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-    }
-
-    // 2. Sample → centroid connection lines
-    if (o.lines && o.lines.length) {
-      ctx.lineWidth = 1;
-      for (const ln of o.lines) {
-        ctx.beginPath();
-        ctx.moveTo(xScale.getPixelForValue(ln.x1), yScale.getPixelForValue(ln.y1));
-        ctx.lineTo(xScale.getPixelForValue(ln.x2), yScale.getPixelForValue(ln.y2));
-        ctx.strokeStyle = ln.color + '55';
-        ctx.stroke();
-      }
-    }
-    ctx.restore();
-  },
-};
-
-// ── Ellipse data — semi-axes set so points inside are within `chroma_scale`
-//    under the weighted ΔE metric. ──
-const acceptanceEllipses = [];
-for (const [lvl, c] of centroidEntries) {
-  const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
-  acceptanceEllipses.push({ cx: c.x, cy: c.y, rx: ELLIPSE_RX, ry: ELLIPSE_RY, color });
-}
-
-// ── Build datasets in z-order: ref points (×), centroids (◇), samples (●) ──
+// ── Build datasets in z-order: master path line, centroids, samples. ──
 function buildDatasets() {
   const datasets = [];
 
-  // Layer 1: individual reference bottles (small × markers)
-  for (const [lvl, pts] of Object.entries(refPointsByLevel)) {
-    const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
+  // Layer 1: Master Color Path — connect centroids in (level, L*) space
+  if (pathLine.length >= 2) {
     datasets.push({
-      label: `Ref L${lvl}`,
-      data: pts,
-      pointStyle: 'crossRot',
-      pointRadius: 6,
-      pointHoverRadius: 9,
-      borderColor: color,
+      label: 'Master Color Path',
+      data: pathLine,
+      type: 'line',
+      showLine: true,
+      borderColor: '#888',
+      backgroundColor: '#888',
       borderWidth: 2,
-      backgroundColor: color + '88',
+      pointRadius: 0,
+      pointHoverRadius: 0,
+      tension: 0,
+      order: 99,   // drawn first (lowest in Chart.js order semantics)
     });
   }
 
-  // Layer 2: reference centroids (large filled diamonds)
-  for (const [lvl, c] of centroidEntries) {
-    const color = LEVEL_COLORS[parseInt(lvl)] || '#888';
-    datasets.push({
-      label: `Centroid L${lvl}`,
-      data: [{ x: c.x, y: c.y, label: `Centroid L${lvl}`, isCentroid: true }],
-      pointStyle: 'rectRot',
-      pointRadius: 14,
-      pointHoverRadius: 17,
-      backgroundColor: color,
-      borderColor: '#111',
-      borderWidth: 2,
-    });
+  // Layer 2: Reference centroids — large filled diamonds at integer x = level
+  if (pathLine.length) {
+    const centroidPts = pathLine.map(p => ({
+      x: p.x, y: p.y, label: `Centroid L${p.x}`, isCentroid: true,
+    }));
+    // Build per-level centroid datasets so each gets its own colour
+    for (const cp of centroidPts) {
+      const color = LEVEL_COLORS[cp.x] || '#aaa';
+      datasets.push({
+        label: `Centroid L${cp.x}`,
+        data: [cp],
+        pointStyle: 'rectRot',
+        pointRadius: 14,
+        pointHoverRadius: 17,
+        backgroundColor: color,
+        borderColor: '#111',
+        borderWidth: 2,
+        order: 50,
+      });
+    }
   }
 
-  // Layer 3: detected samples (medium filled circles)
+  // Layer 3: Classified samples — coloured by their classified level
   for (const [lvl, pts] of Object.entries(samplesByLevel)) {
     const color = LEVEL_COLORS[parseInt(lvl)] || '#aaa';
     datasets.push({
@@ -373,13 +269,29 @@ function buildDatasets() {
       backgroundColor: color,
       borderColor: '#fff',
       borderWidth: 1.5,
+      order: 10,
     });
   }
 
-  // Layer 4: out-of-range samples (grey × — rejected by max_delta_e)
+  // Layer 4: Force-L0 samples (saturation pre-check) — open yellow circle
+  if (forceL0Samples.length) {
+    datasets.push({
+      label: 'Force-L0 (saturation)',
+      data: forceL0Samples,
+      pointStyle: 'circle',
+      pointRadius: 8,
+      pointHoverRadius: 11,
+      backgroundColor: '#ffffff00',
+      borderColor: LEVEL_COLORS[0],
+      borderWidth: 2.5,
+      order: 5,
+    });
+  }
+
+  // Layer 5: Out-of-range samples (path Δ above threshold) — grey ×
   if (outOfRange.length) {
     datasets.push({
-      label: `Out of range (ΔE > ${MAX_DELTA_E})`,
+      label: 'Out of range (path Δ > max)',
       data: outOfRange,
       pointStyle: 'crossRot',
       pointRadius: 8,
@@ -387,35 +299,35 @@ function buildDatasets() {
       borderColor: '#888',
       borderWidth: 2.5,
       backgroundColor: '#888',
+      order: 1,
     });
   }
 
   return datasets;
 }
 
-const ctx = document.getElementById('scatter-chart').getContext('2d');
+const ctx = document.getElementById('trajectory-chart').getContext('2d');
 new Chart(ctx, {
   type: 'scatter',
   data: { datasets: buildDatasets() },
-  plugins: [heatmapPlugin, overlayPlugin],   // heatmap first → drawn lowest
   options: {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      classificationHeatmap: { refs: heatmapRefs, maxDeltaE: CHROMA_SCALE },
-      overlay: { lines: connectionLines, ellipses: acceptanceEllipses },
       legend:  { labels: { color: '#ccc', boxWidth: 14, usePointStyle: true } },
       tooltip: {
         callbacks: {
           label(ctx) {
             const d = ctx.raw;
-            const lines = [d.label, `a*: ${d.x.toFixed(1)}, b*: ${d.y.toFixed(1)}`];
+            const lines = [d.label, `index: ${d.x.toFixed(2)}, L*: ${d.y.toFixed(1)}`];
             if (d.hex) lines.push(`hex: ${d.hex}`);
-            if (d.delta_e != null)    lines.push(`weighted ΔE: ${d.delta_e.toFixed(1)}`);
-            if (d.hist_bhatt != null) lines.push(`Hist ΔB: ${d.hist_bhatt.toFixed(3)}`);
-            if (d.combined != null)   lines.push(`Score: ${d.combined.toFixed(3)}`);
-            if (d.force_l0)           lines.push('force-L0 (saturation pre-check)');
-            if (d.confident === true)  lines.push('confidence: ✓ confident');
+            if (d.a_std != null) lines.push(`a*: ${d.a_std.toFixed(1)}, b*: ${d.b_std.toFixed(1)}`);
+            if (d.path_distance != null) lines.push(`path Δ: ${d.path_distance.toFixed(2)}`);
+            if (d.hist_bhatt != null)    lines.push(`Hist ΔB: ${d.hist_bhatt.toFixed(3)}`);
+            if (d.combined != null)      lines.push(`Score: ${d.combined.toFixed(3)}`);
+            if (d.soft_penalty)          lines.push('soft-penalty active (hist weight halved)');
+            if (d.force_l0)              lines.push('force-L0 (saturation pre-check)');
+            if (d.confident === true)    lines.push('confidence: ✓ confident');
             if (d.confident === false && d.color_level != null) lines.push('confidence: ~ borderline');
             return lines;
           },
@@ -424,12 +336,18 @@ new Chart(ctx, {
     },
     scales: {
       x: {
-        title: { display: true, text: 'a* (green ← → red)', color: '#888' },
+        title: { display: true, text: 'Concentration Index (along Master Path)', color: '#888' },
+        min: levelMin, max: levelMax,
+        ticks: {
+          color: '#888',
+          stepSize: 1,
+          callback: (v) => Number.isInteger(v) ? `L${v}` : v.toFixed(1),
+        },
         grid: { color: '#333' },
-        ticks: { color: '#888' },
       },
       y: {
-        title: { display: true, text: 'b* (blue ← → yellow)', color: '#888' },
+        title: { display: true, text: 'L* (lightness)', color: '#888' },
+        min: 0, max: 100,
         grid: { color: '#333' },
         ticks: { color: '#888' },
       },

@@ -25,7 +25,8 @@ from utils.color_analysis import (
     compute_white_balance_offset,
     build_reference_set,
     build_reference_histograms,
-    classify_sample_hybrid,
+    build_master_path,
+    classify_sample_path,
     is_achromatic,
     filter_reference_outliers,
     W_CHROMA,
@@ -36,7 +37,12 @@ from utils.color_analysis import (
     CHROMA_SCALE,
     MAX_COMBINED_SCORE,
     COMBINED_MARGIN,
+    MAX_PATH_DISTANCE,
+    PATH_CONFIDENT_DISTANCE,
+    SOFT_PENALTY_PATH_DE_THRESHOLD,
+    SOFT_PENALTY_FACTOR,
     SATURATION_L0_THRESHOLD,
+    SATURATION_HIST_WEIGHT,
 )
 from app.shared.processor import crop_sample_roi, letterbox_white_padding
 from server.slot_config import (
@@ -377,6 +383,20 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
     logger.info("pipeline: reference set levels: {} | hist templates: {} | outliers dropped: {}",
                 list(ref_set.keys()), list(ref_hists.keys()), ref_outliers_dropped)
 
+    # Build the Master Color Path from per-level Lab centroids (mean of each
+    # level's individual references). Used by classify_sample_path below.
+    level_centroids = {
+        lvl: tuple(float(v) for v in np.mean(np.array(refs), axis=0))
+        for lvl, refs in ref_set.items()
+        if refs
+    }
+    master_path = build_master_path(level_centroids)
+    if master_path is not None:
+        logger.info(
+            "pipeline: master color path — levels: {} ({} segments)",
+            master_path["levels"], len(master_path["segments"]),
+        )
+
     # Reference Labs → hex (for scatter plot and Sheets)
     reference_labs: dict[str, list] = {}
     for ref_level, positions in ref_positions.items():
@@ -413,11 +433,15 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             lab, sample_hist = None, None
 
         force_l0 = False
+        soft_penalty_active = False
+        concentration_index = None
+        path_distance = None
+
         if lab is not None and hit is not None and is_achromatic(
             frame_full, hit["cx"], hit["cy"], radius_full,
         ):
             # Near-neutral sample → force-classify L0 (clear) before hue noise
-            # can flip it to L1/L2. Skip the hybrid metric entirely.
+            # can flip it to L1/L2. Skip the path projection entirely.
             level     = 0
             delta_e   = 0.0
             hist_b    = 0.0
@@ -425,14 +449,19 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             confident = True
             hex_color = lab_to_hex(*lab)
             force_l0  = True
-        elif lab is not None and (ref_set or ref_hists):
-            cls = classify_sample_hybrid(
-                lab, sample_hist, ref_set, ref_hists,
+            concentration_index = 0.0
+            path_distance       = 0.0
+        elif lab is not None and master_path is not None:
+            cls = classify_sample_path(
+                lab, sample_hist, master_path, ref_hists,
                 weight_chroma=W_CHROMA,
                 weight_hist=W_HIST,
                 chroma_scale=CHROMA_SCALE,
                 max_score=MAX_COMBINED_SCORE,
-                margin=COMBINED_MARGIN,
+                max_path_distance=MAX_PATH_DISTANCE,
+                path_confident_distance=PATH_CONFIDENT_DISTANCE,
+                soft_penalty_path_de_threshold=SOFT_PENALTY_PATH_DE_THRESHOLD,
+                soft_penalty_factor=SOFT_PENALTY_FACTOR,
             )
             level     = cls["level"]
             delta_e   = cls["chroma_de"]
@@ -440,6 +469,9 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             combined  = cls["combined"]
             confident = cls["confident"]
             hex_color = lab_to_hex(*lab)
+            concentration_index = cls["concentration_index"]
+            path_distance       = cls["path_distance"]
+            soft_penalty_active = cls["soft_penalty"]
         else:
             level, delta_e, hist_b, combined, confident, hex_color = (
                 None, None, None, None, False, None
@@ -449,11 +481,14 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             "cell_index": cell_idx,
             "detected":   hit is not None,
             "color_level": level,
+            "concentration_index": _round(concentration_index, 2),
+            "path_distance":       _round(path_distance, 2),
             "delta_e":    _round(delta_e, 2),
             "hist_bhatt": _round(hist_b, 3),
             "combined":   _round(combined, 3),
             "confident":  confident,
             "force_l0":   force_l0,
+            "soft_penalty": soft_penalty_active,
             "lab":        [round(v, 2) for v in lab] if lab else None,
             "hex":        hex_color,
         }
@@ -491,6 +526,18 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         },
         "saturation_l0_threshold": SATURATION_L0_THRESHOLD,
         "ref_outliers_dropped":    ref_outliers_dropped,
+        "max_path_distance":       MAX_PATH_DISTANCE,
+        "path_confident_distance": PATH_CONFIDENT_DISTANCE,
+        "saturation_hist_weight":  SATURATION_HIST_WEIGHT,
+        "master_path": (
+            {
+                "levels": master_path["levels"],
+                # Lab points in OpenCV-Lab encoding (L=0..255, a=b=0..255 with 128=neutral).
+                # Front-end converts to standard Lab on display.
+                "points": [[float(v) for v in p] for p in master_path["points"].tolist()],
+            }
+            if master_path is not None else None
+        ),
         "slots":           result_slots,
         "image_url":       f"/static/results/{scan_id}.jpg",
         "timestamp":       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

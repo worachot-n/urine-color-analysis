@@ -35,8 +35,9 @@ OUTER_CROP_PX: int       = int(_ca.get("outer_crop_px", 15))
 INNER_CROP_PX: int       = int(_ca.get("inner_crop_px", 10))
 CONFIDENCE_MARGIN: float = float(_ca.get("confidence_margin", 3.0))
 MAX_DELTA_E: float       = float(_ca.get("max_delta_e", 18.0))
-GLARE_L_THRESHOLD: float = float(_ip.get("glare_l_threshold", 220))
-GLARE_MIN_VALID_PX: int  = int(_ip.get("glare_min_valid_px", 10))
+GLARE_L_THRESHOLD: float  = float(_ip.get("glare_l_threshold", 230))
+SHADOW_L_THRESHOLD: float = float(_ip.get("shadow_l_threshold", 51))
+GLARE_MIN_VALID_PX: int   = int(_ip.get("glare_min_valid_px", 10))
 
 # Histogram + hybrid classifier
 HIST_BINS_A: int          = int(_ca.get("hist_bins_a", 16))
@@ -48,8 +49,15 @@ HIST_RANGE_B: tuple[float, float] = (float(_hrb[0]), float(_hrb[1]))
 W_CHROMA: float           = float(_ca.get("weight_chroma", 0.5))
 W_HIST: float             = float(_ca.get("weight_hist", 0.5))
 CHROMA_SCALE: float       = float(_ca.get("chroma_scale", 18.0))
-MAX_COMBINED_SCORE: float = float(_ca.get("max_combined_score", 0.75))
+MAX_COMBINED_SCORE: float = float(_ca.get("max_combined_score", 0.85))
 COMBINED_MARGIN: float    = float(_ca.get("combined_margin", 0.10))
+
+# 1D Trajectory projection
+MAX_PATH_DISTANCE: float              = float(_ca.get("max_path_distance", 12.0))
+PATH_CONFIDENT_DISTANCE: float        = float(_ca.get("path_confident_distance", 4.0))
+SOFT_PENALTY_PATH_DE_THRESHOLD: float = float(_ca.get("soft_penalty_path_de_threshold", 5.0))
+SOFT_PENALTY_FACTOR: float            = float(_ca.get("soft_penalty_factor", 0.5))
+SATURATION_HIST_WEIGHT: bool          = bool(_ca.get("saturation_hist_weight", True))
 
 # Weighted ΔE — ellipsoid acceptance zones (defaults: b* dominates, a* down-weighted)
 W_LAB_L: float                  = float(_ca.get("weight_lab_L", 0.5))
@@ -126,15 +134,26 @@ def delta_e_weighted(lab1, lab2, w_L=None, w_a=None, w_b=None):
 
 def _ring_pixels_lab(frame, cx, cy, radius,
                      outer_crop_px=OUTER_CROP_PX,
-                     inner_crop_px=INNER_CROP_PX):
+                     inner_crop_px=INNER_CROP_PX,
+                     return_hsv=False):
     """
     Return the annular-ring CIE Lab pixels of a bottle cap as an (N, 3) array,
     or None if the ring contains too few valid pixels.
 
-    Shared by extract_bottle_color() (median path) and extract_bottle_features()
-    (median + 2-D histogram path). Glare filter is applied: pixels with
-    L > GLARE_L_THRESHOLD are dropped; if fewer than GLARE_MIN_VALID_PX remain,
-    the ring mask is used unfiltered.
+    Strict intensity gating: pixels with `L > GLARE_L_THRESHOLD` (specular
+    highlights) or `L < SHADOW_L_THRESHOLD` (deep shadows / cap rim / dark
+    container edges) are dropped before the array is returned. If gating
+    leaves fewer than GLARE_MIN_VALID_PX pixels, the ring mask is used
+    unfiltered as a fallback so well-lit-but-dim bottles still extract.
+
+    Args:
+        return_hsv: if True, also return the matching (N, 3) HSV pixels in
+                    OpenCV-HSV encoding. Used by saturation-weighted
+                    histograms in extract_bottle_features().
+
+    Returns:
+        Lab pixels as (N, 3) uint8, or None.
+        If return_hsv: (lab_pixels, hsv_pixels) tuple, or (None, None).
     """
     r = int(radius)
     x1 = max(0, int(cx) - r + outer_crop_px)
@@ -142,23 +161,29 @@ def _ring_pixels_lab(frame, cx, cy, radius,
     x2 = min(frame.shape[1], int(cx) + r - outer_crop_px)
     y2 = min(frame.shape[0], int(cy) + r - outer_crop_px)
     if x2 <= x1 or y2 <= y1:
-        return None
+        return (None, None) if return_hsv else None
     crop = frame[y1:y2, x1:x2]
     if crop.size == 0:
-        return None
+        return (None, None) if return_hsv else None
 
     h_crop, w_crop = crop.shape[:2]
     Y, X = np.ogrid[:h_crop, :w_crop]
     dist = np.sqrt((X - (int(cx) - x1)) ** 2 + (Y - (int(cy) - y1)) ** 2)
     ring_mask = dist >= inner_crop_px
     if ring_mask.sum() < GLARE_MIN_VALID_PX:
-        return None
+        return (None, None) if return_hsv else None
 
     lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
-    non_glare = lab[:, :, 0] < GLARE_L_THRESHOLD
-    combined = ring_mask & non_glare
+    L = lab[:, :, 0]
+    intensity_ok = (L < GLARE_L_THRESHOLD) & (L > SHADOW_L_THRESHOLD)
+    combined = ring_mask & intensity_ok
     mask = combined if combined.sum() >= GLARE_MIN_VALID_PX else ring_mask
-    return lab[mask]   # (N, 3) uint8 → caller can cast to float as needed
+
+    lab_pixels = lab[mask]
+    if return_hsv:
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        return lab_pixels, hsv[mask]
+    return lab_pixels
 
 
 def extract_bottle_color(frame, cx, cy, radius,
@@ -204,13 +229,29 @@ def extract_bottle_features(frame, cx, cy, radius,
                      normalised to sum to 1. Same None condition as raw_lab.
 
     The median is intentionally computed on the unshifted pixels so the
-    displayed hex / scatter-plot dot reflect the actual measured colour. The
+    displayed hex / scatter-plot dot reflects the actual measured colour. The
     histogram is shifted so that, across scans, all bottles live in a common
     WB-corrected (a*, b*) space — useful for histogram comparison.
+
+    When `SATURATION_HIST_WEIGHT` is True, each pixel's contribution to the
+    histogram is weighted by its HSV saturation (S/255). This suppresses
+    near-grey ring pixels (plastic container artefacts, glare residuals) and
+    lets saturated liquid pixels dominate — making the per-bottle histogram
+    a closer fit to the actual colour signal.
     """
-    pixels = _ring_pixels_lab(frame, cx, cy, radius, outer_crop_px, inner_crop_px)
-    if pixels is None:
-        return None, None
+    if SATURATION_HIST_WEIGHT:
+        ring = _ring_pixels_lab(
+            frame, cx, cy, radius, outer_crop_px, inner_crop_px, return_hsv=True,
+        )
+        if ring is None or ring[0] is None:
+            return None, None
+        pixels, hsv_pixels = ring
+        weights = hsv_pixels[:, 1].astype(np.float32) / 255.0
+    else:
+        pixels = _ring_pixels_lab(frame, cx, cy, radius, outer_crop_px, inner_crop_px)
+        if pixels is None:
+            return None, None
+        weights = None
 
     L = float(np.median(pixels[:, 0]))
     a = float(np.median(pixels[:, 1]))
@@ -226,11 +267,24 @@ def extract_bottle_features(frame, cx, cy, radius,
         a_chan, b_chan,
         bins=[HIST_BINS_A, HIST_BINS_B],
         range=[list(HIST_RANGE_A), list(HIST_RANGE_B)],
+        weights=weights,
     )
     hist = hist.astype(np.float32)
     s = float(hist.sum())
     if s > 0.0:
         hist /= s
+    elif weights is not None:
+        # All saturation weights were zero (extremely desaturated bottle).
+        # Fall back to unweighted histogram so we still emit something usable.
+        hist, _, _ = np.histogram2d(
+            a_chan, b_chan,
+            bins=[HIST_BINS_A, HIST_BINS_B],
+            range=[list(HIST_RANGE_A), list(HIST_RANGE_B)],
+        )
+        hist = hist.astype(np.float32)
+        s = float(hist.sum())
+        if s > 0.0:
+            hist /= s
     return (L, a, b), hist
 
 
@@ -412,6 +466,119 @@ def filter_reference_outliers(frame, reference_positions,
             )
         out[level] = kept
     return out
+
+
+# ---------------------------------------------------------------------------
+# Master Color Path (1D Trajectory Projection)
+# ---------------------------------------------------------------------------
+
+def _weighted_dot(u, v, w_L=None, w_a=None, w_b=None):
+    """Weighted Lab dot product ⟨u, v⟩_W = w_L·u_L·v_L + w_a·u_a·v_a + w_b·u_b·v_b."""
+    if w_L is None: w_L = W_LAB_L
+    if w_a is None: w_a = W_LAB_A
+    if w_b is None: w_b = W_LAB_B
+    return w_L * u[0] * v[0] + w_a * u[1] * v[1] + w_b * u[2] * v[2]
+
+
+def build_master_path(level_centroids):
+    """
+    Build a polyline through per-level Lab centroids, sorted by level number.
+
+    Each adjacent pair of available levels forms one segment. Missing levels
+    are skipped — e.g. if only L0, L2, L4 have references, the polyline is
+    L0→L2→L4 and a sample projecting halfway between L0 and L2 reports
+    concentration_index = 1.0 (i.e. L1) by linear interpolation.
+
+    Args:
+        level_centroids: dict {level: (L, a, b)} — per-level mean Lab from
+                         build_reference_baseline / build_reference_set.
+
+    Returns:
+        dict {
+          "levels":   list[int]            sorted level numbers
+          "points":   np.ndarray (N, 3)    Lab centroid per level
+          "segments": list[dict]           each: level_i, level_j, point_i,
+                                           point_j, vec, vec_dot_w
+        }
+        Empty list of segments when only a single centroid is available.
+        None when level_centroids is empty.
+    """
+    if not level_centroids:
+        return None
+    levels = sorted(int(k) for k in level_centroids.keys())
+    pts = np.array([level_centroids[lvl] for lvl in levels], dtype=np.float64)
+    segments = []
+    for i in range(len(levels) - 1):
+        p_i, p_j = pts[i], pts[i + 1]
+        v = p_j - p_i
+        v_dot_w = _weighted_dot(v, v)
+        segments.append({
+            "level_i": levels[i],
+            "level_j": levels[i + 1],
+            "point_i": p_i,
+            "point_j": p_j,
+            "vec":     v,
+            "vec_dot_w": float(v_dot_w),
+        })
+    return {"levels": levels, "points": pts, "segments": segments}
+
+
+def project_onto_path(lab, master_path):
+    """
+    Project a sample Lab onto the master color path under the weighted-Lab
+    metric (`delta_e_weighted`). Returns the closest segment's projection.
+
+    The "concentration index" is a continuous scalar that makes "halfway
+    between L1 and L2" expressible as 1.5 — useful for transitional samples.
+
+    Returns:
+        dict {
+          "concentration_index": float    interpolated level along path
+          "path_distance":       float    weighted ⊥ distance from path
+          "projected_lab":       np.ndarray (3,)
+          "nearest_segment":     int      segment index (or -1 for single-pt path)
+        }
+        None when master_path is None or empty.
+    """
+    if master_path is None or master_path.get("points") is None:
+        return None
+    sample = np.asarray(lab, dtype=np.float64)
+    levels = master_path["levels"]
+    points = master_path["points"]
+    segments = master_path["segments"]
+
+    if not segments:
+        # Single-point path
+        diff = sample - points[0]
+        d = float(np.sqrt(_weighted_dot(diff, diff)))
+        return {
+            "concentration_index": float(levels[0]),
+            "path_distance":       d,
+            "projected_lab":       points[0].copy(),
+            "nearest_segment":     -1,
+        }
+
+    best = None
+    for idx, seg in enumerate(segments):
+        diff = sample - seg["point_i"]
+        if seg["vec_dot_w"] < 1e-12:
+            t = 0.0
+        else:
+            t = float(_weighted_dot(diff, seg["vec"]) / seg["vec_dot_w"])
+            t = max(0.0, min(1.0, t))
+        proj = seg["point_i"] + t * seg["vec"]
+        perp = sample - proj
+        d = float(np.sqrt(_weighted_dot(perp, perp)))
+        if best is None or d < best["d"]:
+            index = float(seg["level_i"]) + t * float(seg["level_j"] - seg["level_i"])
+            best = {"d": d, "t": t, "proj": proj, "index": index, "seg_idx": idx}
+
+    return {
+        "concentration_index": best["index"],
+        "path_distance":       best["d"],
+        "projected_lab":       best["proj"],
+        "nearest_segment":     best["seg_idx"],
+    }
 
 
 def build_reference_set(frame, reference_positions):
@@ -770,4 +937,85 @@ def classify_sample_hybrid(sample_lab, sample_hist,
         "combined": best_score,
         "confident": confident,
         "per_level": per_level,
+    }
+
+
+def classify_sample_path(sample_lab, sample_hist, master_path, reference_hists,
+                          weight_chroma: float = W_CHROMA,
+                          weight_hist: float = W_HIST,
+                          chroma_scale: float = CHROMA_SCALE,
+                          max_score: float = MAX_COMBINED_SCORE,
+                          max_path_distance: float = MAX_PATH_DISTANCE,
+                          path_confident_distance: float = PATH_CONFIDENT_DISTANCE,
+                          soft_penalty_path_de_threshold: float = SOFT_PENALTY_PATH_DE_THRESHOLD,
+                          soft_penalty_factor: float = SOFT_PENALTY_FACTOR):
+    """
+    Classify a sample by 1-D projection onto the Master Color Path.
+
+    The path is the polyline through per-level Lab centroids; the sample is
+    projected (under the weighted-Lab metric) onto the closest segment, and
+    its level is `round(concentration_index)`. Out-of-range when the
+    perpendicular distance exceeds `max_path_distance` OR the hybrid score
+    exceeds `max_score`.
+
+    Soft-penalty histogram weighting:
+        path_distance < soft_penalty_path_de_threshold (default 5.0)
+        → halve the histogram weight (default factor 0.5).
+    Rationale: a sample that's already very close to the path is chromatically
+    correct; a small histogram mismatch (residual glare, container noise)
+    should not trigger a "false out-of-range" rejection.
+
+    Returns:
+        dict with both legacy fields (`chroma_de`, `hist_bhatt`, `combined`,
+        `confident`, `level`) for UI/Sheets compatibility, plus path-specific
+        fields (`concentration_index`, `path_distance`, `soft_penalty`).
+    """
+    empty = {
+        "level": None, "concentration_index": None,
+        "path_distance": float("inf"), "chroma_de": float("inf"),
+        "hist_bhatt": 1.0, "combined": float("inf"),
+        "confident": False, "soft_penalty": False,
+    }
+    if sample_lab is None or master_path is None:
+        return empty
+
+    proj = project_onto_path(sample_lab, master_path)
+    if proj is None:
+        return empty
+
+    path_distance = proj["path_distance"]
+    index         = proj["concentration_index"]
+    rounded_level = int(round(index)) if np.isfinite(index) else None
+
+    # Histogram comparison against the rounded level's template, falling back
+    # to the closest available level if the rounded one has no template.
+    hist_bhatt = 1.0
+    if sample_hist is not None and reference_hists:
+        tpl = reference_hists.get(rounded_level) if rounded_level is not None else None
+        if tpl is None:
+            avail = sorted(reference_hists.keys(), key=lambda k: abs(k - index))
+            if avail:
+                tpl = reference_hists[avail[0]]
+        if tpl is not None:
+            hist_bhatt = _bhattacharyya(sample_hist, tpl)
+
+    chroma_term = min(path_distance / chroma_scale, 1.0) if np.isfinite(path_distance) else 1.0
+    soft_penalty_active = path_distance < soft_penalty_path_de_threshold
+    h_weight = weight_hist * (soft_penalty_factor if soft_penalty_active else 1.0)
+    combined = weight_chroma * chroma_term + h_weight * hist_bhatt
+
+    if path_distance > max_path_distance or combined > max_score:
+        return {
+            "level": None, "concentration_index": index,
+            "path_distance": path_distance, "chroma_de": path_distance,
+            "hist_bhatt": hist_bhatt, "combined": combined,
+            "confident": False, "soft_penalty": soft_penalty_active,
+        }
+
+    confident = path_distance < path_confident_distance
+    return {
+        "level": rounded_level, "concentration_index": index,
+        "path_distance": path_distance, "chroma_de": path_distance,
+        "hist_bhatt": hist_bhatt, "combined": combined,
+        "confident": confident, "soft_penalty": soft_penalty_active,
     }
