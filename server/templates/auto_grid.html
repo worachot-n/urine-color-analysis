@@ -1,42 +1,44 @@
 {% extends "base.html" %}
 {% set active_page = "auto_grid" %}
-{% block title %}Auto Grid — Urine Analyzer{% endblock %}
+{% block title %}กริดอัตโนมัติ — วิเคราะห์ปัสสาวะ{% endblock %}
 
 {% block content %}
 <div class="max-w-4xl mx-auto">
-  <h1 class="text-2xl font-bold mb-1">Auto Grid Debug</h1>
-  <p class="text-gray-400 text-sm mb-1">Classical CV only — HoughCircles + grid reconstruction. No YOLO.</p>
+  <h1 class="text-2xl font-bold mb-1">ทดสอบการตรวจจับกริด</h1>
+  <p class="text-gray-400 text-sm mb-1">Classical CV เท่านั้น — HoughCircles + การสร้างกริดใหม่ ไม่ใช้ YOLO</p>
   <p class="text-gray-500 text-xs mb-6">
-    Green circles = detected by HoughCircles &nbsp;|&nbsp;
-    Orange circles = reconstructed (inferred) &nbsp;|&nbsp;
-    Grid lines = midpoints between circles (outer edges extend beyond edge circles).<br>
-    Slot config loaded from <strong class="text-gray-300">Google Sheets → SlotAssignment tab</strong>.
+    วงกลมสีเขียว = ตรวจพบโดย HoughCircles &nbsp;|&nbsp;
+    วงกลมสีส้ม = สร้างใหม่ (อนุมาน) &nbsp;|&nbsp;
+    เส้นกริด = จุดกึ่งกลางระหว่างวงกลม<br>
+    โหลดการกำหนดช่องจาก <strong class="text-gray-300">Google Sheets → SlotAssignment tab</strong>
   </p>
 
   <!-- Upload zone -->
   <div class="max-w-xl">
     <div id="drop-zone"
-         class="border-2 border-dashed border-gray-600 rounded-xl p-10 text-center cursor-pointer hover:border-blue-500 transition-colors"
+         class="border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors"
+         style="border-color:#2d5438;"
          onclick="document.getElementById('file-input').click()">
       <svg class="mx-auto mb-3 w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
       </svg>
-      <p class="text-gray-400 mb-1">Drag & drop or click to select</p>
+      <p class="text-gray-400 mb-1">ลากวางหรือคลิกเพื่อเลือกไฟล์</p>
       <p class="text-gray-600 text-sm">JPEG / PNG</p>
       <input id="file-input" type="file" accept="image/jpeg,image/png" class="hidden"/>
-      <div id="file-name" class="mt-2 text-blue-400 text-sm hidden"></div>
+      <div id="file-name" class="mt-2 text-sm hidden" style="color:#FCBA54;"></div>
     </div>
 
     <button id="run-btn"
-            class="mt-4 w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors"
+            class="mt-4 w-full py-3 rounded-lg font-semibold transition-colors disabled:cursor-not-allowed"
+            style="background-color:#FCBA54; color:#122017;"
             disabled>
-      Detect Grid (CV only)
+      ตรวจจับกริด (CV เท่านั้น)
     </button>
 
     <div id="status" class="mt-3 hidden">
-      <div class="flex items-center gap-3 bg-gray-800 rounded-lg p-3">
-        <div id="spinner" class="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin hidden"></div>
+      <div class="flex items-center gap-3 rounded-lg p-3" style="background-color:#1a3020;">
+        <div id="spinner" class="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin hidden" style="border-color:#FCBA54; border-top-color:transparent;"></div>
         <span id="status-text" class="text-sm"></span>
       </div>
     </div>
@@ -46,35 +48,35 @@
   <div id="result-panel" class="hidden mt-8 space-y-4">
 
     <!-- Stats bar -->
-    <div class="bg-gray-800 rounded-xl p-4 flex flex-wrap gap-6 text-sm">
+    <div class="rounded-xl p-4 flex flex-wrap gap-6 text-sm" style="background-color:#1a3020;">
       <div>
-        <span class="text-gray-400">HoughCircles detected</span>
+        <span class="text-gray-400">HoughCircles ตรวจพบ</span>
         <span id="stat-detected" class="ml-2 text-green-400 font-bold text-base"></span>
       </div>
       <div>
-        <span class="text-gray-400">Reconstructed (inferred)</span>
+        <span class="text-gray-400">สร้างใหม่ (อนุมาน)</span>
         <span id="stat-reconstructed" class="ml-2 text-yellow-400 font-bold text-base"></span>
       </div>
       <div>
-        <span class="text-gray-400">Total grid cells</span>
+        <span class="text-gray-400">เซลล์กริดทั้งหมด</span>
         <span id="stat-total" class="ml-2 text-gray-200 font-bold text-base"></span>
       </div>
       <div>
-        <span class="text-gray-400">Assigned slots</span>
-        <span id="stat-assigned" class="ml-2 text-blue-400 font-bold text-base"></span>
+        <span class="text-gray-400">ช่องที่กำหนดแล้ว</span>
+        <span id="stat-assigned" class="ml-2 font-bold text-base" style="color:#FCBA54;"></span>
       </div>
       <div>
-        <span class="text-gray-400">Rotation corrected</span>
+        <span class="text-gray-400">แก้ไขการหมุน</span>
         <span id="stat-angle" class="ml-2 text-purple-400 font-bold text-base"></span>
       </div>
     </div>
 
     <!-- Annotated image -->
     <div>
-      <h2 class="text-lg font-semibold mb-2">Grid Detection Result (full-resolution ROI)</h2>
+      <h2 class="text-lg font-semibold mb-2">ผลการตรวจจับกริด (ROI ความละเอียดเต็ม)</h2>
       <img id="grid-img" src="" alt="Grid result"
-           class="rounded-xl border border-gray-700 w-full max-w-2xl"
-           style="image-rendering: pixelated;"/>
+           class="rounded-xl w-full max-w-2xl"
+           style="border: 1px solid #2d5438; image-rendering: pixelated;"/>
     </div>
 
   </div>
@@ -95,11 +97,11 @@ let selectedFile = null;
 fileInput.addEventListener('change', () => {
   if (fileInput.files.length) selectFile(fileInput.files[0]);
 });
-dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('border-blue-500'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500'));
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.style.borderColor = '#FCBA54'; });
+dropZone.addEventListener('dragleave', () => { dropZone.style.borderColor = '#2d5438'; });
 dropZone.addEventListener('drop', e => {
   e.preventDefault();
-  dropZone.classList.remove('border-blue-500');
+  dropZone.style.borderColor = '#2d5438';
   if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]);
 });
 
@@ -108,17 +110,21 @@ function selectFile(f) {
   fileNameEl.textContent = f.name;
   fileNameEl.classList.remove('hidden');
   runBtn.disabled = false;
+  runBtn.style.backgroundColor = '#FCBA54';
+  runBtn.style.color = '#122017';
   resultPanel.classList.add('hidden');
 }
 
 runBtn.addEventListener('click', async () => {
   if (!selectedFile) return;
   runBtn.disabled = true;
+  runBtn.style.backgroundColor = '#234228';
+  runBtn.style.color = '#9ca3af';
   resultPanel.classList.add('hidden');
   statusEl.classList.remove('hidden');
   spinner.classList.remove('hidden');
-  statusText.textContent = 'Loading slot config from Google Sheets and running HoughCircles…';
-  statusText.className = 'text-sm text-blue-400';
+  statusText.textContent = 'กำลังโหลดการตั้งค่าช่องจาก Google Sheets และรัน HoughCircles…';
+  statusText.style.color = '#FCBA54';
 
   const fd = new FormData();
   fd.append('file', selectedFile);
@@ -129,15 +135,17 @@ runBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error(data.detail || 'Server error');
 
     spinner.classList.add('hidden');
-    const angleStr = data.grid_angle_deg ? ` (rotation ${data.grid_angle_deg}°)` : '';
-    statusText.textContent = `Done — HoughCircles: ${data.detected_count} detected, ${data.reconstructed_count} inferred${angleStr}.`;
-    statusText.className = 'text-sm text-green-400';
+    const angleStr = data.grid_angle_deg ? ` (การหมุน ${data.grid_angle_deg}°)` : '';
+    statusText.textContent = `เสร็จแล้ว — HoughCircles: ตรวจพบ ${data.detected_count}, อนุมาน ${data.reconstructed_count}${angleStr}`;
+    statusText.style.color = '#4ade80';
     renderResult(data);
   } catch (err) {
     spinner.classList.add('hidden');
-    statusText.textContent = 'Error: ' + err.message;
-    statusText.className = 'text-sm text-red-400';
+    statusText.textContent = 'ข้อผิดพลาด: ' + err.message;
+    statusText.style.color = '#f87171';
     runBtn.disabled = false;
+    runBtn.style.backgroundColor = '#FCBA54';
+    runBtn.style.color = '#122017';
   }
 });
 

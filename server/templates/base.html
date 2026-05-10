@@ -1,26 +1,28 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="th">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>{% block title %}Urine Analyzer{% endblock %}</title>
+  <title>{% block title %}วิเคราะห์ปัสสาวะ{% endblock %}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;600;700&display=swap" rel="stylesheet"/>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    body { font-family: 'Inter', system-ui, sans-serif; }
+    body { font-family: 'Noto Sans Thai', 'Inter', system-ui, sans-serif; }
     .nav-link { @apply px-4 py-2 rounded-md text-sm font-medium transition-colors; }
-    .nav-link.active { @apply bg-blue-600 text-white; }
-    .nav-link:not(.active) { @apply text-gray-300 hover:bg-gray-700 hover:text-white; }
+    .nav-link.active { background-color: #FCBA54; color: #122017; }
+    .nav-link:not(.active) { @apply text-gray-300; }
+    .nav-link:not(.active):hover { background-color: #234228; color: #fff; }
   </style>
   {% block head %}{% endblock %}
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen">
-  <nav class="bg-gray-800 border-b border-gray-700">
+<body class="bg-[#122017] text-gray-100 min-h-screen">
+  <nav style="background-color:#0d1b12; border-bottom: 1px solid #2d5438;">
     <div class="max-w-7xl mx-auto px-4 py-3 flex items-center gap-2">
-      <span class="text-blue-400 font-bold text-lg mr-4">🔬 UrineAnalyzer</span>
-      <a href="/upload"   class="nav-link {% if active_page == 'upload'   %}active{% endif %}">Upload</a>
-      <a href="/results"  class="nav-link {% if active_page == 'results'  %}active{% endif %}">Results</a>
-      <a href="/settings"  class="nav-link {% if active_page == 'settings'  %}active{% endif %}">Settings</a>
-      <a href="/auto_grid" class="nav-link {% if active_page == 'auto_grid' %}active{% endif %}">Auto Grid</a>
+      <span style="color:#FCBA54;" class="font-bold text-lg mr-4">🔬 วิเคราะห์ปัสสาวะ</span>
+      <a href="/upload"   class="nav-link {% if active_page == 'upload'   %}active{% endif %}">อัพโหลด</a>
+      <a href="/results"  class="nav-link {% if active_page == 'results'  %}active{% endif %}">ผลการตรวจ</a>
+      <a href="/settings"  class="nav-link {% if active_page == 'settings'  %}active{% endif %}">ตั้งค่า</a>
+      <a href="/auto_grid" class="nav-link {% if active_page == 'auto_grid' %}active{% endif %}">กริดอัตโนมัติ</a>
     </div>
   </nav>
   <main class="max-w-7xl mx-auto px-4 py-8">

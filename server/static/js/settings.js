@@ -11,8 +11,8 @@
  * for white-balance correction).
  */
 
-const REF_BG = ['#fff9c4','#ffe082','#ffb74d','#ef9a9a','#b71c1c'];
-const REF_FG = ['#333','#333','#333','#333','#fff'];
+const REF_BG = ['#fce375','#499d71','#4a8c54','#1b593c','#f05152'];
+const REF_FG = ['#122017','#122017','#122017','#ffffff','#ffffff'];
 const WB_BG  = '#bfdbfe';
 const WB_FG  = '#1e3a8a';
 
@@ -73,7 +73,7 @@ function renderCell(idx) {
   if (!td) return;
   const cell = state.cells[idx];
   if (!cell) {
-    td.style.background = '#374151';
+    td.style.background = '#234228';
     td.style.color = '#9ca3af';
     td.textContent = '';
     return;
@@ -82,7 +82,7 @@ function renderCell(idx) {
     const lvl = parseInt(cell.ref_level);
     td.style.background = REF_BG[lvl] || '#888';
     td.style.color = REF_FG[lvl] || '#000';
-    td.textContent = `REF L${lvl}`;
+    td.textContent = `ขวดอ้างอิง สี ${lvl}`;
   } else if (cell.is_white_reference) {
     td.style.background = WB_BG;
     td.style.color = WB_FG;
@@ -110,7 +110,7 @@ function openPopup(idx) {
   const r = Math.floor((idx - 1) / state.cols) + 1;
   const c = (idx - 1) % state.cols + 1;
 
-  document.getElementById('popup-title').textContent = `Row ${r}, Col ${c}  (cell ${idx})`;
+  document.getElementById('popup-title').textContent = `แถว ${r}, คอลัมน์ ${c}  (เซลล์ ${idx})`;
   const cell = state.cells[idx] || {
     slot_id: '', is_reference: false, ref_level: null, is_white_reference: false,
   };
@@ -152,10 +152,10 @@ document.getElementById('popup-is-wb').addEventListener('change', function() {
 
 function popupSave() {
   const slotId = document.getElementById('popup-slot-id').value.trim();
-  if (!slotId) { showToast('Slot ID cannot be empty', 'error'); return; }
+  if (!slotId) { showToast('กรุณากรอกรหัสช่อง', 'error'); return; }
   const isRef = document.getElementById('popup-is-ref').checked;
   const isWb  = document.getElementById('popup-is-wb').checked;
-  if (isRef && isWb) { showToast('Cell cannot be both colour ref and white ref', 'error'); return; }
+  if (isRef && isWb) { showToast('เซลล์ไม่สามารถเป็นทั้งสองประเภทพร้อมกัน', 'error'); return; }
   const refLevel = isRef ? parseInt(document.getElementById('popup-level').value) : null;
   state.cells[activeCellIdx] = {
     slot_id: slotId,
@@ -203,12 +203,12 @@ async function loadConfig() {
     }
     renderAllCells();
   } catch (e) {
-    showToast('Failed to load config: ' + e.message, 'error');
+    showToast('โหลดการตั้งค่าล้มเหลว: ' + e.message, 'error');
   }
 }
 
 function resetAll() {
-  if (!confirm('Clear all slot assignments? (Not saved until you click Save)')) return;
+  if (!confirm('ล้างการกำหนดช่องทั้งหมด? (ยังไม่บันทึกจนกว่าจะกดบันทึก)')) return;
   state.cells = {};
   renderAllCells();
 }
@@ -230,9 +230,9 @@ async function saveConfig() {
     });
     if (!res.ok) throw new Error((await res.json()).detail || 'Server error');
     const data = await res.json();
-    showToast(`Saved — ${data.cells} cells assigned`, 'success');
+    showToast(`บันทึกแล้ว — ${data.cells} เซลล์`, 'success');
   } catch (e) {
-    showToast('Save failed: ' + e.message, 'error');
+    showToast('บันทึกล้มเหลว: ' + e.message, 'error');
   }
 }
 

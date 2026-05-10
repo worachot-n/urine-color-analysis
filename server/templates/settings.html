@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% set active_page = "settings" %}
-{% block title %}Settings — Urine Analyzer{% endblock %}
+{% block title %}ตั้งค่า — วิเคราะห์ปัสสาวะ{% endblock %}
 
 {% block head %}
 <style>
   .grid-cell {
     width: 60px; height: 50px;
-    border: 1px solid #374151;
+    border: 1px solid #2d5438;
     cursor: pointer;
     font-size: 10px;
     font-weight: 600;
@@ -19,8 +19,8 @@
   #popup {
     position: fixed;
     z-index: 100;
-    background: #1f2937;
-    border: 1px solid #4b5563;
+    background: #1a3020;
+    border: 1px solid #2d5438;
     border-radius: 8px;
     padding: 14px;
     min-width: 200px;
@@ -39,25 +39,25 @@
 
 {% block content %}
 <div class="flex items-center justify-between mb-4">
-  <h1 class="text-2xl font-bold">Slot Assignment</h1>
+  <h1 class="text-2xl font-bold">กำหนดตำแหน่งช่อง</h1>
   <div class="flex gap-2">
-    <button onclick="loadConfig()" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Load Saved</button>
-    <button onclick="resetAll()" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm">Reset All</button>
-    <button onclick="saveConfig()" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm font-semibold">Save</button>
+    <button onclick="loadConfig()" class="px-3 py-1.5 rounded text-sm" style="background-color:#234228;" onmouseover="this.style.backgroundColor='#2d5438'" onmouseout="this.style.backgroundColor='#234228'">โหลดที่บันทึก</button>
+    <button onclick="resetAll()"  class="px-3 py-1.5 rounded text-sm" style="background-color:#234228;" onmouseover="this.style.backgroundColor='#2d5438'" onmouseout="this.style.backgroundColor='#234228'">รีเซ็ตทั้งหมด</button>
+    <button onclick="saveConfig()" class="px-3 py-1.5 rounded text-sm font-semibold" style="background-color:#FCBA54; color:#122017;" onmouseover="this.style.backgroundColor='#e8a840'" onmouseout="this.style.backgroundColor='#FCBA54'">บันทึก</button>
   </div>
 </div>
 
 <!-- Legend -->
 <div class="flex gap-4 mb-4 text-xs items-center flex-wrap">
-  <span class="font-semibold text-gray-400">Legend:</span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#fff9c4"></span><span class="text-gray-300">Ref L0</span></span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#ffe082"></span><span class="text-gray-300">Ref L1</span></span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#ffb74d"></span><span class="text-gray-300">Ref L2</span></span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#ef9a9a"></span><span class="text-gray-300">Ref L3</span></span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded border" style="background:#b71c1c"></span><span class="text-gray-300">Ref L4</span></span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded border border-gray-500" style="background:#fff;"></span><span class="text-gray-300">Sample</span></span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#bfdbfe"></span><span class="text-gray-300">White ref</span></span>
-  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#374151"></span><span class="text-gray-300">Empty</span></span>
+  <span class="font-semibold text-gray-400">คำอธิบาย:</span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#fce375"></span><span class="text-gray-300">ขวดอ้างอิง สี 0</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#499d71"></span><span class="text-gray-300">ขวดอ้างอิง สี 1</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#4a8c54"></span><span class="text-gray-300">ขวดอ้างอิง สี 2</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#1b593c"></span><span class="text-gray-300">ขวดอ้างอิง สี 3</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded border" style="background:#f05152"></span><span class="text-gray-300">ขวดอ้างอิง สี 4</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded border border-gray-500" style="background:#fff;"></span><span class="text-gray-300">ตัวอย่าง</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#bfdbfe"></span><span class="text-gray-300">อ้างอิงสีขาว</span></span>
+  <span class="flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#234228"></span><span class="text-gray-300">ว่าง</span></span>
 </div>
 
 <!-- Grid -->
@@ -71,32 +71,34 @@
 <!-- Popup -->
 <div id="popup" style="display:none">
   <div id="popup-title" class="text-xs text-gray-400 mb-3"></div>
-  <label class="block text-xs text-gray-400 mb-1">Slot ID</label>
+  <label class="block text-xs text-gray-400 mb-1">รหัสช่อง</label>
   <input id="popup-slot-id" type="text" maxlength="12"
-         class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm mb-3 text-white"/>
+         class="w-full rounded px-2 py-1 text-sm mb-3 text-white"
+         style="background-color:#0d1b12; border:1px solid #2d5438;"/>
   <label class="flex items-center gap-2 text-sm mb-2 cursor-pointer">
-    <input id="popup-is-ref" type="checkbox" class="accent-blue-500"/>
-    <span>Reference cell</span>
+    <input id="popup-is-ref" type="checkbox" class="accent-[#FCBA54]"/>
+    <span>เซลล์อ้างอิง</span>
   </label>
   <label class="flex items-center gap-2 text-sm mb-2 cursor-pointer">
-    <input id="popup-is-wb" type="checkbox" class="accent-blue-500"/>
-    <span>White reference (neutral patch)</span>
+    <input id="popup-is-wb" type="checkbox" class="accent-[#FCBA54]"/>
+    <span>อ้างอิงสีขาว (แผ่นกลาง)</span>
   </label>
   <div id="popup-level-row" class="hidden mb-3">
-    <label class="block text-xs text-gray-400 mb-1">Color Level</label>
+    <label class="block text-xs text-gray-400 mb-1">ระดับสี</label>
     <select id="popup-level"
-            class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm text-white">
-      <option value="0">L0</option>
-      <option value="1">L1</option>
-      <option value="2">L2</option>
-      <option value="3">L3</option>
-      <option value="4">L4</option>
+            class="w-full rounded px-2 py-1 text-sm text-white"
+            style="background-color:#0d1b12; border:1px solid #2d5438;">
+      <option value="0">สี 0</option>
+      <option value="1">สี 1</option>
+      <option value="2">สี 2</option>
+      <option value="3">สี 3</option>
+      <option value="4">สี 4</option>
     </select>
   </div>
   <div class="flex gap-2">
-    <button onclick="popupSave()"  class="flex-1 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs font-semibold">Save</button>
-    <button onclick="popupClear()" class="flex-1 py-1.5 bg-red-800  hover:bg-red-700  rounded text-xs font-semibold">Clear</button>
-    <button onclick="closePopup()" class="px-3 py-1.5 bg-gray-700  hover:bg-gray-600  rounded text-xs">✕</button>
+    <button onclick="popupSave()"  class="flex-1 py-1.5 rounded text-xs font-semibold" style="background-color:#FCBA54; color:#122017;" onmouseover="this.style.backgroundColor='#e8a840'" onmouseout="this.style.backgroundColor='#FCBA54'">บันทึก</button>
+    <button onclick="popupClear()" class="flex-1 py-1.5 rounded text-xs font-semibold bg-red-800 hover:bg-red-700">ล้าง</button>
+    <button onclick="closePopup()" class="px-3 py-1.5 rounded text-xs" style="background-color:#234228;" onmouseover="this.style.backgroundColor='#2d5438'" onmouseout="this.style.backgroundColor='#234228'">✕</button>
   </div>
 </div>
 

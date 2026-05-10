@@ -1,30 +1,32 @@
 {% extends "base.html" %}
 {% set active_page = "results" %}
-{% block title %}Scan History — Urine Analyzer{% endblock %}
+{% block title %}ประวัติการตรวจ — วิเคราะห์ปัสสาวะ{% endblock %}
 
 {% block content %}
 <div class="flex items-center justify-between mb-6">
-  <h1 class="text-2xl font-bold">Scan History</h1>
-  <a href="/upload" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium transition-colors">
-    + New Upload
+  <h1 class="text-2xl font-bold">ประวัติการตรวจ</h1>
+  <a href="/upload" class="px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+     style="background-color:#FCBA54; color:#122017;">
+    + อัพโหลดใหม่
   </a>
 </div>
 
 {% if scans %}
-<div class="bg-gray-800 rounded-xl overflow-hidden">
+<div class="rounded-xl overflow-hidden" style="background-color:#1a3020;">
   <table class="w-full text-sm">
-    <thead class="bg-gray-700 text-gray-300 uppercase text-xs">
+    <thead class="text-gray-300 uppercase text-xs" style="background-color:#234228;">
       <tr>
-        <th class="px-4 py-3 text-left">Timestamp</th>
-        <th class="px-4 py-3 text-center">Detected</th>
-        <th class="px-4 py-3 text-left">Summary</th>
-        <th class="px-4 py-3 text-left">Missing</th>
+        <th class="px-4 py-3 text-left">เวลา</th>
+        <th class="px-4 py-3 text-center">ตรวจพบ</th>
+        <th class="px-4 py-3 text-left">สรุป</th>
+        <th class="px-4 py-3 text-left">หายไป</th>
         <th class="px-4 py-3"></th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-gray-700">
+    <tbody style="border-top: 1px solid #2d5438;">
       {% for s in scans %}
-      <tr class="hover:bg-gray-750 transition-colors">
+      <tr class="transition-colors" style="border-bottom: 1px solid #2d5438;"
+          onmouseover="this.style.backgroundColor='#1e3a26'" onmouseout="this.style.backgroundColor=''">
         <td class="px-4 py-3 font-mono text-gray-300">{{ s.timestamp }}</td>
         <td class="px-4 py-3 text-center">
           <span class="{% if s.detected_count == s.total_assigned %}text-green-400{% else %}text-yellow-400{% endif %} font-semibold">
@@ -40,7 +42,8 @@
           {{ s.missing_slots | join(', ') if s.missing_slots else '—' }}
         </td>
         <td class="px-4 py-3 text-right">
-          <a href="/result/{{ s.scan_id }}" class="text-blue-400 hover:text-blue-300">View →</a>
+          <a href="/result/{{ s.scan_id }}" class="transition-colors" style="color:#FCBA54;"
+             onmouseover="this.style.color='#e8a840'" onmouseout="this.style.color='#FCBA54'">ดู →</a>
         </td>
       </tr>
       {% endfor %}
@@ -49,8 +52,8 @@
 </div>
 {% else %}
 <div class="text-center py-16 text-gray-500">
-  <p class="text-lg">No scans yet.</p>
-  <a href="/upload" class="mt-4 inline-block text-blue-400 hover:underline">Upload your first image</a>
+  <p class="text-lg">ยังไม่มีการสแกน</p>
+  <a href="/upload" class="mt-4 inline-block hover:underline" style="color:#FCBA54;">อัพโหลดภาพแรกของคุณ</a>
 </div>
 {% endif %}
 {% endblock %}

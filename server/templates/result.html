@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% set active_page = "results" %}
-{% block title %}Result {{ scan.scan_id }} — Urine Analyzer{% endblock %}
+{% block title %}ผลการตรวจ {{ scan.scan_id }} — วิเคราะห์ปัสสาวะ{% endblock %}
 
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -8,45 +8,47 @@
 
 {% block content %}
 <div class="flex items-center gap-4 mb-6">
-  <a href="/results" class="text-gray-400 hover:text-white">← History</a>
-  <h1 class="text-xl font-bold flex-1">Result <span class="font-mono text-blue-400">{{ scan.scan_id }}</span></h1>
+  <a href="/results" class="text-gray-400 hover:text-white">← ประวัติ</a>
+  <h1 class="text-xl font-bold flex-1">ผลการตรวจ <span class="font-mono" style="color:#FCBA54;">{{ scan.scan_id }}</span></h1>
   <span class="text-gray-400 text-sm font-mono">{{ scan.timestamp }}</span>
-  <a href="/upload" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-md text-sm">+ New Upload</a>
+  <a href="/upload" class="px-3 py-1.5 rounded-md text-sm transition-colors"
+     style="background-color:#FCBA54; color:#122017;"
+     onmouseover="this.style.backgroundColor='#e8a840'" onmouseout="this.style.backgroundColor='#FCBA54'">+ อัพโหลดใหม่</a>
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
   <!-- Annotated image -->
-  <div class="bg-gray-800 rounded-xl p-4">
-    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">Annotated Image</h2>
+  <div class="rounded-xl p-4" style="background-color:#1a3020;">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">ภาพที่มีคำอธิบาย</h2>
     <img src="{{ scan.image_url }}" alt="Annotated scan" class="w-full rounded-lg"/>
     <div class="mt-3 flex gap-6 text-sm">
-      <span>Detected: <strong class="text-green-400">{{ scan.detected_count }} / {{ scan.total_assigned }}</strong></span>
+      <span>ตรวจพบ: <strong class="text-green-400">{{ scan.detected_count }} / {{ scan.total_assigned }}</strong></span>
       {% if scan.missing_slots %}
-      <span>Missing: <strong class="text-red-400">{{ scan.missing_slots | join(', ') }}</strong></span>
+      <span>หายไป: <strong class="text-red-400">{{ scan.missing_slots | join(', ') }}</strong></span>
       {% endif %}
     </div>
   </div>
 
   <!-- Slot results table -->
-  <div class="bg-gray-800 rounded-xl p-4">
-    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">Slot Results</h2>
+  <div class="rounded-xl p-4" style="background-color:#1a3020;">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">ผลลัพธ์ช่อง</h2>
     <div class="overflow-auto max-h-80">
       <table class="w-full text-sm">
-        <thead class="text-gray-400 text-xs uppercase sticky top-0 bg-gray-800">
+        <thead class="text-gray-400 text-xs uppercase sticky top-0" style="background-color:#1a3020;">
           <tr>
-            <th class="py-2 text-left">Slot</th>
-            <th class="py-2 text-center">Color</th>
-            <th class="py-2 text-center">Level</th>
-            <th class="py-2 text-center" title="Concentration index along the Master Color Path (e.g. 1.5 = halfway between L1 and L2)">Idx</th>
+            <th class="py-2 text-left">ช่อง</th>
+            <th class="py-2 text-center">สี</th>
+            <th class="py-2 text-center">ระดับ</th>
+            <th class="py-2 text-center" title="Concentration index along the Master Color Path (e.g. 1.5 = halfway between สี 1 and สี 2)">Idx</th>
             <th class="py-2 text-center" title="Perpendicular distance from the Master Color Path (weighted Lab)">Path&nbsp;Δ</th>
             <th class="py-2 text-center" title="Histogram Bhattacharyya distance (0 = identical, 1 = no overlap)">Hist&nbsp;ΔB</th>
             <th class="py-2 text-center" title="Hybrid score = w_c·(path_Δ/scale) + w_h·Bhatt — lower is better; histogram weight halved when path_Δ is very low">Score</th>
-            <th class="py-2 text-center">Conf</th>
+            <th class="py-2 text-center">ความเชื่อมั่น</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-700">
+        <tbody style="border-top: 1px solid #2d5438;">
           {% for slot_id, d in scan.slots.items() %}
-          <tr class="{% if not d.detected %}opacity-50{% endif %}">
+          <tr class="{% if not d.detected %}opacity-50{% endif %}" style="border-bottom: 1px solid #2d5438;">
             <td class="py-1.5 font-mono font-semibold">{{ slot_id }}</td>
             <td class="py-1.5 text-center">
               {% if d.hex %}
@@ -56,23 +58,23 @@
             </td>
             <td class="py-1.5 text-center">
               {% if d.color_level is not none %}
-              <span class="px-2 py-0.5 rounded text-xs font-bold
-                {% if d.color_level == 0 %}bg-yellow-200 text-yellow-900
-                {% elif d.color_level == 1 %}bg-yellow-400 text-yellow-900
-                {% elif d.color_level == 2 %}bg-orange-400 text-white
-                {% elif d.color_level == 3 %}bg-red-400 text-white
-                {% else %}bg-red-800 text-white{% endif %}">
-                L{{ d.color_level }}{% if d.force_l0 %}<span class="ml-1" title="Force-classified by saturation pre-check (achromatic)">•</span>{% endif %}
+              <span class="px-2 py-0.5 rounded text-xs font-bold"
+                style="{% if d.color_level == 0 %}background:#fce375;color:#122017;
+                       {% elif d.color_level == 1 %}background:#499d71;color:#122017;
+                       {% elif d.color_level == 2 %}background:#4a8c54;color:#122017;
+                       {% elif d.color_level == 3 %}background:#1b593c;color:#ffffff;
+                       {% else %}background:#f05152;color:#ffffff;{% endif %}">
+                สี{{ d.color_level }}{% if d.force_l0 %}<span class="ml-1" title="จำแนกโดยการตรวจสอบความอิ่มตัว (ไม่มีสี)">•</span>{% endif %}
               </span>
               {% else %}
-              <span class="text-red-400 text-xs">miss</span>
+              <span class="text-red-400 text-xs">ไม่พบ</span>
               {% endif %}
             </td>
             <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
               {{ "%.2f"|format(d.concentration_index) if d.concentration_index is not none else '—' }}
             </td>
             <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
-              {{ "%.1f"|format(d.path_distance) if d.path_distance is not none else '—' }}{% if d.soft_penalty %}<span class="ml-1 text-blue-400" title="Soft-penalty active (path Δ very low → histogram weight halved)">↓</span>{% endif %}
+              {{ "%.1f"|format(d.path_distance) if d.path_distance is not none else '—' }}{% if d.soft_penalty %}<span class="ml-1" style="color:#FCBA54;" title="ปรับลด histogram (path Δ ต่ำมาก)">↓</span>{% endif %}
             </td>
             <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
               {{ "%.3f"|format(d.hist_bhatt) if d.hist_bhatt is not none else '—' }}
@@ -87,7 +89,7 @@
                 {% else %}{% set bar_color = 'bg-red-500' %}{% endif %}
                 <div class="flex items-center gap-1.5">
                   <span class="font-mono text-xs">{{ "%.3f"|format(d.combined) }}</span>
-                  <span class="inline-block bg-gray-700 rounded h-1.5 flex-1 max-w-[40px]">
+                  <span class="inline-block rounded h-1.5 flex-1 max-w-[40px]" style="background-color:#234228;">
                     <span class="block h-1.5 rounded {{ bar_color }}" style="width:{{ bar_pct }}%"></span>
                   </span>
                 </div>
@@ -95,9 +97,9 @@
             </td>
             <td class="py-1.5 text-center">
               {% if d.detected %}
-                {% if d.confident %}<span class="text-green-400" title="Confident — close to path AND score below low-confidence threshold">✓</span>
-                {% elif d.best_fit %}<span class="text-orange-400" title="Best-fit only — score above low-confidence threshold; nearest level is reported but expect noise">⚠</span>
-                {% else %}<span class="text-yellow-400" title="Borderline — between confident and best-fit-only">~</span>{% endif %}
+                {% if d.confident %}<span class="text-green-400" title="ชัดเจน — ใกล้เส้นทางและคะแนนต่ำกว่าเกณฑ์">✓</span>
+                {% elif d.best_fit %}<span class="text-orange-400" title="ใกล้เคียงที่สุด — คะแนนสูงกว่าเกณฑ์ความเชื่อมั่น; แสดงระดับที่ใกล้ที่สุด">⚠</span>
+                {% else %}<span class="text-yellow-400" title="กำกวม — ระหว่างชัดเจนและใกล้เคียงที่สุด">~</span>{% endif %}
               {% else %}<span class="text-red-400">✗</span>{% endif %}
             </td>
           </tr>
@@ -106,7 +108,7 @@
       </table>
     </div>
     <!-- Summary bar -->
-    <div class="mt-3 flex gap-3 text-xs font-mono border-t border-gray-700 pt-3">
+    <div class="mt-3 flex gap-3 text-xs font-mono pt-3" style="border-top: 1px solid #2d5438;">
       {% for k, v in scan.summary.items() %}
       <span class="{% if v > 0 %}text-white font-bold{% else %}text-gray-600{% endif %}">{{ k }}:{{ v }}</span>
       {% endfor %}
@@ -115,18 +117,20 @@
 </div>
 
 <!-- Concentration trajectory chart -->
-<div class="bg-gray-800 rounded-xl p-4 mb-6">
+<div class="rounded-xl p-4 mb-6" style="background-color:#1a3020;">
   <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
-    <h2 class="text-sm font-semibold text-gray-400 uppercase">Concentration Trajectory — Index along Master Path vs Lightness L*</h2>
+    <h2 class="text-sm font-semibold text-gray-400 uppercase">กราฟการจำแนกสี</h2>
     {% if scan.wb_offset %}
-      <span class="text-xs px-2 py-1 rounded bg-blue-900 text-blue-200 font-mono"
+      <span class="text-xs px-2 py-1 rounded font-mono"
+            style="background-color:#1b593c; color:#fce375;"
             title="White-balance offset measured from is_white_reference cells (subtracted before histogram binning)">
-        WB applied · Δa={{ "%+.2f"|format(scan.wb_offset[0]) }}, Δb={{ "%+.2f"|format(scan.wb_offset[1]) }}
+        ใช้ WB แล้ว · Δa={{ "%+.2f"|format(scan.wb_offset[0]) }}, Δb={{ "%+.2f"|format(scan.wb_offset[1]) }}
       </span>
     {% else %}
-      <span class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-400 font-mono"
+      <span class="text-xs px-2 py-1 rounded font-mono text-gray-400"
+            style="background-color:#234228;"
             title="Mark a paper / neutral cell as 'White reference' in /settings to enable">
-        WB off — no white-reference cells configured
+        WB ปิด — ไม่มีเซลล์อ้างอิงสีขาว
       </span>
     {% endif %}
   </div>
@@ -134,20 +138,20 @@
     <canvas id="trajectory-chart"></canvas>
   </div>
   <p class="text-xs text-gray-500 mt-2">
-    ━ Master Color Path (polyline through the per-level Lab centroids) · ◇ Reference centroids · ● Classified samples (coloured by level) · • after L0 = force-classified by saturation pre-check.
-    Each sample is plotted at its <strong>concentration index</strong> (1-D projection onto the path) and its raw L*. A "1.5" reads as halfway between L1 and L2.
-    <strong>Force-Match:</strong> every detected bottle is assigned its nearest level along the path. ⚠ in the CONF column flags samples whose hybrid score is above the low-confidence threshold — the level is the closest available, but expect noise.
+    ━ เส้นทางสีหลัก (polyline ผ่านจุดศูนย์กลาง Lab ของแต่ละระดับ) · ◇ จุดศูนย์กลางอ้างอิง · ● ตัวอย่างที่จำแนกแล้ว (สีตามระดับ) · • หลัง สี 0 = จำแนกโดยการตรวจสอบความอิ่มตัว.
+    แต่ละตัวอย่างแสดงที่ <strong>ดัชนีความเข้มข้น</strong> (การฉายบน 1-D path) และ L* ดิบ. "1.5" หมายถึงกึ่งกลางระหว่าง สี 1 และ สี 2.
+    <strong>Force-Match:</strong> ขวดที่ตรวจพบทุกขวดจะได้รับการกำหนดระดับที่ใกล้ที่สุด ⚠ ในคอลัมน์ความเชื่อมั่นหมายถึงคะแนนสูงกว่าเกณฑ์ — ระดับที่ได้คือใกล้ที่สุดที่มี แต่อาจมีความคลาดเคลื่อน.
   </p>
 </div>
 
 <!-- Raw JSON -->
-<details class="bg-gray-800 rounded-xl">
-  <summary class="px-4 py-3 cursor-pointer text-sm font-semibold text-gray-400 hover:text-white">▼ Raw JSON</summary>
+<details class="rounded-xl" style="background-color:#1a3020;">
+  <summary class="px-4 py-3 cursor-pointer text-sm font-semibold text-gray-400 hover:text-white">▼ ข้อมูล JSON</summary>
   <pre class="px-4 pb-4 text-xs text-gray-300 overflow-auto max-h-96 font-mono">{{ scan | tojson(indent=2) }}</pre>
 </details>
 
 <script>
-const LEVEL_COLORS = ['#f9e54d','#ffc107','#ff9800','#f44336','#b71c1c'];
+const LEVEL_COLORS = ['#fce375','#499d71','#4a8c54','#1b593c','#f05152'];
 const scanData = {{ scan | tojson }};
 
 // OpenCV-Lab encoding: L_cv∈[0,255], a/b∈[0,255] (128 = neutral).
@@ -163,7 +167,7 @@ const pathLine = masterPath
   ? masterPath.levels.map((lvl, i) => ({
       x: lvl,
       y: labCvToL(masterPath.points[i][0]),
-      label: `L${lvl} centroid`,
+      label: `สี ${lvl} ศูนย์กลาง`,
     }))
   : [];
 
@@ -221,7 +225,7 @@ function buildDatasets() {
   // Layer 1: Master Color Path — connect centroids in (level, L*) space
   if (pathLine.length >= 2) {
     datasets.push({
-      label: 'Master Color Path',
+      label: 'เส้นทางสีหลัก',
       data: pathLine,
       type: 'line',
       showLine: true,
@@ -231,20 +235,19 @@ function buildDatasets() {
       pointRadius: 0,
       pointHoverRadius: 0,
       tension: 0,
-      order: 99,   // drawn first (lowest in Chart.js order semantics)
+      order: 99,
     });
   }
 
   // Layer 2: Reference centroids — large filled diamonds at integer x = level
   if (pathLine.length) {
     const centroidPts = pathLine.map(p => ({
-      x: p.x, y: p.y, label: `Centroid L${p.x}`, isCentroid: true,
+      x: p.x, y: p.y, label: `ศูนย์กลาง สี ${p.x}`, isCentroid: true,
     }));
-    // Build per-level centroid datasets so each gets its own colour
     for (const cp of centroidPts) {
       const color = LEVEL_COLORS[cp.x] || '#aaa';
       datasets.push({
-        label: `Centroid L${cp.x}`,
+        label: `ศูนย์กลาง สี ${cp.x}`,
         data: [cp],
         pointStyle: 'rectRot',
         pointRadius: 14,
@@ -261,7 +264,7 @@ function buildDatasets() {
   for (const [lvl, pts] of Object.entries(samplesByLevel)) {
     const color = LEVEL_COLORS[parseInt(lvl)] || '#aaa';
     datasets.push({
-      label: `Samples L${lvl}`,
+      label: `ตัวอย่าง สี ${lvl}`,
       data: pts,
       pointStyle: 'circle',
       pointRadius: 7,
@@ -276,7 +279,7 @@ function buildDatasets() {
   // Layer 4: Force-L0 samples (saturation pre-check) — open yellow circle
   if (forceL0Samples.length) {
     datasets.push({
-      label: 'Force-L0 (saturation)',
+      label: 'ระดับ สี 0 (ความอิ่มตัว)',
       data: forceL0Samples,
       pointStyle: 'circle',
       pointRadius: 8,
@@ -288,10 +291,10 @@ function buildDatasets() {
     });
   }
 
-  // Layer 5: Out-of-range samples (path Δ above threshold) — grey ×
+  // Layer 5: Out-of-range samples — grey ×
   if (outOfRange.length) {
     datasets.push({
-      label: 'Out of range (path Δ > max)',
+      label: 'นอกช่วง',
       data: outOfRange,
       pointStyle: 'crossRot',
       pointRadius: 8,
@@ -325,11 +328,11 @@ new Chart(ctx, {
             if (d.path_distance != null) lines.push(`path Δ: ${d.path_distance.toFixed(2)}`);
             if (d.hist_bhatt != null)    lines.push(`Hist ΔB: ${d.hist_bhatt.toFixed(3)}`);
             if (d.combined != null)      lines.push(`Score: ${d.combined.toFixed(3)}`);
-            if (d.soft_penalty)          lines.push('soft-penalty active (hist weight halved)');
-            if (d.force_l0)              lines.push('force-L0 (saturation pre-check)');
-            if (d.confident === true)    lines.push('confidence: ✓ confident');
-            else if (d.best_fit === true) lines.push('confidence: ⚠ best-fit only');
-            else if (d.color_level != null) lines.push('confidence: ~ borderline');
+            if (d.soft_penalty)          lines.push('ปรับลด histogram (path Δ ต่ำมาก)');
+            if (d.force_l0)              lines.push('จำแนกเป็น สี 0 (ความอิ่มตัวต่ำ)');
+            if (d.confident === true)    lines.push('ความเชื่อมั่น: ✓ ชัดเจน');
+            else if (d.best_fit === true) lines.push('ความเชื่อมั่น: ⚠ ใกล้เคียงที่สุด');
+            else if (d.color_level != null) lines.push('ความเชื่อมั่น: ~ กำกวม');
             return lines;
           },
         },
@@ -337,19 +340,19 @@ new Chart(ctx, {
     },
     scales: {
       x: {
-        title: { display: true, text: 'Concentration Index (along Master Path)', color: '#888' },
+        title: { display: true, text: 'ดัชนีความเข้มข้น (ตามเส้นทางหลัก)', color: '#888' },
         min: levelMin, max: levelMax,
         ticks: {
           color: '#888',
           stepSize: 1,
-          callback: (v) => Number.isInteger(v) ? `L${v}` : v.toFixed(1),
+          callback: (v) => Number.isInteger(v) ? `สี ${v}` : v.toFixed(1),
         },
-        grid: { color: '#333' },
+        grid: { color: '#2d5438' },
       },
       y: {
-        title: { display: true, text: 'L* (lightness)', color: '#888' },
+        title: { display: true, text: 'L* (ความสว่าง)', color: '#888' },
         min: 0, max: 100,
-        grid: { color: '#333' },
+        grid: { color: '#2d5438' },
         ticks: { color: '#888' },
       },
     },
