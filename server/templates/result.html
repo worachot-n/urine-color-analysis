@@ -4,6 +4,33 @@
 
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  .tray-cell { width: 38px; height: 32px; border: 1px solid #2d5438;
+               text-align: center; vertical-align: middle; font-size: 9px;
+               font-weight: 600; line-height: 1.15; user-select: none; }
+  .tray-cell.has-data { cursor: help; transition: outline .1s ease; }
+  .tray-cell.has-data:hover { outline: 2px solid #FCBA54; outline-offset: 1px; position: relative; z-index: 1; }
+  .tray-cell.miss { border: 2px dashed #f87171; background: transparent; color: #f87171; }
+  .tray-cell.ref  { outline: 2px solid #FCBA54; outline-offset: -2px; }
+  .tray-cell.empty { background: #234228; }
+  #tray-tooltip { background: #0d1b12; border: 1px solid #FCBA54; max-width: 280px; }
+  .expand-btn {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+    background: #234228; color: #9ca3af; border: none; cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .expand-btn:hover { background: #2d5438; color: #fff; }
+  #lb-overlay { backdrop-filter: blur(3px); }
+  .lb-tray-cell { width: 52px; height: 44px; border: 1px solid #2d5438;
+    text-align: center; vertical-align: middle; font-size: 10px;
+    font-weight: 600; line-height: 1.2; user-select: none; }
+  .lb-tray-cell.has-data { cursor: help; }
+  .lb-tray-cell.has-data:hover { outline: 2px solid #FCBA54; outline-offset: 1px; }
+  .lb-tray-cell.miss  { border: 2px dashed #f87171; background: transparent; color: #f87171; }
+  .lb-tray-cell.ref   { outline: 2px solid #FCBA54; outline-offset: -2px; }
+  .lb-tray-cell.empty { background: #234228; }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -37,7 +64,10 @@
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
   <!-- Annotated image -->
   <div class="rounded-xl p-4" style="background-color:#1a3020;">
-    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">ภาพที่มีคำอธิบาย</h2>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-gray-400 uppercase">ภาพที่มีคำอธิบาย</h2>
+      <button class="expand-btn" onclick="openLightbox('image')">⛶ ขยาย</button>
+    </div>
     <img src="{{ scan.image_url }}" alt="Annotated scan" class="w-full rounded-lg"/>
     <div class="mt-3 flex gap-6 text-sm">
       <span>ตรวจพบ: <strong class="text-green-400">{{ scan.detected_count }} / {{ scan.total_assigned }}</strong></span>
@@ -49,9 +79,12 @@
 
   <!-- Slot results table -->
   <div class="rounded-xl p-4" style="background-color:#1a3020;">
-    <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">ผลลัพธ์ช่อง</h2>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-gray-400 uppercase">ผลลัพธ์ช่อง</h2>
+      <button class="expand-btn" onclick="openLightbox('table')">⛶ ขยาย</button>
+    </div>
     <div class="overflow-auto max-h-80">
-      <table class="w-full text-sm">
+      <table id="slot-result-table" class="w-full text-sm">
         <thead class="text-gray-400 text-xs uppercase sticky top-0" style="background-color:#1a3020;">
           <tr>
             <th class="py-2 text-left">ช่อง</th>
@@ -138,19 +171,22 @@
 <div class="rounded-xl p-4 mb-6" style="background-color:#1a3020;">
   <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
     <h2 class="text-sm font-semibold text-gray-400 uppercase">กราฟการจำแนกสี</h2>
-    {% if scan.wb_offset %}
-      <span class="text-xs px-2 py-1 rounded font-mono"
-            style="background-color:#1b593c; color:#fce375;"
-            title="White-balance offset measured from is_white_reference cells (subtracted before histogram binning)">
-        ใช้ WB แล้ว · Δa={{ "%+.2f"|format(scan.wb_offset[0]) }}, Δb={{ "%+.2f"|format(scan.wb_offset[1]) }}
-      </span>
-    {% else %}
-      <span class="text-xs px-2 py-1 rounded font-mono text-gray-400"
-            style="background-color:#234228;"
-            title="Mark a paper / neutral cell as 'White reference' in /settings to enable">
-        WB ปิด — ไม่มีเซลล์อ้างอิงสีขาว
-      </span>
-    {% endif %}
+    <div class="flex items-center gap-2 flex-wrap">
+      {% if scan.wb_offset %}
+        <span class="text-xs px-2 py-1 rounded font-mono"
+              style="background-color:#1b593c; color:#fce375;"
+              title="White-balance offset measured from is_white_reference cells (subtracted before histogram binning)">
+          ใช้ WB แล้ว · Δa={{ "%+.2f"|format(scan.wb_offset[0]) }}, Δb={{ "%+.2f"|format(scan.wb_offset[1]) }}
+        </span>
+      {% else %}
+        <span class="text-xs px-2 py-1 rounded font-mono text-gray-400"
+              style="background-color:#234228;"
+              title="Mark a paper / neutral cell as 'White reference' in /settings to enable">
+          WB ปิด — ไม่มีเซลล์อ้างอิงสีขาว
+        </span>
+      {% endif %}
+      <button class="expand-btn" onclick="openLightbox('chart')">⛶ ขยาย</button>
+    </div>
   </div>
   <div class="relative" style="height:420px">
     <canvas id="trajectory-chart"></canvas>
@@ -162,11 +198,47 @@
   </p>
 </div>
 
+<!-- Visual tray grid -->
+{% if scan.grid_rows and scan.grid_cols %}
+<div class="rounded-xl p-4 mb-6" style="background-color:#1a3020;">
+  <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase">แผนผังถาด — ผลการจำแนก</h2>
+    <div class="flex items-center gap-2">
+      <span class="text-xs text-gray-500">วางเมาส์บนเซลล์เพื่อดูรายละเอียด</span>
+      <button class="expand-btn" onclick="openLightbox('tray')">⛶ ขยาย</button>
+    </div>
+  </div>
+  <div class="overflow-auto" id="tray-grid-wrapper"></div>
+  <div class="flex flex-wrap gap-3 mt-4 text-xs items-center justify-center">
+    <span class="text-gray-400">คำอธิบาย:</span>
+    {% for lvl, lbl, bg in [(0,'สี 0','#FFFDE7'),(1,'สี 1','#FFF176'),(2,'สี 2','#FFD54F'),(3,'สี 3','#FF8F00'),(4,'สี 4','#BF360C')] %}
+    <span class="inline-flex items-center gap-1"><span class="w-4 h-4 rounded border border-gray-500" style="background:{{ bg }}"></span><span class="text-gray-300">{{ lbl }}</span></span>
+    {% endfor %}
+    <span class="inline-flex items-center gap-1"><span class="w-4 h-4 rounded border-2 border-dashed border-red-400"></span><span class="text-gray-300">หายไป</span></span>
+    <span class="inline-flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#fff; outline:2px solid #FCBA54; outline-offset:-2px;"></span><span class="text-gray-300">ขวดอ้างอิง</span></span>
+    <span class="inline-flex items-center gap-1"><span class="w-4 h-4 rounded" style="background:#234228"></span><span class="text-gray-300">ว่าง</span></span>
+  </div>
+</div>
+<div id="tray-tooltip" class="hidden fixed z-50 pointer-events-none rounded-lg p-3 text-xs shadow-2xl"></div>
+{% endif %}
+
 <!-- Raw JSON -->
 <details class="rounded-xl" style="background-color:#1a3020;">
   <summary class="px-4 py-3 cursor-pointer text-sm font-semibold text-gray-400 hover:text-white">▼ ข้อมูล JSON</summary>
   <pre class="px-4 pb-4 text-xs text-gray-300 overflow-auto max-h-96 font-mono">{{ scan | tojson(indent=2) }}</pre>
 </details>
+
+<!-- Lightbox overlay -->
+<div id="lb-overlay" class="hidden fixed inset-0 z-[9999] flex items-center justify-center">
+  <div onclick="closeLightbox()" class="absolute inset-0" style="background:rgba(0,0,0,.88);"></div>
+  <div class="relative flex flex-col" style="z-index:1; max-width:96vw; max-height:96vh;">
+    <div class="flex items-center justify-between mb-2 px-1">
+      <span id="lb-title" class="text-sm font-semibold text-gray-300"></span>
+      <button onclick="closeLightbox()" class="text-gray-400 hover:text-white text-xs px-3 py-1 rounded ml-4" style="background:#234228;">✕ ปิด (Esc)</button>
+    </div>
+    <div id="lb-body" class="overflow-auto rounded-xl" style="background:#1a3020; padding:16px;"></div>
+  </div>
+</div>
 
 <script>
 const LEVEL_COLORS = ['#FFFDE7','#FFF176','#FFD54F','#FF8F00','#BF360C'];
@@ -327,54 +399,228 @@ function buildDatasets() {
   return datasets;
 }
 
-const ctx = document.getElementById('trajectory-chart').getContext('2d');
-new Chart(ctx, {
-  type: 'scatter',
-  data: { datasets: buildDatasets() },
-  options: {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend:  { labels: { color: '#ccc', boxWidth: 14, usePointStyle: true } },
-      tooltip: {
-        callbacks: {
-          label(ctx) {
-            const d = ctx.raw;
-            const lines = [d.label, `index: ${d.x.toFixed(2)}, L*: ${d.y.toFixed(1)}`];
-            if (d.hex) lines.push(`hex: ${d.hex}`);
-            if (d.a_std != null) lines.push(`a*: ${d.a_std.toFixed(1)}, b*: ${d.b_std.toFixed(1)}`);
-            if (d.path_distance != null) lines.push(`path Δ: ${d.path_distance.toFixed(2)}`);
-            if (d.hist_bhatt != null)    lines.push(`Hist ΔB: ${d.hist_bhatt.toFixed(3)}`);
-            if (d.combined != null)      lines.push(`Score: ${d.combined.toFixed(3)}`);
-            if (d.soft_penalty)          lines.push('ปรับลด histogram (path Δ ต่ำมาก)');
-            if (d.force_l0)              lines.push('จำแนกเป็น สี 0 (ความอิ่มตัวต่ำ)');
-            if (d.confident === true)    lines.push('ความเชื่อมั่น: ✓ ชัดเจน');
-            else if (d.best_fit === true) lines.push('ความเชื่อมั่น: ⚠ ใกล้เคียงที่สุด');
-            else if (d.color_level != null) lines.push('ความเชื่อมั่น: ~ กำกวม');
-            return lines;
+function buildChartConfig() {
+  return {
+    type: 'scatter',
+    data: { datasets: buildDatasets() },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend:  { labels: { color: '#ccc', boxWidth: 14, usePointStyle: true } },
+        tooltip: {
+          callbacks: {
+            label(ctx) {
+              const d = ctx.raw;
+              const lines = [d.label, `index: ${d.x.toFixed(2)}, L*: ${d.y.toFixed(1)}`];
+              if (d.hex) lines.push(`hex: ${d.hex}`);
+              if (d.a_std != null) lines.push(`a*: ${d.a_std.toFixed(1)}, b*: ${d.b_std.toFixed(1)}`);
+              if (d.path_distance != null) lines.push(`path Δ: ${d.path_distance.toFixed(2)}`);
+              if (d.hist_bhatt != null)    lines.push(`Hist ΔB: ${d.hist_bhatt.toFixed(3)}`);
+              if (d.combined != null)      lines.push(`Score: ${d.combined.toFixed(3)}`);
+              if (d.soft_penalty)          lines.push('ปรับลด histogram (path Δ ต่ำมาก)');
+              if (d.force_l0)              lines.push('จำแนกเป็น สี 0 (ความอิ่มตัวต่ำ)');
+              if (d.confident === true)    lines.push('ความเชื่อมั่น: ✓ ชัดเจน');
+              else if (d.best_fit === true) lines.push('ความเชื่อมั่น: ⚠ ใกล้เคียงที่สุด');
+              else if (d.color_level != null) lines.push('ความเชื่อมั่น: ~ กำกวม');
+              return lines;
+            },
           },
         },
       },
-    },
-    scales: {
-      x: {
-        title: { display: true, text: 'ดัชนีความเข้มข้น (ตามเส้นทางหลัก)', color: '#888' },
-        min: levelMin, max: levelMax,
-        ticks: {
-          color: '#888',
-          stepSize: 1,
-          callback: (v) => Number.isInteger(v) ? `สี ${v}` : v.toFixed(1),
+      scales: {
+        x: {
+          title: { display: true, text: 'ดัชนีความเข้มข้น (ตามเส้นทางหลัก)', color: '#888' },
+          min: levelMin, max: levelMax,
+          ticks: {
+            color: '#888',
+            stepSize: 1,
+            callback: (v) => Number.isInteger(v) ? `สี ${v}` : v.toFixed(1),
+          },
+          grid: { color: '#2d5438' },
         },
-        grid: { color: '#2d5438' },
-      },
-      y: {
-        title: { display: true, text: 'L* (ความสว่าง)', color: '#888' },
-        min: 0, max: 100,
-        grid: { color: '#2d5438' },
-        ticks: { color: '#888' },
+        y: {
+          title: { display: true, text: 'L* (ความสว่าง)', color: '#888' },
+          min: 0, max: 100,
+          grid: { color: '#2d5438' },
+          ticks: { color: '#888' },
+        },
       },
     },
-  },
-});
+  };
+}
+
+const ctx = document.getElementById('trajectory-chart').getContext('2d');
+new Chart(ctx, buildChartConfig());
+
+// ── Shared tray state ──────────────────────────────────────────────────────
+const TRAY_PALETTE = [
+  {bg:'#FFFDE7', fg:'#5d4037'}, {bg:'#FFF176', fg:'#5d4037'},
+  {bg:'#FFD54F', fg:'#5d4037'}, {bg:'#FF8F00', fg:'#fff'},
+  {bg:'#BF360C', fg:'#fff'},
+];
+let _trayCellMap = null;
+function getTrayCellMap() {
+  if (_trayCellMap) return _trayCellMap;
+  const m = {};
+  for (const [sid, d] of Object.entries(scanData.slots || {}))
+    if (d.cell_index) m[d.cell_index] = Object.assign({kind:'sample', slot_id:sid}, d);
+  for (const [lvl, refs] of Object.entries(scanData.reference_labs || {}))
+    for (const r of refs)
+      if (r.cell_index) m[r.cell_index] = Object.assign({kind:'ref', ref_level:parseInt(lvl)}, r);
+  return (_trayCellMap = m);
+}
+
+function buildTrayTooltipHtml(d) {
+  const lines = [];
+  if (d.kind === 'ref') {
+    lines.push(`<div class="font-bold mb-1" style="color:#FCBA54">ขวดอ้างอิง สี ${d.ref_level}</div>`);
+    lines.push(`<div class="text-gray-400">เซลล์: <span class="font-mono">${d.cell_index}</span></div>`);
+    if (d.hex) lines.push(`<div>hex: <span class="font-mono">${d.hex}</span> <span class="inline-block w-3 h-3 rounded align-middle" style="background:${d.hex}"></span></div>`);
+    if (d.lab) lines.push(`<div>Lab: <span class="font-mono">L=${d.lab[0].toFixed(0)}, a=${d.lab[1].toFixed(0)}, b=${d.lab[2].toFixed(0)}</span></div>`);
+  } else {
+    lines.push(`<div class="font-bold mb-1" style="color:#FCBA54">${d.slot_id}</div>`);
+    lines.push(`<div class="text-gray-400">เซลล์: <span class="font-mono">${d.cell_index}</span></div>`);
+    if (d.detected) {
+      lines.push(`<div>ระดับ: <strong>สี ${d.color_level}</strong>${d.force_l0 ? ' <span title="จำแนกโดยความอิ่มตัว">•</span>' : ''}</div>`);
+      if (d.hex) lines.push(`<div>hex: <span class="font-mono">${d.hex}</span> <span class="inline-block w-3 h-3 rounded align-middle" style="background:${d.hex}"></span></div>`);
+      if (d.lab) lines.push(`<div>Lab: <span class="font-mono">L=${d.lab[0].toFixed(0)}, a=${d.lab[1].toFixed(0)}, b=${d.lab[2].toFixed(0)}</span></div>`);
+      if (d.concentration_index != null) lines.push(`<div>Idx: <span class="font-mono">${d.concentration_index.toFixed(2)}</span></div>`);
+      if (d.path_distance != null)       lines.push(`<div>Path Δ: <span class="font-mono">${d.path_distance.toFixed(2)}</span>${d.soft_penalty ? ' <span style="color:#FCBA54">↓</span>' : ''}</div>`);
+      if (d.hist_bhatt != null)          lines.push(`<div>Hist ΔB: <span class="font-mono">${d.hist_bhatt.toFixed(3)}</span></div>`);
+      if (d.combined != null)            lines.push(`<div>Score: <span class="font-mono">${d.combined.toFixed(3)}</span></div>`);
+      const confTxt = d.confident ? '<span class="text-green-400">✓ ชัดเจน</span>'
+                     : (d.best_fit ? '<span class="text-orange-400">⚠ ใกล้เคียงที่สุด</span>'
+                                   : '<span class="text-yellow-400">~ กำกวม</span>');
+      lines.push(`<div>ความเชื่อมั่น: ${confTxt}</div>`);
+    } else {
+      lines.push(`<div class="text-red-400 font-bold">ไม่พบ</div>`);
+    }
+  }
+  return lines.join('');
+}
+
+function renderTrayTableInto(container, cellClass, tipEl) {
+  const rows = scanData.grid_rows, cols = scanData.grid_cols;
+  if (!rows || !cols) return;
+  const map = getTrayCellMap();
+  container.innerHTML = '';
+  const table = document.createElement('table');
+  table.className = 'border-collapse mx-auto';
+  const tbody = document.createElement('tbody');
+  for (let r = 1; r <= rows; r++) {
+    const tr = document.createElement('tr');
+    for (let c = 1; c <= cols; c++) {
+      const idx = (r - 1) * cols + c;
+      const td = document.createElement('td');
+      td.className = cellClass;
+      const cell = map[idx];
+      if (!cell) {
+        td.classList.add('empty');
+      } else if (cell.kind === 'ref') {
+        const p = TRAY_PALETTE[cell.ref_level] || {bg:'#888', fg:'#fff'};
+        td.classList.add('ref', 'has-data');
+        td.style.background = p.bg; td.style.color = p.fg;
+        td.textContent = `สี ${cell.ref_level}`;
+        td.dataset.payload = JSON.stringify(cell);
+      } else {
+        td.classList.add('has-data');
+        if (!cell.detected) {
+          td.classList.add('miss');
+          td.textContent = cell.slot_id;
+        } else {
+          const p = TRAY_PALETTE[cell.color_level] || {bg:'#888', fg:'#fff'};
+          td.style.background = p.bg; td.style.color = p.fg;
+          td.innerHTML = `${cell.slot_id}<br>สี ${cell.color_level}`;
+        }
+        td.dataset.payload = JSON.stringify(cell);
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
+
+  function showTip(e) {
+    const td = e.target.closest('.has-data');
+    if (!td || !td.dataset.payload) return;
+    tipEl.innerHTML = buildTrayTooltipHtml(JSON.parse(td.dataset.payload));
+    tipEl.classList.remove('hidden');
+  }
+  function moveTip(e) {
+    const pad = 14;
+    let x = e.clientX + pad, y = e.clientY + pad;
+    if (x + tipEl.offsetWidth  + pad > window.innerWidth)  x = e.clientX - tipEl.offsetWidth  - pad;
+    if (y + tipEl.offsetHeight + pad > window.innerHeight) y = e.clientY - tipEl.offsetHeight - pad;
+    tipEl.style.left = Math.max(4, x) + 'px';
+    tipEl.style.top  = Math.max(4, y) + 'px';
+  }
+  table.addEventListener('mouseover', e => { if (e.target.closest('.has-data')) { showTip(e); moveTip(e); } });
+  table.addEventListener('mousemove', e => { if (e.target.closest('.has-data')) moveTip(e); });
+  table.addEventListener('mouseleave', () => tipEl.classList.add('hidden'));
+}
+
+// Initial page render
+const _pageWrapper = document.getElementById('tray-grid-wrapper');
+if (_pageWrapper) renderTrayTableInto(_pageWrapper, 'tray-cell', document.getElementById('tray-tooltip'));
+
+// ── Lightbox ───────────────────────────────────────────────────────────────
+let _lbChart = null, _lbTip = null;
+
+function openLightbox(type) {
+  const overlay = document.getElementById('lb-overlay');
+  const body    = document.getElementById('lb-body');
+  const title   = document.getElementById('lb-title');
+  body.innerHTML = '';
+  body.style.cssText = 'background:#1a3020; padding:16px; border-radius:12px; overflow:auto;';
+  if (_lbChart) { _lbChart.destroy(); _lbChart = null; }
+  if (_lbTip)   { _lbTip.remove(); _lbTip = null; }
+
+  if (type === 'image') {
+    title.textContent = 'ภาพที่มีคำอธิบาย';
+    body.style.padding = '8px';
+    const img = document.createElement('img');
+    img.src = scanData.image_url;
+    img.style.cssText = 'max-width:90vw; max-height:88vh; border-radius:8px; display:block;';
+    body.appendChild(img);
+
+  } else if (type === 'table') {
+    title.textContent = 'ผลลัพธ์ช่อง';
+    body.style.cssText += '; min-width:min(820px,90vw); max-height:88vh;';
+    const srcTable = document.getElementById('slot-result-table');
+    if (srcTable) body.appendChild(srcTable.cloneNode(true));
+
+  } else if (type === 'chart') {
+    title.textContent = 'กราฟการจำแนกสี';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'width:min(1100px,88vw); height:72vh;';
+    const canvas = document.createElement('canvas');
+    wrap.appendChild(canvas);
+    body.appendChild(wrap);
+    _lbChart = new Chart(canvas.getContext('2d'), buildChartConfig());
+
+  } else if (type === 'tray') {
+    title.textContent = 'แผนผังถาด — ผลการจำแนก';
+    body.style.cssText += '; max-width:92vw; max-height:90vh;';
+    _lbTip = document.createElement('div');
+    _lbTip.className = 'hidden fixed pointer-events-none rounded-lg p-3 text-xs shadow-2xl';
+    _lbTip.style.cssText = 'z-index:10001; background:#0d1b12; border:1px solid #FCBA54; max-width:280px;';
+    document.body.appendChild(_lbTip);
+    renderTrayTableInto(body, 'lb-tray-cell', _lbTip);
+  }
+
+  overlay.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+  document.getElementById('lb-overlay').classList.add('hidden');
+  document.body.style.overflow = '';
+  if (_lbChart) { _lbChart.destroy(); _lbChart = null; }
+  if (_lbTip)   { _lbTip.remove(); _lbTip = null; }
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
 </script>
 {% endblock %}

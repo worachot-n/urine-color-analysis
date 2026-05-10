@@ -454,10 +454,13 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
     # ── 7b. Reference Lab set + per-level histogram templates ─────────────
     ref_map = reference_cells(slot_cfg)   # {cell_idx: ref_level}
     ref_positions: dict[int, list] = {}
+    ref_cell_lookup: dict[tuple, int] = {}   # (cx, cy, r) → cell_idx
     for cell_idx, ref_level in ref_map.items():
         cx = float(grid_pts_full[cell_idx - 1, 0])
         cy = float(grid_pts_full[cell_idx - 1, 1])
-        ref_positions.setdefault(ref_level, []).append((cx, cy, radius_full))
+        pos = (cx, cy, radius_full)
+        ref_positions.setdefault(ref_level, []).append(pos)
+        ref_cell_lookup[pos] = cell_idx
 
     # Outlier filter (b*-based 2σ) BEFORE building either ref structure, so
     # both ref_set and ref_hists see the same cleaned positions.
@@ -493,12 +496,14 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
     for ref_level, positions in ref_positions.items():
         level_key = str(ref_level)
         reference_labs[level_key] = []
-        for cx, cy, r in positions:
+        for pos in positions:
+            cx, cy, r = pos
             lab = extract_bottle_color(frame_full, cx, cy, r)
             if lab:
                 reference_labs[level_key].append({
                     "lab": [round(v, 2) for v in lab],
                     "hex": lab_to_hex(*lab),
+                    "cell_index": ref_cell_lookup.get(pos),
                 })
 
     # ── 8. Classify sample bottles (hybrid: chroma ΔE + histogram) ───────
@@ -636,6 +641,8 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
             if master_path is not None else None
         ),
         "slots":           result_slots,
+        "grid_rows":       slot_cfg.rows,
+        "grid_cols":       slot_cfg.cols,
         "image_url":       f"/static/results/{scan_id}.jpg",
         "timestamp":       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
