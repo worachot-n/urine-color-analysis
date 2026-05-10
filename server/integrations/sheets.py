@@ -71,7 +71,10 @@ def write_slot_config_to_sheet(
         if service is None:
             return
 
-        header = ["cell_index", "slot_id", "is_reference", "ref_level", "row", "col", "grid_rows", "grid_cols"]
+        header = [
+            "cell_index", "slot_id", "is_reference", "ref_level",
+            "row", "col", "grid_rows", "grid_cols", "is_white_reference",
+        ]
         rows = [header]
         for cell_idx, cell in sorted(cfg.cells.items()):
             row_num = (cell_idx - 1) // cfg.cols + 1
@@ -85,6 +88,7 @@ def write_slot_config_to_sheet(
                 col_num,
                 cfg.rows,
                 cfg.cols,
+                str(cell.is_white_reference),
             ])
 
         sheet = service.spreadsheets()
@@ -124,12 +128,13 @@ def append_result_to_sheet(
             f"SCAN:{sid}", ts, det, tot, miss,
             summary.get("L0", 0), summary.get("L1", 0), summary.get("L2", 0),
             summary.get("L3", 0), summary.get("L4", 0),
-            "", "", "", "", "", "", "", "",  # align with detail columns
+            "", "", "", "", "", "", "", "", "", "",  # align with 15 detail columns
         ]
 
         detail_header = [
             "scan_id", "slot_id", "cell_index", "is_reference", "ref_level",
             "detected", "color_level", "delta_e", "confident", "L", "a", "b", "hex",
+            "hist_bhatt", "combined",
         ]
 
         rows_to_append = [summary_row, detail_header]
@@ -174,6 +179,8 @@ def append_result_to_sheet(
                 lab[1] if lab[1] is not None else "",
                 lab[2] if lab[2] is not None else "",
                 hex_color,
+                d.get("hist_bhatt", "") if d.get("hist_bhatt") is not None else "",
+                d.get("combined", "") if d.get("combined") is not None else "",
             ]
             if hex_color:
                 hex_indices.append(len(rows_to_append))
@@ -249,7 +256,7 @@ def read_slot_config_from_sheet(
 
         result = service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
-            range=f"{tab}!A:H",
+            range=f"{tab}!A:I",
         ).execute()
         rows = result.get("values", [])
         if len(rows) < 2:
@@ -274,10 +281,15 @@ def read_slot_config_from_sheet(
                     grid_rows_stored = int(row[6])
                 if len(row) > 7 and row[7] and grid_cols_stored is None:
                     grid_cols_stored = int(row[7])
+                is_wb = (
+                    len(row) > 8
+                    and row[8].strip().lower() == "true"
+                )
                 cells[cell_idx] = CellConfig(
                     slot_id=slot_id,
                     is_reference=is_ref,
                     ref_level=ref_level,
+                    is_white_reference=is_wb,
                 )
             except (ValueError, IndexError):
                 continue

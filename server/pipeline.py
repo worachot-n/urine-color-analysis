@@ -21,22 +21,38 @@ from loguru import logger
 from utils.auto_grid_detector import detect_grid_full, draw_grid_lines
 from utils.color_analysis import (
     extract_bottle_color,
-    classify_sample_nn,
+    extract_bottle_features,
+    compute_white_balance_offset,
     build_reference_set,
+    build_reference_histograms,
+    classify_sample_hybrid,
+    W_CHROMA,
+    W_HIST,
+    CHROMA_SCALE,
+    MAX_COMBINED_SCORE,
+    COMBINED_MARGIN,
 )
 from app.shared.processor import crop_sample_roi, letterbox_white_padding
-from server.slot_config import SlotConfig, active_cell_indices, reference_cells, sample_cells
+from server.slot_config import (
+    SlotConfig,
+    active_cell_indices,
+    reference_cells,
+    sample_cells,
+    white_reference_cells,
+)
 import tomllib
 _cfg = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb"))
 _y    = _cfg["yolo"]
 _sroi = _cfg.get("sample_roi", {})
 _ca   = _cfg.get("color_analysis", {})
+_wb   = _cfg.get("white_balance", {})
 YOLO_MODEL_PATH: str       = _y["model_path"]
 YOLO_CONF_THRESHOLD: float = float(_y["conf_threshold"])
 YOLO_IOU_THRESHOLD: float  = float(_y["iou_threshold"])
 YOLO_IMGSZ: int            = int(_y["imgsz"])
 CONFIDENCE_MARGIN: float   = float(_ca.get("confidence_margin", 3.0))
 MAX_DELTA_E: float         = float(_ca.get("max_delta_e", 18.0))
+WB_ENABLED: bool           = bool(_wb.get("enabled", True))
 SAMPLE_ROI_TOP: int        = int(_sroi.get("top", 0))
 SAMPLE_ROI_BOTTOM: int     = int(_sroi.get("bottom", 0))
 SAMPLE_ROI_LEFT: int       = int(_sroi.get("left", 0))
@@ -315,7 +331,24 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
     slot_hits = _assign_bottles_to_slots(yolo_boxes, grid_pts_full, active, max_dist)
     logger.info("pipeline: {} bottles assigned to slots", len(slot_hits))
 
-    # ── 7. Reference baseline ─────────────────────────────────────────────
+    # ── 7a. White-balance offset (from is_white_reference cells) ─────────
+    wb_offset = None
+    if WB_ENABLED:
+        wb_cells = white_reference_cells(slot_cfg)
+        if wb_cells:
+            wb_positions = [
+                (
+                    float(grid_pts_full[i - 1, 0]),
+                    float(grid_pts_full[i - 1, 1]),
+                    radius_full,
+                )
+                for i in wb_cells
+            ]
+            wb_offset = compute_white_balance_offset(frame_full, wb_positions)
+        else:
+            logger.info("pipeline: no white-reference cells configured — WB disabled")
+
+    # ── 7b. Reference Lab set + per-level histogram templates ─────────────
     ref_map = reference_cells(slot_cfg)   # {cell_idx: ref_level}
     ref_positions: dict[int, list] = {}
     for cell_idx, ref_level in ref_map.items():
@@ -324,7 +357,9 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         ref_positions.setdefault(ref_level, []).append((cx, cy, radius_full))
 
     ref_set = build_reference_set(frame_full, ref_positions)
-    logger.info("pipeline: reference set levels: {}", list(ref_set.keys()))
+    ref_hists = build_reference_histograms(frame_full, ref_positions, wb_offset=wb_offset)
+    logger.info("pipeline: reference set levels: {} | hist templates: {}",
+                list(ref_set.keys()), list(ref_hists.keys()))
 
     # Reference Labs → hex (for scatter plot and Sheets)
     reference_labs: dict[str, list] = {}
@@ -339,7 +374,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
                     "hex": lab_to_hex(*lab),
                 })
 
-    # ── 8. Classify sample bottles ────────────────────────────────────────
+    # ── 8. Classify sample bottles (hybrid: chroma ΔE + histogram) ───────
     sample_map = sample_cells(slot_cfg)   # {cell_idx: slot_id}
     cell_to_slotid: dict[int, str] = sample_map.copy()
 
@@ -348,24 +383,48 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         hit = slot_hits.get(cell_idx)
 
         if hit:
-            lab = extract_bottle_color(frame_full, hit["cx"], hit["cy"], radius_full)
+            lab, sample_hist = extract_bottle_features(
+                frame_full, hit["cx"], hit["cy"], radius_full,
+                wb_offset=wb_offset,
+            )
         else:
-            lab = None
+            lab, sample_hist = None, None
 
-        if lab and ref_set:
-            level, delta_e, confident = classify_sample_nn(lab, ref_set, CONFIDENCE_MARGIN, MAX_DELTA_E)
+        if lab is not None and (ref_set or ref_hists):
+            cls = classify_sample_hybrid(
+                lab, sample_hist, ref_set, ref_hists,
+                weight_chroma=W_CHROMA,
+                weight_hist=W_HIST,
+                chroma_scale=CHROMA_SCALE,
+                max_score=MAX_COMBINED_SCORE,
+                margin=COMBINED_MARGIN,
+            )
+            level     = cls["level"]
+            delta_e   = cls["chroma_de"]
+            hist_b    = cls["hist_bhatt"]
+            combined  = cls["combined"]
+            confident = cls["confident"]
             hex_color = lab_to_hex(*lab)
         else:
-            level, delta_e, confident, hex_color = None, None, False, None
+            level, delta_e, hist_b, combined, confident, hex_color = (
+                None, None, None, None, False, None
+            )
+
+        def _round(v, n=3):
+            if v is None or not np.isfinite(v):
+                return None
+            return round(float(v), n)
 
         result_slots[slot_id] = {
             "cell_index": cell_idx,
-            "detected":    hit is not None,
+            "detected":   hit is not None,
             "color_level": level,
-            "delta_e":     round(delta_e, 2) if delta_e is not None else None,
-            "confident":   confident,
-            "lab":         [round(v, 2) for v in lab] if lab else None,
-            "hex":         hex_color,
+            "delta_e":    _round(delta_e, 2),
+            "hist_bhatt": _round(hist_b, 3),
+            "combined":   _round(combined, 3),
+            "confident":  confident,
+            "lab":        [round(v, 2) for v in lab] if lab else None,
+            "hex":        hex_color,
         }
 
     # ── 9. Build scan result ──────────────────────────────────────────────
@@ -386,6 +445,16 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
         "summary":         summary,
         "reference_labs":  reference_labs,
         "max_delta_e":     MAX_DELTA_E,
+        "wb_offset":       (
+            [round(wb_offset[0], 2), round(wb_offset[1], 2)]
+            if wb_offset is not None else None
+        ),
+        "weights": {
+            "chroma":       W_CHROMA,
+            "hist":         W_HIST,
+            "chroma_scale": CHROMA_SCALE,
+            "max_score":    MAX_COMBINED_SCORE,
+        },
         "slots":           result_slots,
         "image_url":       f"/static/results/{scan_id}.jpg",
         "timestamp":       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

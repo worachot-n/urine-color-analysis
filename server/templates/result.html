@@ -37,7 +37,9 @@
             <th class="py-2 text-left">Slot</th>
             <th class="py-2 text-center">Color</th>
             <th class="py-2 text-center">Level</th>
-            <th class="py-2 text-center">ΔE</th>
+            <th class="py-2 text-center" title="Chromaticity ΔE to nearest reference">ΔE</th>
+            <th class="py-2 text-center" title="Histogram Bhattacharyya distance (0 = identical, 1 = no overlap)">Hist&nbsp;ΔB</th>
+            <th class="py-2 text-center" title="Hybrid score = w_c·(ΔE/scale) + w_h·Bhatt — lower is better">Score</th>
             <th class="py-2 text-center">Conf</th>
           </tr>
         </thead>
@@ -70,6 +72,25 @@
             <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
               {{ "%.1f"|format(d.delta_e) if d.delta_e is not none else '—' }}
             </td>
+            <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
+              {{ "%.3f"|format(d.hist_bhatt) if d.hist_bhatt is not none else '—' }}
+            </td>
+            <td class="py-1.5 text-center text-gray-400 text-xs font-mono">
+              {% if d.combined is not none %}
+                {% set max_score = scan.weights.max_score if scan.weights else 0.6 %}
+                {% set bar_pct = (d.combined / max_score * 100) | round(0, 'common') | int %}
+                {% if bar_pct > 100 %}{% set bar_pct = 100 %}{% endif %}
+                {% if d.combined <= max_score * 0.5 %}{% set bar_color = 'bg-green-500' %}
+                {% elif d.combined <= max_score %}{% set bar_color = 'bg-yellow-500' %}
+                {% else %}{% set bar_color = 'bg-red-500' %}{% endif %}
+                <div class="flex items-center gap-1.5">
+                  <span class="font-mono text-xs">{{ "%.3f"|format(d.combined) }}</span>
+                  <span class="inline-block bg-gray-700 rounded h-1.5 flex-1 max-w-[40px]">
+                    <span class="block h-1.5 rounded {{ bar_color }}" style="width:{{ bar_pct }}%"></span>
+                  </span>
+                </div>
+              {% else %}—{% endif %}
+            </td>
             <td class="py-1.5 text-center">
               {% if d.detected %}
                 {% if d.confident %}<span class="text-green-400">✓</span>
@@ -92,14 +113,28 @@
 
 <!-- Color matching scatter plot -->
 <div class="bg-gray-800 rounded-xl p-4 mb-6">
-  <h2 class="text-sm font-semibold text-gray-400 uppercase mb-3">Color Matching — CIE Lab a*/b* Space</h2>
+  <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase">Color Matching — CIE Lab a*/b* Space</h2>
+    {% if scan.wb_offset %}
+      <span class="text-xs px-2 py-1 rounded bg-blue-900 text-blue-200 font-mono"
+            title="White-balance offset measured from is_white_reference cells (subtracted before histogram binning)">
+        WB applied · Δa={{ "%+.2f"|format(scan.wb_offset[0]) }}, Δb={{ "%+.2f"|format(scan.wb_offset[1]) }}
+      </span>
+    {% else %}
+      <span class="text-xs px-2 py-1 rounded bg-gray-700 text-gray-400 font-mono"
+            title="Mark a paper / neutral cell as 'White reference' in /settings to enable">
+        WB off — no white-reference cells configured
+      </span>
+    {% endif %}
+  </div>
   <div class="relative" style="height:420px">
     <canvas id="scatter-chart"></canvas>
   </div>
   <p class="text-xs text-gray-500 mt-2">
-    ◇ Mean of references (display only) · × Reference bottles · ● Classified samples · ⊗ Out-of-range ·
-    Background colour shows the k-NN classification of every point in the plane (uncoloured = ΔE > max threshold).
-    Lines connect each sample to its assigned level's mean.
+    ◇ Mean of references · × Reference bottles · ● Classified samples · ⊗ Out-of-range ·
+    Background colour shows the chromaticity-ΔE k-NN partition (uncoloured = ΔE &gt; max threshold).
+    Lines connect each sample to its assigned level's mean. Final classification combines this ΔE with the
+    histogram Bhattacharyya distance — see the Score column.
   </p>
 </div>
 
@@ -151,6 +186,8 @@ for (const [slotId, d] of Object.entries(scanData.slots || {})) {
     hex: d.hex,
     label: slotId,
     delta_e: d.delta_e,
+    hist_bhatt: d.hist_bhatt,
+    combined: d.combined,
     confident: d.confident,
     color_level: d.color_level,
   };
@@ -335,7 +372,9 @@ new Chart(ctx, {
             const d = ctx.raw;
             const lines = [d.label, `a*: ${d.x.toFixed(1)}, b*: ${d.y.toFixed(1)}`];
             if (d.hex) lines.push(`hex: ${d.hex}`);
-            if (d.delta_e != null) lines.push(`ΔE: ${d.delta_e.toFixed(1)}`);
+            if (d.delta_e != null)    lines.push(`ΔE: ${d.delta_e.toFixed(1)}`);
+            if (d.hist_bhatt != null) lines.push(`Hist ΔB: ${d.hist_bhatt.toFixed(3)}`);
+            if (d.combined != null)   lines.push(`Score: ${d.combined.toFixed(3)}`);
             if (d.confident === true)  lines.push('confidence: ✓ confident');
             if (d.confident === false && d.color_level != null) lines.push('confidence: ~ borderline');
             return lines;

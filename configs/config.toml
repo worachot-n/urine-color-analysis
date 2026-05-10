@@ -78,6 +78,26 @@ ghost_de_threshold  = 8.0  # Stricter ΔE to white paper for YOLO path anti-ghos
 color_levels       = 5     # Number of distinct color levels (L0-L4)
 refs_per_level     = 3     # Reference bottles per level in reference row
 
+# Histogram-matching classifier (CIE Lab a*/b* 2D histogram + Bhattacharyya)
+hist_bins_a        = 16          # a* histogram bins
+hist_bins_b        = 16          # b* histogram bins
+hist_range_a       = [80, 180]   # OpenCV-Lab a* sampling range (128 = neutral)
+hist_range_b       = [80, 180]   # OpenCV-Lab b* sampling range
+weight_chroma      = 0.5         # Weight on (chroma_de / chroma_scale) in hybrid score
+weight_hist        = 0.5         # Weight on Bhattacharyya distance in hybrid score
+chroma_scale       = 18.0        # Divide chroma ΔE by this so chroma score ≈ 1.0 at threshold
+max_combined_score = 0.6         # Reject classification if hybrid score exceeds this
+combined_margin    = 0.10        # second_best − best > margin → 'confident'
+
+# =============================================================================
+# WHITE BALANCE — chromatic adaptation using user-designated neutral patches
+# (cells flagged is_white_reference=true in slot_config). When no WB cells are
+# configured, WB is disabled silently (chroma classification is unaffected
+# because the offset cancels in within-frame relative ΔE).
+# =============================================================================
+[white_balance]
+enabled = true
+
 # =============================================================================
 # NETWORK / HOTSPOT
 # =============================================================================

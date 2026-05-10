@@ -1,17 +1,24 @@
 """
-Color analysis engine: CIE Lab color space + Delta E classification.
+Color analysis engine: CIE Lab color space + hybrid Delta E / histogram classification.
 
 Core design principles (from CLAUDE.md):
-- ALL classification uses CIE Lab Delta E — never raw RGB or HSV.
-- NEVER trust absolute color values. Always compare RELATIVE to the
-  reference row captured in the same frame under the same lighting.
-- The reference row self-calibrates every scan cycle.
+- ALL classification uses CIE Lab — never raw RGB or HSV.
+- References self-calibrate every scan cycle.
 
 Public API:
-    delta_e_cie76(lab1, lab2)           -> float
-    extract_bottle_color(frame, cx, cy, radius, outer_crop_px, inner_crop_px) -> (L, a, b) | None
-    build_reference_baseline(frame, reference_positions)       -> {level: (L,a,b)}
-    classify_sample(sample_lab, baseline, threshold)           -> (level, delta_e, confident)
+    delta_e_cie76(lab1, lab2)            -> float
+    delta_e_chroma(lab1, lab2)           -> float
+    extract_bottle_color(frame, cx, cy, radius, ...)  -> (L, a, b) | None
+    extract_bottle_features(frame, cx, cy, radius, ..., wb_offset)
+        -> ((L, a, b) | None, hist | None)
+    build_reference_baseline(frame, reference_positions) -> {level: (L,a,b)}
+    build_reference_set(frame, reference_positions)      -> {level: [(L,a,b), ...]}
+    build_reference_histograms(frame, ref_positions, ..., wb_offset) -> {level: hist}
+    compute_white_balance_offset(frame, white_positions, ...) -> (Δa, Δb) | None
+    classify_sample(sample_lab, baseline, ...)           -> (level, ΔE, confident)
+    classify_sample_nn(sample_lab, refs, ...)            -> (level, ΔE, confident)
+    classify_sample_hybrid(sample_lab, sample_hist,
+                           ref_set, ref_hists, ...)      -> dict
 """
 
 import json
@@ -30,6 +37,19 @@ CONFIDENCE_MARGIN: float = float(_ca.get("confidence_margin", 3.0))
 MAX_DELTA_E: float       = float(_ca.get("max_delta_e", 18.0))
 GLARE_L_THRESHOLD: float = float(_ip.get("glare_l_threshold", 220))
 GLARE_MIN_VALID_PX: int  = int(_ip.get("glare_min_valid_px", 10))
+
+# Histogram + hybrid classifier
+HIST_BINS_A: int          = int(_ca.get("hist_bins_a", 16))
+HIST_BINS_B: int          = int(_ca.get("hist_bins_b", 16))
+_hra = _ca.get("hist_range_a", [80, 180])
+_hrb = _ca.get("hist_range_b", [80, 180])
+HIST_RANGE_A: tuple[float, float] = (float(_hra[0]), float(_hra[1]))
+HIST_RANGE_B: tuple[float, float] = (float(_hrb[0]), float(_hrb[1]))
+W_CHROMA: float           = float(_ca.get("weight_chroma", 0.5))
+W_HIST: float             = float(_ca.get("weight_hist", 0.5))
+CHROMA_SCALE: float       = float(_ca.get("chroma_scale", 18.0))
+MAX_COMBINED_SCORE: float = float(_ca.get("max_combined_score", 0.6))
+COMBINED_MARGIN: float    = float(_ca.get("combined_margin", 0.10))
 
 # OpenCV 8-bit Lab representation of pure white (L=255, a=128, b=128)
 WHITE_LAB = (255.0, 128.0, 128.0)
@@ -70,63 +90,148 @@ def delta_e_chroma(lab1, lab2):
 # Color extraction
 # ---------------------------------------------------------------------------
 
+def _ring_pixels_lab(frame, cx, cy, radius,
+                     outer_crop_px=OUTER_CROP_PX,
+                     inner_crop_px=INNER_CROP_PX):
+    """
+    Return the annular-ring CIE Lab pixels of a bottle cap as an (N, 3) array,
+    or None if the ring contains too few valid pixels.
+
+    Shared by extract_bottle_color() (median path) and extract_bottle_features()
+    (median + 2-D histogram path). Glare filter is applied: pixels with
+    L > GLARE_L_THRESHOLD are dropped; if fewer than GLARE_MIN_VALID_PX remain,
+    the ring mask is used unfiltered.
+    """
+    r = int(radius)
+    x1 = max(0, int(cx) - r + outer_crop_px)
+    y1 = max(0, int(cy) - r + outer_crop_px)
+    x2 = min(frame.shape[1], int(cx) + r - outer_crop_px)
+    y2 = min(frame.shape[0], int(cy) + r - outer_crop_px)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+
+    h_crop, w_crop = crop.shape[:2]
+    Y, X = np.ogrid[:h_crop, :w_crop]
+    dist = np.sqrt((X - (int(cx) - x1)) ** 2 + (Y - (int(cy) - y1)) ** 2)
+    ring_mask = dist >= inner_crop_px
+    if ring_mask.sum() < GLARE_MIN_VALID_PX:
+        return None
+
+    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
+    non_glare = lab[:, :, 0] < GLARE_L_THRESHOLD
+    combined = ring_mask & non_glare
+    mask = combined if combined.sum() >= GLARE_MIN_VALID_PX else ring_mask
+    return lab[mask]   # (N, 3) uint8 → caller can cast to float as needed
+
+
 def extract_bottle_color(frame, cx, cy, radius,
                           outer_crop_px=OUTER_CROP_PX,
                           inner_crop_px=INNER_CROP_PX):
     """
     Extract the median CIE Lab color from an annular ring on a detected bottle cap.
 
-    Sampling region = ring between inner_crop_px (from center) and
-    (radius - outer_crop_px) (from center outward). This avoids:
-      - outer_crop_px: plastic cap ring / edge artifacts
-      - inner_crop_px: specular glare hot-spot at cap center
-
-    Args:
-        frame:          BGR image (numpy array, full resolution)
-        cx, cy:         Circle center in image pixel coordinates
-        radius:         Circle radius in pixels
-        outer_crop_px:  Pixels to shrink from bottle edge (outer ring boundary)
-        inner_crop_px:  Pixels from center to exclude (inner ring boundary)
+    Sampling region = ring between inner_crop_px and (radius - outer_crop_px).
+    Avoids the plastic cap ring at the edge and the specular glare hot-spot at
+    the centre. See _ring_pixels_lab() for the underlying mask logic.
 
     Returns:
-        (L, a, b) tuple of median CIE Lab values, or None if the ring is invalid.
+        (L, a, b) tuple of OpenCV-Lab medians, or None if the ring is invalid.
     """
-    r = int(radius)
-    # Bounding box for the outer boundary
-    x1 = max(0, int(cx) - r + outer_crop_px)
-    y1 = max(0, int(cy) - r + outer_crop_px)
-    x2 = min(frame.shape[1], int(cx) + r - outer_crop_px)
-    y2 = min(frame.shape[0], int(cy) + r - outer_crop_px)
-
-    if x2 <= x1 or y2 <= y1:
+    pixels = _ring_pixels_lab(frame, cx, cy, radius, outer_crop_px, inner_crop_px)
+    if pixels is None:
         return None
-
-    crop = frame[y1:y2, x1:x2]
-    if crop.size == 0:
-        return None
-
-    # Annular mask: exclude pixels closer than inner_crop_px to the bottle center
-    h_crop, w_crop = crop.shape[:2]
-    Y, X = np.ogrid[:h_crop, :w_crop]
-    dist = np.sqrt((X - (int(cx) - x1)) ** 2 + (Y - (int(cy) - y1)) ** 2)
-    ring_mask = dist >= inner_crop_px  # True = in the usable ring
-
-    if ring_mask.sum() < GLARE_MIN_VALID_PX:
-        return None
-
-    # Convert BGR → CIE Lab
-    lab = cv2.cvtColor(crop, cv2.COLOR_BGR2Lab)
-
-    # Combine ring mask with glare filter
-    non_glare = lab[:, :, 0] < GLARE_L_THRESHOLD
-    combined  = ring_mask & non_glare
-    mask = combined if combined.sum() >= GLARE_MIN_VALID_PX else ring_mask
-
-    L = float(np.median(lab[:, :, 0][mask]))
-    a = float(np.median(lab[:, :, 1][mask]))
-    b = float(np.median(lab[:, :, 2][mask]))
-
+    L = float(np.median(pixels[:, 0]))
+    a = float(np.median(pixels[:, 1]))
+    b = float(np.median(pixels[:, 2]))
     return (L, a, b)
+
+
+def extract_bottle_features(frame, cx, cy, radius,
+                             outer_crop_px=OUTER_CROP_PX,
+                             inner_crop_px=INNER_CROP_PX,
+                             wb_offset=None):
+    """
+    Extract BOTH the raw median Lab and a WB-corrected (a*, b*) 2-D histogram
+    of the annular ring in one pass.
+
+    Args:
+        wb_offset: optional (Δa, Δb) shift to apply to ring pixels before
+                   histogramming, in OpenCV-Lab units (Δa = a_wb − 128).
+                   When None, the histogram is computed in raw Lab space.
+
+    Returns:
+        (raw_lab, hist) where:
+            raw_lab: (L, a, b) tuple of medians on the UNSHIFTED ring pixels,
+                     or None if the ring is invalid.
+            hist:    np.ndarray, shape (HIST_BINS_A, HIST_BINS_B), float32,
+                     normalised to sum to 1. Same None condition as raw_lab.
+
+    The median is intentionally computed on the unshifted pixels so the
+    displayed hex / scatter-plot dot reflect the actual measured colour. The
+    histogram is shifted so that, across scans, all bottles live in a common
+    WB-corrected (a*, b*) space — useful for histogram comparison.
+    """
+    pixels = _ring_pixels_lab(frame, cx, cy, radius, outer_crop_px, inner_crop_px)
+    if pixels is None:
+        return None, None
+
+    L = float(np.median(pixels[:, 0]))
+    a = float(np.median(pixels[:, 1]))
+    b = float(np.median(pixels[:, 2]))
+
+    a_chan = pixels[:, 1].astype(np.float32)
+    b_chan = pixels[:, 2].astype(np.float32)
+    if wb_offset is not None:
+        a_chan = a_chan - float(wb_offset[0])
+        b_chan = b_chan - float(wb_offset[1])
+
+    hist, _, _ = np.histogram2d(
+        a_chan, b_chan,
+        bins=[HIST_BINS_A, HIST_BINS_B],
+        range=[list(HIST_RANGE_A), list(HIST_RANGE_B)],
+    )
+    hist = hist.astype(np.float32)
+    s = float(hist.sum())
+    if s > 0.0:
+        hist /= s
+    return (L, a, b), hist
+
+
+def compute_white_balance_offset(frame, white_positions,
+                                 outer_crop_px=OUTER_CROP_PX,
+                                 inner_crop_px=INNER_CROP_PX):
+    """
+    Median (Δa, Δb) measured at user-designated neutral patches.
+
+    Δa = a_median − 128, Δb = b_median − 128 (so a perfectly neutral patch
+    yields Δa = Δb = 0). Pass the returned tuple as `wb_offset` to
+    extract_bottle_features() to align all bottles to a common WB space.
+
+    Args:
+        frame:           full BGR image
+        white_positions: iterable of (cx, cy, radius) for each WB cell
+
+    Returns:
+        (Δa, Δb) floats, or None if no valid WB cell was sampled.
+    """
+    a_vals: list[float] = []
+    b_vals: list[float] = []
+    for cx, cy, radius in white_positions:
+        pixels = _ring_pixels_lab(frame, cx, cy, radius, outer_crop_px, inner_crop_px)
+        if pixels is None:
+            continue
+        a_vals.append(float(np.median(pixels[:, 1])))
+        b_vals.append(float(np.median(pixels[:, 2])))
+    if not a_vals:
+        return None
+    delta_a = float(np.median(a_vals)) - 128.0
+    delta_b = float(np.median(b_vals)) - 128.0
+    logger.info("white_balance: Δa={:+.2f}, Δb={:+.2f} from {} patch(es)",
+                delta_a, delta_b, len(a_vals))
+    return (delta_a, delta_b)
 
 
 # ---------------------------------------------------------------------------
@@ -378,3 +483,151 @@ def classify_sample_nn(sample_lab, references_per_level,
         confident = (deltas[sorted_levels[1]] - best_delta) > margin
 
     return best_level, best_delta, confident
+
+
+# ---------------------------------------------------------------------------
+# Histogram template + hybrid classifier
+# ---------------------------------------------------------------------------
+
+def build_reference_histograms(frame, reference_positions, wb_offset=None,
+                                outer_crop_px=OUTER_CROP_PX,
+                                inner_crop_px=INNER_CROP_PX):
+    """
+    Build one (a*, b*) template histogram per reference level by pooling all
+    ring pixels of that level's bottles.
+
+    Pooling is performed by summing per-bottle histograms and renormalising,
+    which is equivalent to histogramming the union of all ring pixels — but
+    keeps each bottle weighted equally regardless of how many valid pixels it
+    contributed.
+
+    Returns:
+        dict {level: np.ndarray (HIST_BINS_A, HIST_BINS_B) float32 sum-to-1}.
+        Levels with no valid bottles are omitted.
+    """
+    out: dict[int, np.ndarray] = {}
+    for level, positions in reference_positions.items():
+        accum = np.zeros((HIST_BINS_A, HIST_BINS_B), dtype=np.float32)
+        n = 0
+        for cx, cy, radius in positions:
+            _, hist = extract_bottle_features(
+                frame, cx, cy, radius,
+                outer_crop_px=outer_crop_px,
+                inner_crop_px=inner_crop_px,
+                wb_offset=wb_offset,
+            )
+            if hist is None:
+                continue
+            accum += hist
+            n += 1
+        if n == 0:
+            logger.warning("Reference hist L{}: no valid bottles", level)
+            continue
+        s = float(accum.sum())
+        if s > 0.0:
+            accum /= s
+        out[level] = accum
+    return out
+
+
+def _bhattacharyya(h1: np.ndarray, h2: np.ndarray) -> float:
+    """Bhattacharyya distance ∈ [0, 1] (0 = identical histograms)."""
+    return float(cv2.compareHist(
+        h1.astype(np.float32),
+        h2.astype(np.float32),
+        cv2.HISTCMP_BHATTACHARYYA,
+    ))
+
+
+def classify_sample_hybrid(sample_lab, sample_hist,
+                            references_per_level, reference_hists,
+                            weight_chroma: float = W_CHROMA,
+                            weight_hist: float = W_HIST,
+                            chroma_scale: float = CHROMA_SCALE,
+                            max_score: float = MAX_COMBINED_SCORE,
+                            margin: float = COMBINED_MARGIN):
+    """
+    Hybrid classifier — combines chromaticity ΔE k-NN and Bhattacharyya
+    histogram distance into one weighted score per level. Picks argmin.
+
+    score(level) = w_c · (chroma_de / chroma_scale)
+                 + w_h · bhatt(sample_hist, level_template)
+
+    where chroma_de = min ΔE_chroma over that level's individual references
+    (so dispersed reference clusters are honoured, same as classify_sample_nn).
+
+    Both metrics fall back gracefully:
+      - Missing histogram for a level   → that term contributes 1.0 (worst).
+      - Missing chroma references       → that term contributes 1.0 (worst).
+    A level with NEITHER is skipped entirely.
+
+    Returns:
+        dict {
+          "level":      int | None,    # None if best score > max_score
+          "chroma_de":  float,
+          "hist_bhatt": float,         # 0 = identical, 1 = no overlap
+          "combined":   float,
+          "confident":  bool,
+          "per_level":  {lvl: {"chroma_de", "hist_bhatt", "combined"}},
+        }
+    """
+    empty = {
+        "level": None, "chroma_de": float("inf"), "hist_bhatt": 1.0,
+        "combined": float("inf"), "confident": False, "per_level": {},
+    }
+    if sample_lab is None and sample_hist is None:
+        return empty
+
+    levels = set(references_per_level.keys()) | set(reference_hists.keys())
+    if not levels:
+        return empty
+
+    per_level: dict[int, dict] = {}
+    for lvl in levels:
+        refs = references_per_level.get(lvl) or []
+        if refs and sample_lab is not None:
+            chroma_de = min(delta_e_chroma(sample_lab, r) for r in refs)
+        else:
+            chroma_de = float("inf")
+
+        tpl = reference_hists.get(lvl)
+        if tpl is not None and sample_hist is not None:
+            hist_bhatt = _bhattacharyya(sample_hist, tpl)
+        else:
+            hist_bhatt = 1.0
+
+        chroma_term = min(chroma_de / chroma_scale, 1.0) if np.isfinite(chroma_de) else 1.0
+        combined = weight_chroma * chroma_term + weight_hist * hist_bhatt
+
+        per_level[lvl] = {
+            "chroma_de": chroma_de,
+            "hist_bhatt": hist_bhatt,
+            "combined": combined,
+        }
+
+    sorted_levels = sorted(per_level, key=lambda k: per_level[k]["combined"])
+    best = sorted_levels[0]
+    best_score = per_level[best]["combined"]
+
+    if not np.isfinite(best_score) or best_score > max_score:
+        return {
+            "level": None,
+            "chroma_de": per_level[best]["chroma_de"],
+            "hist_bhatt": per_level[best]["hist_bhatt"],
+            "combined": best_score,
+            "confident": False,
+            "per_level": per_level,
+        }
+
+    confident = True
+    if len(sorted_levels) >= 2:
+        confident = (per_level[sorted_levels[1]]["combined"] - best_score) > margin
+
+    return {
+        "level": best,
+        "chroma_de": per_level[best]["chroma_de"],
+        "hist_bhatt": per_level[best]["hist_bhatt"],
+        "combined": best_score,
+        "confident": confident,
+        "per_level": per_level,
+    }

@@ -172,10 +172,18 @@ async def post_slots(request: Request):
         from server.slot_config import CellConfig
         cells = {}
         for k, v in body.get("cells", {}).items():
+            is_ref = bool(v.get("is_reference", False))
+            is_wb  = bool(v.get("is_white_reference", False))
+            if is_ref and is_wb:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"cell {k}: is_reference and is_white_reference cannot both be true",
+                )
             cells[int(k)] = CellConfig(
                 slot_id=v["slot_id"],
-                is_reference=bool(v["is_reference"]),
+                is_reference=is_ref,
                 ref_level=v.get("ref_level"),
+                is_white_reference=is_wb,
             )
         cfg = SlotConfig(rows=rows, cols=cols, cells=cells)
         save_slot_config(cfg)

@@ -1,13 +1,20 @@
 /**
  * settings.js — interactive slot assignment grid.
  *
- * State: { rows, cols, cells: { [cellIdx]: {slot_id, is_reference, ref_level} } }
+ * State: { rows, cols, cells: { [cellIdx]: {slot_id, is_reference, ref_level,
+ *                                            is_white_reference} } }
  * All mutations update state then re-render the affected cell(s).
  * GET /api/slots loads saved config; POST /api/slots persists it.
+ *
+ * Cell types are mutually exclusive: a cell is either a colour reference
+ * (is_reference + ref_level), a sample, or a white reference (neutral patch
+ * for white-balance correction).
  */
 
 const REF_BG = ['#fff9c4','#ffe082','#ffb74d','#ef9a9a','#b71c1c'];
 const REF_FG = ['#333','#333','#333','#333','#fff'];
+const WB_BG  = '#bfdbfe';
+const WB_FG  = '#1e3a8a';
 
 let state = { rows: 13, cols: 15, cells: {} };
 let activeCellIdx = null;
@@ -76,6 +83,10 @@ function renderCell(idx) {
     td.style.background = REF_BG[lvl] || '#888';
     td.style.color = REF_FG[lvl] || '#000';
     td.textContent = `REF L${lvl}`;
+  } else if (cell.is_white_reference) {
+    td.style.background = WB_BG;
+    td.style.color = WB_FG;
+    td.textContent = cell.slot_id ? `WB ${cell.slot_id}` : 'WB';
   } else {
     td.style.background = '#f9fafb';
     td.style.color = '#111827';
@@ -100,10 +111,14 @@ function openPopup(idx) {
   const c = (idx - 1) % state.cols + 1;
 
   document.getElementById('popup-title').textContent = `Row ${r}, Col ${c}  (cell ${idx})`;
-  const cell = state.cells[idx] || { slot_id: '', is_reference: false, ref_level: null };
+  const cell = state.cells[idx] || {
+    slot_id: '', is_reference: false, ref_level: null, is_white_reference: false,
+  };
   document.getElementById('popup-slot-id').value = cell.slot_id || '';
   const isRef = Boolean(cell.is_reference);
+  const isWb  = Boolean(cell.is_white_reference);
   document.getElementById('popup-is-ref').checked = isRef;
+  document.getElementById('popup-is-wb').checked  = isWb;
   document.getElementById('popup-level').value = cell.ref_level ?? 0;
   document.getElementById('popup-level-row').classList.toggle('hidden', !isRef);
 
@@ -117,22 +132,37 @@ function openPopup(idx) {
     let left = rect.right + 8 + window.scrollX;
     let top  = rect.top  + window.scrollY;
     // keep popup in viewport
-    if (left + 220 > window.innerWidth) left = rect.left - 228 + window.scrollX;
+    if (left + 240 > window.innerWidth) left = rect.left - 248 + window.scrollX;
     popup.style.left = `${Math.max(4, left)}px`;
     popup.style.top  = `${Math.max(4, top)}px`;
   }
 }
 
+// Mutually exclusive: ticking one auto-unticks the other.
 document.getElementById('popup-is-ref').addEventListener('change', function() {
   document.getElementById('popup-level-row').classList.toggle('hidden', !this.checked);
+  if (this.checked) document.getElementById('popup-is-wb').checked = false;
+});
+document.getElementById('popup-is-wb').addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('popup-is-ref').checked = false;
+    document.getElementById('popup-level-row').classList.add('hidden');
+  }
 });
 
 function popupSave() {
   const slotId = document.getElementById('popup-slot-id').value.trim();
   if (!slotId) { showToast('Slot ID cannot be empty', 'error'); return; }
   const isRef = document.getElementById('popup-is-ref').checked;
+  const isWb  = document.getElementById('popup-is-wb').checked;
+  if (isRef && isWb) { showToast('Cell cannot be both colour ref and white ref', 'error'); return; }
   const refLevel = isRef ? parseInt(document.getElementById('popup-level').value) : null;
-  state.cells[activeCellIdx] = { slot_id: slotId, is_reference: isRef, ref_level: refLevel };
+  state.cells[activeCellIdx] = {
+    slot_id: slotId,
+    is_reference: isRef,
+    ref_level: refLevel,
+    is_white_reference: isWb,
+  };
   renderCell(activeCellIdx);
   closePopup();
 }
