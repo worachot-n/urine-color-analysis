@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
 from loguru import logger
+from PIL import Image, ImageDraw, ImageFont
 
 from utils.auto_grid_detector import detect_grid_full, draw_grid_lines
 from utils.color_analysis import (
@@ -200,6 +202,85 @@ _LEVEL_COLORS_BGR = [
 _COLOR_MISSING = (0, 60, 220)   # red for missing assigned slots
 
 
+# ---------------------------------------------------------------------------
+# Thai-capable text rendering helpers
+# ---------------------------------------------------------------------------
+_THAI_FONT_PATHS = [
+    str(Path(__file__).parent / "static" / "fonts" / "NotoSansThai-Regular.ttf"),
+    "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansThai-Regular.ttf",
+    "/usr/share/fonts/TTF/NotoSansThai-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansThai-Regular.ttf",
+]
+_thai_font_warned = False
+
+
+@lru_cache(maxsize=8)
+def _load_thai_font(size: int):
+    """Load a Thai-capable TrueType font at the given pixel size, or None if unavailable."""
+    global _thai_font_warned
+    for path in _THAI_FONT_PATHS:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    if not _thai_font_warned:
+        logger.warning(
+            "No Thai TTF found (tried {}); annotated image will use ASCII labels (L0-L4).",
+            _THAI_FONT_PATHS,
+        )
+        _thai_font_warned = True
+    return None
+
+
+def _ascii_fallback_label(text: str) -> str:
+    """Replace Thai 'สี' prefix with 'L' for cv2.putText fallback."""
+    return text.replace("สี", "L")
+
+
+def _render_text_batch(canvas_bgr: np.ndarray, items: list) -> np.ndarray:
+    """
+    Draw a batch of text labels on canvas_bgr.
+    Each item: {text, org=(x,y), color_bgr=(b,g,r), font_size}
+    Uses PIL for Thai support; falls back to cv2.putText with ASCII transliteration
+    when no Thai-capable font is available.
+    """
+    if not items:
+        return canvas_bgr
+
+    if _load_thai_font(20) is None:
+        for it in items:
+            text = _ascii_fallback_label(it["text"])
+            x, y = it["org"]
+            color = it["color_bgr"]
+            size = it["font_size"]
+            scale = size / 30.0
+            thickness = max(1, int(size / 14))
+            cv2.putText(canvas_bgr, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                        (0, 0, 0), thickness + 2, cv2.LINE_AA)
+            cv2.putText(canvas_bgr, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                        color, thickness, cv2.LINE_AA)
+        return canvas_bgr
+
+    pil = Image.fromarray(cv2.cvtColor(canvas_bgr, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil)
+    offsets = [(-1, -1), (1, -1), (-1, 1), (1, 1), (-2, 0), (2, 0), (0, -2), (0, 2)]
+    for it in items:
+        font = _load_thai_font(it["font_size"])
+        if font is None:
+            continue
+        x, y = it["org"]
+        # PIL uses top-left for text; cv2 uses bottom-left baseline.
+        # Shift y up so text appears above the original anchor (matches cv2 placement).
+        y -= it["font_size"]
+        b, g, r_ = it["color_bgr"]
+        color_rgb = (r_, g, b)
+        for dx, dy in offsets:
+            draw.text((x + dx, y + dy), it["text"], font=font, fill=(0, 0, 0))
+        draw.text((x, y), it["text"], font=font, fill=color_rgb)
+    return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
+
 def _render_annotated(
     frame_full: np.ndarray,
     slot_hits: dict[int, dict],
@@ -227,8 +308,8 @@ def _render_annotated(
     draw_grid_lines(canvas, grid_pts_full, slot_cfg.rows, slot_cfg.cols, radius_full)
 
     # ── 2. Detected bottles ───────────────────────────────────────────────
-    fsc = max(0.5, sc * 0.7)
-    ftk = max(1, int(sc * 1.5))
+    font_px = max(14, int(sc * 24))
+    text_items: list[dict] = []
     ref_cells_map = reference_cells(slot_cfg)
 
     for cell_idx, hit in slot_hits.items():
@@ -240,11 +321,14 @@ def _render_annotated(
         color = _LEVEL_COLORS_BGR[level] if level is not None else (0, 220, 0)
 
         cv2.circle(canvas, (cx, cy), r, color, lw + 1)
-        if slot_id:
-            cv2.putText(canvas, slot_id, (cx - r, cy - r - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, fsc, (0, 0, 0), ftk + 2, cv2.LINE_AA)
-            cv2.putText(canvas, slot_id, (cx - r, cy - r - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, fsc, (255, 255, 255), ftk, cv2.LINE_AA)
+        label = f"สี{level}" if level is not None else slot_id
+        if label:
+            text_items.append({
+                "text": label,
+                "org": (cx - r, cy - r - 4),
+                "color_bgr": (255, 255, 255),
+                "font_size": font_px,
+            })
 
     # ── 3. Missing sample slots ───────────────────────────────────────────
     sample_map = sample_cells(slot_cfg)
@@ -252,10 +336,15 @@ def _render_annotated(
         if cell_idx not in slot_hits:
             gx, gy = int(grid_pts_full[cell_idx - 1, 0]), int(grid_pts_full[cell_idx - 1, 1])
             cv2.circle(canvas, (gx, gy), r, _COLOR_MISSING, lw + 1)
-            cv2.putText(canvas, slot_id, (gx - r, gy - r - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, fsc, (0, 0, 0), ftk + 2, cv2.LINE_AA)
-            cv2.putText(canvas, slot_id, (gx - r, gy - r - 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, fsc, (0, 60, 220), ftk, cv2.LINE_AA)
+            text_items.append({
+                "text": slot_id,
+                "org": (gx - r, gy - r - 4),
+                "color_bgr": _COLOR_MISSING,
+                "font_size": font_px,
+            })
+
+    # ── 4. Batch text rendering (Thai-aware via PIL, ASCII fallback otherwise) ─
+    canvas = _render_text_batch(canvas, text_items)
 
     # Scale down for storage (50%)
     out = cv2.resize(canvas, (w // 2, h // 2), interpolation=cv2.INTER_AREA)

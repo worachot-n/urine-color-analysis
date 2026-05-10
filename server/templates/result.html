@@ -16,6 +16,24 @@
      onmouseover="this.style.backgroundColor='#e8a840'" onmouseout="this.style.backgroundColor='#FCBA54'">+ อัพโหลดใหม่</a>
 </div>
 
+<!-- Per-level count summary -->
+{% set level_meta = [
+  (0, 'สี 0', '#FFFDE7', '#5d4037'),
+  (1, 'สี 1', '#FFF176', '#5d4037'),
+  (2, 'สี 2', '#FFD54F', '#5d4037'),
+  (3, 'สี 3', '#FF8F00', '#ffffff'),
+  (4, 'สี 4', '#BF360C', '#ffffff'),
+] %}
+<div class="grid grid-cols-5 gap-3 mb-6">
+  {% for lvl, label, bg, fg in level_meta %}
+  <div class="rounded-xl p-4 text-center shadow-md"
+       style="background:{{ bg }}; color:{{ fg }};">
+    <div class="text-xs font-semibold uppercase opacity-80 mb-1">{{ label }}</div>
+    <div class="text-3xl font-bold leading-none">{{ scan.summary.get('L' ~ lvl, 0) }}</div>
+  </div>
+  {% endfor %}
+</div>
+
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
   <!-- Annotated image -->
   <div class="rounded-xl p-4" style="background-color:#1a3020;">
