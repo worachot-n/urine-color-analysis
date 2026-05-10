@@ -11,8 +11,8 @@
  * for white-balance correction).
  */
 
-const REF_BG = ['#fce375','#499d71','#4a8c54','#1b593c','#f05152'];
-const REF_FG = ['#122017','#122017','#122017','#ffffff','#ffffff'];
+const REF_BG = ['#FFFDE7','#FFF176','#FFD54F','#FF8F00','#BF360C'];
+const REF_FG = ['#5d4037','#5d4037','#5d4037','#ffffff','#ffffff'];
 const WB_BG  = '#bfdbfe';
 const WB_FG  = '#1e3a8a';
 

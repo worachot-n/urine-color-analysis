@@ -59,11 +59,11 @@
             <td class="py-1.5 text-center">
               {% if d.color_level is not none %}
               <span class="px-2 py-0.5 rounded text-xs font-bold"
-                style="{% if d.color_level == 0 %}background:#fce375;color:#122017;
-                       {% elif d.color_level == 1 %}background:#499d71;color:#122017;
-                       {% elif d.color_level == 2 %}background:#4a8c54;color:#122017;
-                       {% elif d.color_level == 3 %}background:#1b593c;color:#ffffff;
-                       {% else %}background:#f05152;color:#ffffff;{% endif %}">
+                style="{% if d.color_level == 0 %}background:#FFFDE7;color:#5d4037;
+                       {% elif d.color_level == 1 %}background:#FFF176;color:#5d4037;
+                       {% elif d.color_level == 2 %}background:#FFD54F;color:#5d4037;
+                       {% elif d.color_level == 3 %}background:#FF8F00;color:#ffffff;
+                       {% else %}background:#BF360C;color:#ffffff;{% endif %}">
                 สี{{ d.color_level }}{% if d.force_l0 %}<span class="ml-1" title="จำแนกโดยการตรวจสอบความอิ่มตัว (ไม่มีสี)">•</span>{% endif %}
               </span>
               {% else %}
@@ -151,7 +151,7 @@
 </details>
 
 <script>
-const LEVEL_COLORS = ['#fce375','#499d71','#4a8c54','#1b593c','#f05152'];
+const LEVEL_COLORS = ['#FFFDE7','#FFF176','#FFD54F','#FF8F00','#BF360C'];
 const scanData = {{ scan | tojson }};
 
 // OpenCV-Lab encoding: L_cv∈[0,255], a/b∈[0,255] (128 = neutral).
