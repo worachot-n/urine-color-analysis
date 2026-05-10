@@ -264,7 +264,7 @@ function buildDatasets() {
   for (const [lvl, pts] of Object.entries(samplesByLevel)) {
     const color = LEVEL_COLORS[parseInt(lvl)] || '#aaa';
     datasets.push({
-      label: `ตัวอย่าง สี ${lvl}`,
+      label: `ขวดปัสสาวะสี ${lvl}`,
       data: pts,
       pointStyle: 'circle',
       pointRadius: 7,
@@ -279,7 +279,7 @@ function buildDatasets() {
   // Layer 4: Force-L0 samples (saturation pre-check) — open yellow circle
   if (forceL0Samples.length) {
     datasets.push({
-      label: 'ระดับ สี 0 (ความอิ่มตัว)',
+      label: 'ขวดปัสสาวะสี 0',
       data: forceL0Samples,
       pointStyle: 'circle',
       pointRadius: 8,
