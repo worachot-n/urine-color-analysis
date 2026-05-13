@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 import tomllib
 _cfg = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb"))
 _y    = _cfg["yolo"]
-_sroi = _cfg.get("sample_roi", {})
 _dbg  = _cfg.get("debug", {})
 YOLO_IMGSZ: int            = int(_y["imgsz"])
 YOLO_CONF_THRESHOLD: float = float(_y["conf_threshold"])
@@ -47,10 +46,6 @@ YOLO_CLAHE_TILE: int       = int(_y["clahe_tile_size"])
 YOLO_ROI_PADDING: int      = int(_y.get("roi_padding_px", 10))
 YOLO_BOX_MIN_PX: int       = int(_y.get("box_min_px", 120))
 YOLO_BOX_MAX_PX: int       = int(_y.get("box_max_px", 220))
-SAMPLE_ROI_TOP: int        = int(_sroi.get("top", 0))
-SAMPLE_ROI_BOTTOM: int     = int(_sroi.get("bottom", 0))
-SAMPLE_ROI_LEFT: int       = int(_sroi.get("left", 0))
-SAMPLE_ROI_RIGHT: int      = int(_sroi.get("right", 0))
 IMG_DIR: str               = _dbg.get("img_dir", "logs/img/")
 
 class YoloBottleDetector:
@@ -426,31 +421,6 @@ class YoloBottleDetector:
     # ROI helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _fixed_sample_roi(frame_shape: tuple) -> tuple:
-        """
-        Compute (x1, y1, x2, y2) from the fixed per-edge margins in config.toml.
-
-        Each SAMPLE_ROI_* value is pixels trimmed FROM that edge:
-            x1 = left,              y1 = top
-            x2 = frame_w − right,   y2 = frame_h − bottom
-
-        If a margin would make x2 ≤ x1 or y2 ≤ y1 (i.e. the margin is larger
-        than the frame), that side falls back to the frame boundary so no crop
-        is applied on that side.  This handles right=8000 on a 4608-px-wide
-        frame gracefully (x2 → frame_w, no right-side crop).
-        """
-        fh, fw = frame_shape[:2]
-        x1 = max(0, SAMPLE_ROI_LEFT)
-        y1 = max(0, SAMPLE_ROI_TOP)
-        x2 = fw - SAMPLE_ROI_RIGHT
-        y2 = fh - SAMPLE_ROI_BOTTOM
-        # Clamp: if margin overshoots, keep full frame on that side
-        if x2 <= x1:
-            x2 = fw
-        if y2 <= y1:
-            y2 = fh
-        return x1, y1, x2, y2
 
     @staticmethod
     def _roi_from_corners(corners, frame_shape, padding: int = YOLO_ROI_PADDING) -> tuple:
@@ -494,9 +464,6 @@ class YoloBottleDetector:
             elif grid_cfg is not None and grid_cfg.corners:
                 # Priority 2: bounding box of the 4 calibration corners
                 roi = self._roi_from_corners(grid_cfg.corners, fshape)
-            else:
-                # Priority 3: fallback to hardcoded config.toml margins
-                roi = self._fixed_sample_roi(fshape)
 
         logger.info("[YOLO] detect_multi: ROI = %s, frames = %d", roi, len(frames))
 

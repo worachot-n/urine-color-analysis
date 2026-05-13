@@ -48,7 +48,7 @@ from utils.color_analysis import (
     LOW_CONFIDENCE_SCORE_THRESHOLD,
     REFERENCE_MIN_SATURATION,
 )
-from app.shared.processor import crop_sample_roi, letterbox_white_padding
+from app.shared.processor import letterbox_white_padding
 from server.slot_config import (
     SlotConfig,
     active_cell_indices,
@@ -59,7 +59,6 @@ from server.slot_config import (
 import tomllib
 _cfg = tomllib.load(open(Path(__file__).parent.parent / "configs" / "config.toml", "rb"))
 _y    = _cfg["yolo"]
-_sroi = _cfg.get("sample_roi", {})
 _ca   = _cfg.get("color_analysis", {})
 _wb   = _cfg.get("white_balance", {})
 YOLO_MODEL_PATH: str       = _y["model_path"]
@@ -69,10 +68,6 @@ YOLO_IMGSZ: int            = int(_y["imgsz"])
 CONFIDENCE_MARGIN: float   = float(_ca.get("confidence_margin", 3.0))
 MAX_DELTA_E: float         = float(_ca.get("max_delta_e", 18.0))
 WB_ENABLED: bool           = bool(_wb.get("enabled", True))
-SAMPLE_ROI_TOP: int        = int(_sroi.get("top", 0))
-SAMPLE_ROI_BOTTOM: int     = int(_sroi.get("bottom", 0))
-SAMPLE_ROI_LEFT: int       = int(_sroi.get("left", 0))
-SAMPLE_ROI_RIGHT: int      = int(_sroi.get("right", 0))
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +357,7 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
 
     Steps:
       1. Decode JPEG
-      2. crop_sample_roi
-      3. letterbox_white_padding(640) for grid detection
+      2. letterbox_white_padding(640) for grid detection
       4. detect_grid → grid_pts in 640-space → convert to full-image coords
       5. YOLO detection on letterboxed image → boxes → scale to full-image coords
       6. Assign YOLO boxes to active slots
@@ -378,10 +372,8 @@ def run_pipeline(jpeg_bytes: bytes, slot_cfg: SlotConfig) -> tuple[dict, bytes]:
     if frame_full is None:
         raise ValueError("Failed to decode image")
 
-    # ── 2. Crop ROI — top=0 to include reference row (matches /auto_grid) ─
-    roi, roi_x1, roi_y1 = crop_sample_roi(
-        frame_full, 0, SAMPLE_ROI_BOTTOM, SAMPLE_ROI_LEFT, SAMPLE_ROI_RIGHT
-    )
+    # ── 2. Full image — no ROI crop ───────────────────────────────────────
+    roi, roi_x1, roi_y1 = frame_full, 0, 0
 
     # ── 3. Grid detection — full-resolution ROI (same as /auto_grid) ─────
     grid_result = detect_grid_full(roi, slot_cfg.rows, slot_cfg.cols)

@@ -206,16 +206,6 @@ def main():
     import utils.yolo_detector as _yd_mod2
     _yd_mod2.YOLO_IMGSZ = _test_imgsz
 
-    # ── Load crop margins from pyproject.toml ────────────────────────────────
-    _sroi = _ua.get("sample_roi", {})
-    _crop_top    = int(_sroi.get("top",    0))
-    _crop_bottom = int(_sroi.get("bottom", 0))
-    _crop_left   = int(_sroi.get("left",   0))
-    _crop_right  = int(_sroi.get("right",  0))
-    print(f"[INFO] Crop margins from pyproject.toml — "
-          f"top={_crop_top} bottom={_crop_bottom} "
-          f"left={_crop_left} right={_crop_right}")
-
     # ── Collect images ───────────────────────────────────────────────────────
     if args.images:
         images = [Path(p) for p in args.images]

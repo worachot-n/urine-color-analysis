@@ -63,7 +63,6 @@ _t_lcd   = _t_gpio.get("lcd",    {})
 _t_tm    = _t_gpio.get("tm1637", {})   # dict of H0-H4 entries
 _t_cam   = _t.get("camera", {})
 _t_tg    = _t.get("telegram", {})
-_t_sroi  = _t.get("sample_roi", {})
 _t_unet  = _t.get("unet", {})
 
 # YAML fallbacks for GPIO (used only when config.toml is absent)
@@ -169,12 +168,6 @@ class Settings(BaseSettings):
     # Legacy aliases kept for backward compatibility
     tm1637_clk: int = _tm_pin("H2", "CLK", _y_disp.get("tm1637_clk", 5))
     tm1637_dio: int = _tm_pin("H2", "DIO", _y_disp.get("tm1637_dio", 6))
-
-    # ── Sample ROI — config.toml [sample_roi] ──────────────────────────────
-    sample_roi_top:    int = _t_sroi.get("top",    0)
-    sample_roi_bottom: int = _t_sroi.get("bottom", 0)
-    sample_roi_left:   int = _t_sroi.get("left",   0)
-    sample_roi_right:  int = _t_sroi.get("right",  0)
 
     # ── Database — PostgreSQL via DATABASE_URL; SQLite fallback for dev ─────
     database_url: str = Field(

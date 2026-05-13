@@ -43,6 +43,15 @@ _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 _API_KEY = os.environ.get("API_KEY", "test")
 
 # ---------------------------------------------------------------------------
+# Telegram notifications — fire-and-forget, silently skipped if not configured
+# ---------------------------------------------------------------------------
+try:
+    from bot.telegram_bot import send_scan_report as _telegram_send
+    _TELEGRAM_AVAILABLE = True
+except ImportError:
+    _TELEGRAM_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
 # Try importing Google integrations — silently disabled if not configured
 # ---------------------------------------------------------------------------
 try:
@@ -358,11 +367,9 @@ async def api_auto_grid(file: UploadFile = File(...)):
     Slot config loaded from Google Sheets.
     """
     import base64
-    import tomllib
     import cv2
     import numpy as np
     from utils.auto_grid_detector import detect_grid_full
-    from app.shared.processor import crop_sample_roi
 
     jpeg_bytes = await file.read()
     if not jpeg_bytes:
@@ -404,19 +411,7 @@ async def api_auto_grid(file: UploadFile = File(...)):
     if frame is None:
         raise HTTPException(status_code=400, detail="Failed to decode image")
 
-    # ROI crop — NO letterbox (letterbox is YOLO-only).
-    # Use top=0 so the reference row at the top of the tray is included in the
-    # debug view. Normal pipeline uses top=220 to exclude it from sample analysis.
-    _sroi = tomllib.load(
-        open(Path(__file__).parent.parent / "configs" / "config.toml", "rb")
-    ).get("sample_roi", {})
-    roi, _, _ = crop_sample_roi(
-        frame,
-        0,
-        int(_sroi.get("bottom", 0)),
-        int(_sroi.get("left", 0)),
-        int(_sroi.get("right", 0)),
-    )
+    roi = frame
 
     # Full-resolution classical CV: HoughCircles → KDE peaks → grid reconstruction
     try:
@@ -530,6 +525,17 @@ async def analyze(
                 mark_scan_synced(scan_id, db)
             except Exception as e:
                 logger.warning("analyze: Sheets append failed (will retry on next sync): {}", e)
+
+    # Telegram notification (fire-and-forget)
+    if _TELEGRAM_AVAILABLE:
+        try:
+            _telegram_send(
+                count=scan_result["detected_count"],
+                color_summary=scan_result.get("summary", {}),
+                image_path=img_backup,
+            )
+        except Exception as e:
+            logger.warning("analyze: Telegram notification failed: {}", e)
 
     logger.success(
         "analyze: scan_id={} detected={}/{} missing={}",

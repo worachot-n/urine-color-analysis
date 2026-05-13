@@ -122,15 +122,6 @@ saturation_l0_threshold = 0.05
 enabled = true
 
 # =============================================================================
-# NETWORK / HOTSPOT
-# =============================================================================
-[network]
-hotspot_ssid         = "signal"
-hotspot_password     = "angad@1234"
-hotspot_ip           = "10.42.0.1"   # nmcli hotspot default on Pi OS / NetworkManager
-wifi_connect_timeout = 30            # Seconds to wait for WiFi association
-
-# =============================================================================
 # TELEGRAM
 # =============================================================================
 [telegram]
@@ -157,19 +148,6 @@ slot_max_dist_ratio = 0.60       # Max distance from slot center as fraction of 
 clahe_clip_limit    = 2.0        # CLAHE clip for pre-inference enhancement
 clahe_tile_size     = 8          # CLAHE tile grid size (NxN)
 roi_padding_px      = 10         # Padding (px) added around grid corners for ROI crop
-
-# =============================================================================
-# SAMPLE ROI — Fixed-margin crop fed to YOLO (excludes reference row)
-#
-# Each value is pixels trimmed FROM that edge of the full frame:
-#   y1 = top              y2 = frame_height − bottom
-#   x1 = left             x2 = frame_width  − right
-# =============================================================================
-[sample_roi]
-top    = 220    # trim reference row from top
-bottom = 20     # trim small margin at bottom
-left   = 200    # trim dead-zone column on left
-right  = 800    # if > frame width − left, no right-side crop is applied
 
 # =============================================================================
 # SYSTEM SAFETY
