@@ -247,12 +247,12 @@ def append_summary_to_sheet(
     spreadsheet_id: str,
     tab: str,
     service_account_file: str = "credentials.json",
-    drive_file_id: str | None = None,
+    image_url: str | None = None,
 ) -> None:
     """Append one summary row to the Summary tab.
 
-    drive_file_id: Google Drive file ID of the annotated image. When provided,
-    the image_url column is written as a clickable =HYPERLINK() formula.
+    image_url: full URL to the annotated image (e.g. https://your-server/static/results/{id}.jpg).
+    When provided, the image_url column is written as a clickable =HYPERLINK() formula.
     """
     try:
         service = _build_service(service_account_file)
@@ -263,10 +263,10 @@ def append_summary_to_sheet(
         ts      = scan_result.get("timestamp", "")
         summary = scan_result.get("summary", {})
 
-        if drive_file_id:
-            image_url = f'=HYPERLINK("https://drive.google.com/file/d/{drive_file_id}/view","View Image")'
+        if image_url:
+            cell_value = f'=HYPERLINK("{image_url}","View Image")'
         else:
-            image_url = ""
+            cell_value = ""
 
         row = [
             sid, ts,
@@ -276,7 +276,7 @@ def append_summary_to_sheet(
             summary.get("L0", 0), summary.get("L1", 0),
             summary.get("L2", 0), summary.get("L3", 0),
             summary.get("L4", 0),
-            image_url,
+            cell_value,
         ]
 
         _ensure_header(service, spreadsheet_id, tab, _SUMMARY_HEADER)

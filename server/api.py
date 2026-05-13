@@ -35,6 +35,7 @@ from server.slot_config import (
     save_slot_config,
 )
 from server.pipeline import run_pipeline
+from app.shared.config import cfg as _app_cfg
 
 _HERE        = Path(__file__).parent
 _RESULTS_DIR = _HERE / "static" / "results"
@@ -59,7 +60,6 @@ try:
         write_slot_config_to_sheet,
         append_detail_to_sheet,
         append_summary_to_sheet,
-        read_slot_config_from_sheet,
     )
     from server.integrations.drive import upload_image as drive_upload_image
     _GOOGLE_AVAILABLE = True
@@ -81,31 +81,33 @@ from server.integrations.sqlite_backup import (
     count_pending,
 )
 
-def _google_cfg() -> dict:
-    """Load Google config from config.toml; return empty dict if missing."""
+# ---------------------------------------------------------------------------
+# Config — parsed once at module load; never re-read per request
+# ---------------------------------------------------------------------------
+
+def _load_toml() -> dict:
     try:
         import tomllib
         cfg_path = Path(__file__).parent.parent / "configs" / "config.toml"
         with open(cfg_path, "rb") as f:
-            return tomllib.load(f).get("google", {})
+            return tomllib.load(f)
     except Exception:
         return {}
+
+
+_TOML = _load_toml()
+
+
+def _google_cfg() -> dict:
+    return _TOML.get("google", {})
 
 
 def _sqlite_cfg() -> dict:
-    """Load SQLite config from config.toml; return defaults if missing."""
-    try:
-        import tomllib
-        cfg_path = Path(__file__).parent.parent / "configs" / "config.toml"
-        with open(cfg_path, "rb") as f:
-            return tomllib.load(f).get("sqlite", {})
-    except Exception:
-        return {}
+    return _TOML.get("sqlite", {})
 
 
 def _db_path() -> Path:
-    cfg = _sqlite_cfg()
-    raw = cfg.get("db_path", "logs/urine_analysis.db")
+    raw = _sqlite_cfg().get("db_path", "logs/urine_analysis.db")
     p = Path(raw)
     if not p.is_absolute():
         p = Path(__file__).parent.parent / p
@@ -113,19 +115,68 @@ def _db_path() -> Path:
 
 
 def _img_backup_dir() -> Path:
-    """Return logs/img/ directory, creating it if necessary."""
-    try:
-        import tomllib
-        cfg_path = Path(__file__).parent.parent / "configs" / "config.toml"
-        with open(cfg_path, "rb") as f:
-            raw = tomllib.load(f).get("debug", {}).get("img_dir", "logs/img/")
-    except Exception:
-        raw = "logs/img/"
+    raw = _TOML.get("debug", {}).get("img_dir", "logs/img/")
     p = Path(raw)
     if not p.is_absolute():
         p = Path(__file__).parent.parent / p
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+# Precompute at startup — avoids repeated lookups inside hot paths
+_DB_PATH       = _db_path()
+_IMG_BACKUP    = _img_backup_dir()
+
+
+# ---------------------------------------------------------------------------
+# Cloud + Telegram — runs in a thread pool; never blocks the HTTP response
+# ---------------------------------------------------------------------------
+
+def _cloud_and_notify(
+    scan_id: str,
+    scan_result: dict,
+    annotated_jpeg: bytes,
+    img_backup: Path,
+    db: Path,
+) -> None:
+    """
+    Blocking cloud sync and Telegram notification.
+    Always called via asyncio.to_thread() so the event loop is never stalled.
+    """
+    gcfg        = _google_cfg()
+    sa_file     = gcfg.get("service_account_file", "credentials.json")
+    folder_id   = gcfg.get("drive_folder_id", "")
+    spreadsheet = gcfg.get("spreadsheet_id", "")
+    detail_tab  = gcfg.get("detail_tab",  "Detail")
+    summary_tab = gcfg.get("summary_tab", "Summary")
+
+    if _GOOGLE_AVAILABLE:
+        if folder_id:
+            try:
+                drive_fid = drive_upload_image(annotated_jpeg, f"{scan_id}.jpg", folder_id, sa_file)
+                mark_image_synced(scan_id, drive_fid, db)
+            except Exception as e:
+                logger.warning("analyze: Drive upload failed (will retry on next sync): {}", e)
+
+        if spreadsheet:
+            try:
+                server_url = _app_cfg.server_url.rstrip("/")
+                img_url = f"{server_url}/static/results/{scan_id}.jpg"
+                append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
+                append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, image_url=img_url)
+                mark_scan_synced(scan_id, db)
+            except Exception as e:
+                logger.warning("analyze: Sheets append failed (will retry on next sync): {}", e)
+
+    if _TELEGRAM_AVAILABLE:
+        try:
+            _telegram_send(
+                count=scan_result["detected_count"],
+                color_summary=scan_result.get("summary", {}),
+                image_path=img_backup,
+            )
+        except Exception as e:
+            logger.warning("analyze: Telegram notification failed: {}", e)
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +194,7 @@ async def _sync_pending() -> dict[str, int]:
     detail_tab  = gcfg.get("detail_tab",  "Detail")
     summary_tab = gcfg.get("summary_tab", "Summary")
     folder_id   = gcfg.get("drive_folder_id", "")
-    db          = _db_path()
+    db          = _DB_PATH
 
     synced_scans  = 0
     synced_images = 0
@@ -170,8 +221,9 @@ async def _sync_pending() -> dict[str, int]:
             except Exception as e:
                 logger.warning("sync: Drive upload failed for {}: {}", scan_id, e)
 
-    # Step 2: sync pending Sheets rows; include Drive hyperlink when available
+    # Step 2: sync pending Sheets rows; include server image URL in hyperlink
     if spreadsheet:
+        server_url = _app_cfg.server_url.rstrip("/")
         for scan_id in get_pending_scans(db):
             json_path = _RESULTS_DIR / f"{scan_id}.json"
             if not json_path.exists():
@@ -179,10 +231,9 @@ async def _sync_pending() -> dict[str, int]:
                 continue
             try:
                 scan_result = json.loads(json_path.read_text())
-                # Prefer file_id from this session; fall back to one stored in SQLite
-                fid = freshly_synced.get(scan_id) or get_drive_file_id(scan_id, db)
+                img_url = f"{server_url}/static/results/{scan_id}.jpg"
                 append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
-                append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, drive_file_id=fid)
+                append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, image_url=img_url)
                 mark_scan_synced(scan_id, db)
                 synced_scans += 1
             except Exception as e:
@@ -199,8 +250,7 @@ async def _sync_pending() -> dict[str, int]:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    db = _db_path()
-    init_db(db)
+    init_db(_DB_PATH)
     asyncio.create_task(_sync_pending())
     yield
 
@@ -361,10 +411,10 @@ async def api_auto_grid(file: UploadFile = File(...)):
     """
     Classical-CV-only grid debug endpoint.
 
-    Runs HoughCircles + grid reconstruction on the full-resolution ROI image.
+    Runs HoughCircles + grid reconstruction on the full-resolution image.
     No YOLO, no letterboxing — letterboxing is a YOLO requirement and distorts
     circle geometry at non-square aspect ratios.
-    Slot config loaded from Google Sheets.
+    Slot config always read from local slot_config.json (web never reads Sheets).
     """
     import base64
     import cv2
@@ -375,31 +425,8 @@ async def api_auto_grid(file: UploadFile = File(...)):
     if not jpeg_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    # Grid dimensions come from the local slot_config.json (always correct rows/cols).
-    # Cell assignments come from Google Sheets (user-edited via /settings → Save).
-    local_cfg = load_slot_config()
-
-    sheets_cfg = None
-    if _GOOGLE_AVAILABLE:
-        gcfg = _google_cfg()
-        sid  = gcfg.get("spreadsheet_id", "")
-        tab  = gcfg.get("slots_tab", "SlotAssignment")
-        sa   = gcfg.get("service_account_file", "credentials.json")
-        if sid:
-            sheets_cfg = read_slot_config_from_sheet(sid, tab, sa)
-
-    # Prefer Sheets assignments; fall back to local if Sheets unavailable
-    if sheets_cfg is not None and sheets_cfg.cells:
-        from server.slot_config import SlotConfig
-        slot_cfg = SlotConfig(
-            rows=local_cfg.rows,
-            cols=local_cfg.cols,
-            cells=sheets_cfg.cells,
-        )
-    elif local_cfg.cells:
-        slot_cfg = local_cfg
-        logger.warning("auto_grid: Google Sheets unavailable — using local slot_config.json")
-    else:
+    slot_cfg = load_slot_config()
+    if not slot_cfg.cells:
         raise HTTPException(
             status_code=400,
             detail="No slot config available. Visit /settings to assign slots first.",
@@ -414,8 +441,9 @@ async def api_auto_grid(file: UploadFile = File(...)):
     roi = frame
 
     # Full-resolution classical CV: HoughCircles → KDE peaks → grid reconstruction
+    # Run in thread — CPU-bound OpenCV work must not block the event loop
     try:
-        grid_result = detect_grid_full(roi, slot_cfg.rows, slot_cfg.cols)
+        grid_result = await asyncio.to_thread(detect_grid_full, roi, slot_cfg.rows, slot_cfg.cols)
     except Exception as e:
         logger.exception("auto_grid: detect_grid_full failed")
         raise HTTPException(status_code=500, detail=f"Grid detection error: {e}")
@@ -480,16 +508,18 @@ async def analyze(
         )
 
     try:
-        scan_result, annotated_jpeg = run_pipeline(jpeg_bytes, slot_cfg)
+        # Run CPU-bound pipeline in a thread — keeps the event loop free
+        scan_result, annotated_jpeg = await asyncio.to_thread(
+            run_pipeline, jpeg_bytes, slot_cfg
+        )
     except Exception as e:
         logger.exception("analyze: pipeline error")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
 
-    # Persist result files (always synchronous — never blocked by cloud state)
-    scan_id     = scan_result["scan_id"]
-    ts          = scan_result.get("timestamp", "")
-    img_backup  = _img_backup_dir() / f"{scan_id}.jpg"
-    db          = _db_path()
+    # Persist result files locally (fast, synchronous, always runs)
+    scan_id    = scan_result["scan_id"]
+    ts         = scan_result.get("timestamp", "")
+    img_backup = _IMG_BACKUP / f"{scan_id}.jpg"
 
     (_RESULTS_DIR / f"{scan_id}.jpg").write_bytes(annotated_jpeg)
     (_RESULTS_DIR / f"{scan_id}.json").write_text(
@@ -497,45 +527,14 @@ async def analyze(
     )
     img_backup.write_bytes(annotated_jpeg)
 
-    # SQLite backup (synchronous — never fails the response)
-    save_scan(scan_result, db)
-    save_image_path(scan_id, img_backup, ts, db)
+    # SQLite backup (fast local write — always runs before returning)
+    save_scan(scan_result, _DB_PATH)
+    save_image_path(scan_id, img_backup, ts, _DB_PATH)
 
-    # Google Drive + Sheets (fire-and-forget; mark synced on success)
-    if _GOOGLE_AVAILABLE:
-        gcfg        = _google_cfg()
-        sa_file     = gcfg.get("service_account_file", "credentials.json")
-        folder_id   = gcfg.get("drive_folder_id", "")
-        spreadsheet = gcfg.get("spreadsheet_id", "")
-        detail_tab  = gcfg.get("detail_tab",  "Detail")
-        summary_tab = gcfg.get("summary_tab", "Summary")
-
-        drive_fid: str | None = None
-        if folder_id:
-            try:
-                drive_fid = drive_upload_image(annotated_jpeg, f"{scan_id}.jpg", folder_id, sa_file)
-                mark_image_synced(scan_id, drive_fid, db)
-            except Exception as e:
-                logger.warning("analyze: Drive upload failed (will retry on next sync): {}", e)
-
-        if spreadsheet:
-            try:
-                append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
-                append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, drive_file_id=drive_fid)
-                mark_scan_synced(scan_id, db)
-            except Exception as e:
-                logger.warning("analyze: Sheets append failed (will retry on next sync): {}", e)
-
-    # Telegram notification (fire-and-forget)
-    if _TELEGRAM_AVAILABLE:
-        try:
-            _telegram_send(
-                count=scan_result["detected_count"],
-                color_summary=scan_result.get("summary", {}),
-                image_path=img_backup,
-            )
-        except Exception as e:
-            logger.warning("analyze: Telegram notification failed: {}", e)
+    # Cloud + Telegram — offloaded to a thread; response returns immediately
+    asyncio.create_task(asyncio.to_thread(
+        _cloud_and_notify, scan_id, scan_result, annotated_jpeg, img_backup, _DB_PATH
+    ))
 
     logger.success(
         "analyze: scan_id={} detected={}/{} missing={}",
