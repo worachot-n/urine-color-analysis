@@ -341,8 +341,10 @@ def _render_annotated(
     # ── 4. Batch text rendering (Thai-aware via PIL, ASCII fallback otherwise) ─
     canvas = _render_text_batch(canvas, text_items)
 
-    # Scale down for storage (50%)
-    out = cv2.resize(canvas, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+    # Cap to 1280 px wide — keeps file ~400 KB instead of ~1.5 MB at full Pi resolution
+    _MAX_W = 1280
+    out_scale = min(1.0, _MAX_W / w)
+    out = cv2.resize(canvas, (int(w * out_scale), int(h * out_scale)), interpolation=cv2.INTER_AREA)
     ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 75])
     return buf.tobytes() if ok else b""
 
