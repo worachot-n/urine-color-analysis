@@ -343,7 +343,7 @@ def _render_annotated(
 
     # Scale down for storage (50%)
     out = cv2.resize(canvas, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 75])
     return buf.tobytes() if ok else b""
 
 
