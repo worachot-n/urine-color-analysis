@@ -37,7 +37,7 @@ from server.slot_config import (
     load_slot_config,
     save_slot_config,
 )
-from server.pipeline import run_pipeline
+from server.pipeline import run_pipeline, _load_yolo
 from app.shared.config import cfg as _app_cfg
 from utils.auto_grid_detector import detect_grid_full, draw_grid_lines
 
@@ -236,6 +236,7 @@ async def _sync_pending() -> dict[str, int]:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     init_db(_DB_PATH)
+    asyncio.create_task(asyncio.to_thread(_load_yolo))   # pre-warm; eliminates ~1.2s on first /analyze
     asyncio.create_task(_sync_pending())
     yield
 
