@@ -18,11 +18,14 @@ Routes:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import cv2
+import numpy as np
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,12 +39,26 @@ from server.slot_config import (
 )
 from server.pipeline import run_pipeline
 from app.shared.config import cfg as _app_cfg
+from utils.auto_grid_detector import detect_grid_full, draw_grid_lines
 
 _HERE        = Path(__file__).parent
 _RESULTS_DIR = _HERE / "static" / "results"
 _RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 _API_KEY = os.environ.get("API_KEY", "test")
+
+# ---------------------------------------------------------------------------
+# Slot config cache — loaded once, invalidated when POST /api/slots saves
+# ---------------------------------------------------------------------------
+_slot_cfg_cache: SlotConfig | None = None
+
+
+def _get_slot_cfg() -> SlotConfig:
+    global _slot_cfg_cache
+    if _slot_cfg_cache is None:
+        _slot_cfg_cache = load_slot_config()
+    return _slot_cfg_cache
+
 
 # ---------------------------------------------------------------------------
 # Telegram notifications — fire-and-forget, silently skipped if not configured
@@ -61,7 +78,6 @@ try:
         append_detail_to_sheet,
         append_summary_to_sheet,
     )
-    from server.integrations.drive import upload_image as drive_upload_image
     _GOOGLE_AVAILABLE = True
 except ImportError:
     _GOOGLE_AVAILABLE = False
@@ -72,12 +88,8 @@ except ImportError:
 from server.integrations.sqlite_backup import (
     init_db,
     save_scan,
-    save_image_path,
     mark_scan_synced,
-    mark_image_synced,
     get_pending_scans,
-    get_pending_images,
-    get_drive_file_id,
     count_pending,
 )
 
@@ -135,28 +147,19 @@ _IMG_BACKUP    = _img_backup_dir()
 def _cloud_and_notify(
     scan_id: str,
     scan_result: dict,
-    annotated_jpeg: bytes,
     img_backup: Path,
     db: Path,
 ) -> None:
     """
-    Blocking cloud sync and Telegram notification.
+    Blocking Sheets sync and Telegram notification.
     Always called via asyncio.to_thread() so the event loop is never stalled.
     """
-    gcfg        = _google_cfg()
-    sa_file     = gcfg.get("service_account_file", "credentials.json")
-    folder_id   = gcfg.get("drive_folder_id", "")
-    spreadsheet = gcfg.get("spreadsheet_id", "")
-    detail_tab  = gcfg.get("detail_tab",  "Detail")
-    summary_tab = gcfg.get("summary_tab", "Summary")
-
     if _GOOGLE_AVAILABLE:
-        if folder_id:
-            try:
-                drive_fid = drive_upload_image(annotated_jpeg, f"{scan_id}.jpg", folder_id, sa_file)
-                mark_image_synced(scan_id, drive_fid, db)
-            except Exception as e:
-                logger.warning("analyze: Drive upload failed (will retry on next sync): {}", e)
+        gcfg        = _google_cfg()
+        sa_file     = gcfg.get("service_account_file", "credentials.json")
+        spreadsheet = gcfg.get("spreadsheet_id", "")
+        detail_tab  = gcfg.get("detail_tab",  "Detail")
+        summary_tab = gcfg.get("summary_tab", "Summary")
 
         if spreadsheet:
             try:
@@ -183,65 +186,47 @@ def _cloud_and_notify(
 # Background sync — runs on startup and can be triggered via /api/sync
 # ---------------------------------------------------------------------------
 
-async def _sync_pending() -> dict[str, int]:
-    """Upload any locally-saved scans that haven't reached Google yet."""
+def _sync_pending_sync() -> dict[str, int]:
+    """Blocking Sheets sync — must be called via asyncio.to_thread()."""
     if not _GOOGLE_AVAILABLE:
-        return {"synced_scans": 0, "synced_images": 0}
+        return {"synced_scans": 0}
 
     gcfg        = _google_cfg()
     sa_file     = gcfg.get("service_account_file", "credentials.json")
     spreadsheet = gcfg.get("spreadsheet_id", "")
     detail_tab  = gcfg.get("detail_tab",  "Detail")
     summary_tab = gcfg.get("summary_tab", "Summary")
-    folder_id   = gcfg.get("drive_folder_id", "")
     db          = _DB_PATH
 
-    synced_scans  = 0
-    synced_images = 0
+    if not spreadsheet:
+        return {"synced_scans": 0}
 
-    # Step 1: upload pending images; build scan_id → file_id map for use in step 2
-    freshly_synced: dict[str, str] = {}
-    if folder_id:
-        for rec in get_pending_images(db):
-            scan_id    = rec["scan_id"]
-            local_path = Path(rec["local_path"])
-            if not local_path.exists():
-                local_path = _RESULTS_DIR / f"{scan_id}.jpg"
-            if not local_path.exists():
-                logger.warning("sync: image not found for scan {}, skipping Drive upload", scan_id)
-                continue
-            try:
-                file_id = drive_upload_image(
-                    local_path.read_bytes(), f"{scan_id}.jpg", folder_id, sa_file
-                )
-                mark_image_synced(scan_id, file_id, db)
-                if file_id:
-                    freshly_synced[scan_id] = file_id
-                synced_images += 1
-            except Exception as e:
-                logger.warning("sync: Drive upload failed for {}: {}", scan_id, e)
+    synced_scans = 0
+    server_url   = _app_cfg.server_url.rstrip("/")
 
-    # Step 2: sync pending Sheets rows; include server image URL in hyperlink
-    if spreadsheet:
-        server_url = _app_cfg.server_url.rstrip("/")
-        for scan_id in get_pending_scans(db):
-            json_path = _RESULTS_DIR / f"{scan_id}.json"
-            if not json_path.exists():
-                logger.warning("sync: scan JSON not found for {}, skipping Sheets sync", scan_id)
-                continue
-            try:
-                scan_result = json.loads(json_path.read_text())
-                img_url = f"{server_url}/static/results/{scan_id}.jpg"
-                append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
-                append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, image_url=img_url)
-                mark_scan_synced(scan_id, db)
-                synced_scans += 1
-            except Exception as e:
-                logger.warning("sync: Sheets sync failed for {}: {}", scan_id, e)
+    for scan_id in get_pending_scans(db):
+        json_path = _RESULTS_DIR / f"{scan_id}.json"
+        if not json_path.exists():
+            logger.warning("sync: scan JSON not found for {}, skipping Sheets sync", scan_id)
+            continue
+        try:
+            scan_result = json.loads(json_path.read_text())
+            img_url = f"{server_url}/static/results/{scan_id}.jpg"
+            append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
+            append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, image_url=img_url)
+            mark_scan_synced(scan_id, db)
+            synced_scans += 1
+        except Exception as e:
+            logger.warning("sync: Sheets sync failed for {}: {}", scan_id, e)
 
-    if synced_scans or synced_images:
-        logger.success("sync: synced {} scans, {} images", synced_scans, synced_images)
-    return {"synced_scans": synced_scans, "synced_images": synced_images}
+    if synced_scans:
+        logger.success("sync: synced {} scans to Sheets", synced_scans)
+    return {"synced_scans": synced_scans}
+
+
+async def _sync_pending() -> dict[str, int]:
+    """Upload any locally-saved scans that haven't reached Google yet."""
+    return await asyncio.to_thread(_sync_pending_sync)
 
 
 # ---------------------------------------------------------------------------
@@ -309,13 +294,13 @@ async def upload_page(request: Request):
 
 @app.get("/results", response_class=HTMLResponse)
 async def results_page(request: Request):
-    scans = _all_scans_sorted()
+    scans = await asyncio.to_thread(_all_scans_sorted)
     return templates.TemplateResponse(request, "results.html", {"scans": scans})
 
 
 @app.get("/result/{scan_id}", response_class=HTMLResponse)
 async def result_detail_page(request: Request, scan_id: str):
-    scan = _load_scan(scan_id)
+    scan = await asyncio.to_thread(_load_scan, scan_id)
     if scan is None:
         raise HTTPException(status_code=404, detail="Scan not found")
     return templates.TemplateResponse(request, "result.html", {"scan": scan})
@@ -328,7 +313,7 @@ async def auto_grid_page(request: Request):
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
-    slot_cfg = load_slot_config()
+    slot_cfg = _get_slot_cfg()
     return templates.TemplateResponse(
         request, "settings.html",
         {"rows": slot_cfg.rows, "cols": slot_cfg.cols},
@@ -346,8 +331,8 @@ async def health():
 
 @app.post("/api/sync")
 async def api_sync():
-    """Manually trigger sync of pending offline data to Google Drive and Sheets."""
-    pending = count_pending(_db_path())
+    """Manually trigger sync of pending offline scans to Google Sheets."""
+    pending = count_pending(_DB_PATH)
     result  = await _sync_pending()
     return {
         "status": "ok",
@@ -358,8 +343,7 @@ async def api_sync():
 
 @app.get("/api/slots")
 async def get_slots():
-    cfg = load_slot_config()
-    return JSONResponse(content=cfg.to_dict())
+    return JSONResponse(content=_get_slot_cfg().to_dict())
 
 
 @app.post("/api/slots")
@@ -386,6 +370,9 @@ async def post_slots(request: Request):
             )
         cfg = SlotConfig(rows=rows, cols=cols, cells=cells)
         save_slot_config(cfg)
+
+        global _slot_cfg_cache
+        _slot_cfg_cache = cfg   # update cache immediately
 
         # Mirror to Google Sheets (fire-and-forget)
         if _GOOGLE_AVAILABLE:
@@ -416,16 +403,11 @@ async def api_auto_grid(file: UploadFile = File(...)):
     circle geometry at non-square aspect ratios.
     Slot config always read from local slot_config.json (web never reads Sheets).
     """
-    import base64
-    import cv2
-    import numpy as np
-    from utils.auto_grid_detector import detect_grid_full
-
     jpeg_bytes = await file.read()
     if not jpeg_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    slot_cfg = load_slot_config()
+    slot_cfg = _get_slot_cfg()
     if not slot_cfg.cells:
         raise HTTPException(
             status_code=400,
@@ -500,7 +482,7 @@ async def analyze(
     if not jpeg_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    slot_cfg = load_slot_config()
+    slot_cfg = _get_slot_cfg()
     if not slot_cfg.cells:
         raise HTTPException(
             status_code=400,
@@ -529,11 +511,10 @@ async def analyze(
 
     # SQLite backup (fast local write — always runs before returning)
     save_scan(scan_result, _DB_PATH)
-    save_image_path(scan_id, img_backup, ts, _DB_PATH)
 
-    # Cloud + Telegram — offloaded to a thread; response returns immediately
+    # Sheets + Telegram — offloaded to a thread; response returns immediately
     asyncio.create_task(asyncio.to_thread(
-        _cloud_and_notify, scan_id, scan_result, annotated_jpeg, img_backup, _DB_PATH
+        _cloud_and_notify, scan_id, scan_result, img_backup, _DB_PATH
     ))
 
     logger.success(
