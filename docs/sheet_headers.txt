@@ -1,0 +1,18 @@
+Google Sheets — Header Rows
+Paste each block as row 1 of the corresponding tab.
+Columns are tab-separated so you can paste directly into Google Sheets.
+=======================================================================
+
+TAB: Detail
+-----------
+scan_id	created_at	is_reference	ref_level	slot_id	cell_index	row	column	L	a	b	hex	path_idx	path_delta	hist_delta	delta_e	color_level	is_forced	is_achromatic	detected	confident
+
+
+TAB: Summary
+------------
+scan_id	created_at	detected_count	total_assigned	missing_slots	L0	L1	L2	L3	L4	image_url
+
+
+TAB: SlotAssignment
+-------------------
+cell_index	slot_id	is_reference	ref_level	row	col	grid_rows	grid_cols	is_white_reference

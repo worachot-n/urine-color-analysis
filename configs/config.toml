@@ -189,7 +189,15 @@ service_account_file = "credentials/credentials.json"   # Service account key JS
 drive_folder_id      = ""          # Google Drive folder ID for annotated images
 spreadsheet_id       = ""          # Single Google Spreadsheet ID
 slots_tab            = "SlotAssignment"
-results_tab          = "Results"
+detail_tab           = "Detail"    # Per-bottle detail rows (one row per bottle per scan)
+summary_tab          = "Summary"   # Per-scan summary rows (level distribution counts)
+
+# =============================================================================
+# SQLITE OFFLINE BACKUP
+# Written synchronously on every scan; synced to Google when connectivity returns.
+# =============================================================================
+[sqlite]
+db_path = "logs/urine_analysis.db"
 
 # =============================================================================
 # LOGGING / DEBUG
@@ -197,4 +205,4 @@ results_tab          = "Results"
 [debug]
 enabled = true
 log_dir = "logs/"          # Text logs directory
-img_dir = "logs/img/"      # Annotated scan images (used by YOLO detector debug output)
+img_dir = "logs/img/"      # Annotated scan images — offline backup for Drive upload

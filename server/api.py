@@ -9,6 +9,7 @@ Routes:
     GET  /settings          — Slot assignment page
     GET  /api/slots         — Return slot_config.json as JSON
     POST /api/slots         — Save slot config
+    POST /api/sync          — Trigger manual sync of pending offline data to Google
     GET  /auto_grid         — Grid debug page (CV only, no YOLO, no letterbox)
     POST /api/auto_grid     — Run full-res HoughCircles + KDE grid reconstruction
     GET  /health            — {"status": "ok"}
@@ -16,8 +17,10 @@ Routes:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
@@ -45,7 +48,8 @@ _API_KEY = os.environ.get("API_KEY", "test")
 try:
     from server.integrations.sheets import (
         write_slot_config_to_sheet,
-        append_result_to_sheet,
+        append_detail_to_sheet,
+        append_summary_to_sheet,
         read_slot_config_from_sheet,
     )
     from server.integrations.drive import upload_image as drive_upload_image
@@ -53,7 +57,22 @@ try:
 except ImportError:
     _GOOGLE_AVAILABLE = False
 
-def _google_cfg():
+# ---------------------------------------------------------------------------
+# SQLite backup — always available (stdlib sqlite3, no extra dependencies)
+# ---------------------------------------------------------------------------
+from server.integrations.sqlite_backup import (
+    init_db,
+    save_scan,
+    save_image_path,
+    mark_scan_synced,
+    mark_image_synced,
+    get_pending_scans,
+    get_pending_images,
+    get_drive_file_id,
+    count_pending,
+)
+
+def _google_cfg() -> dict:
     """Load Google config from config.toml; return empty dict if missing."""
     try:
         import tomllib
@@ -64,11 +83,120 @@ def _google_cfg():
         return {}
 
 
+def _sqlite_cfg() -> dict:
+    """Load SQLite config from config.toml; return defaults if missing."""
+    try:
+        import tomllib
+        cfg_path = Path(__file__).parent.parent / "configs" / "config.toml"
+        with open(cfg_path, "rb") as f:
+            return tomllib.load(f).get("sqlite", {})
+    except Exception:
+        return {}
+
+
+def _db_path() -> Path:
+    cfg = _sqlite_cfg()
+    raw = cfg.get("db_path", "logs/urine_analysis.db")
+    p = Path(raw)
+    if not p.is_absolute():
+        p = Path(__file__).parent.parent / p
+    return p
+
+
+def _img_backup_dir() -> Path:
+    """Return logs/img/ directory, creating it if necessary."""
+    try:
+        import tomllib
+        cfg_path = Path(__file__).parent.parent / "configs" / "config.toml"
+        with open(cfg_path, "rb") as f:
+            raw = tomllib.load(f).get("debug", {}).get("img_dir", "logs/img/")
+    except Exception:
+        raw = "logs/img/"
+    p = Path(raw)
+    if not p.is_absolute():
+        p = Path(__file__).parent.parent / p
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Background sync — runs on startup and can be triggered via /api/sync
+# ---------------------------------------------------------------------------
+
+async def _sync_pending() -> dict[str, int]:
+    """Upload any locally-saved scans that haven't reached Google yet."""
+    if not _GOOGLE_AVAILABLE:
+        return {"synced_scans": 0, "synced_images": 0}
+
+    gcfg        = _google_cfg()
+    sa_file     = gcfg.get("service_account_file", "credentials.json")
+    spreadsheet = gcfg.get("spreadsheet_id", "")
+    detail_tab  = gcfg.get("detail_tab",  "Detail")
+    summary_tab = gcfg.get("summary_tab", "Summary")
+    folder_id   = gcfg.get("drive_folder_id", "")
+    db          = _db_path()
+
+    synced_scans  = 0
+    synced_images = 0
+
+    # Step 1: upload pending images; build scan_id → file_id map for use in step 2
+    freshly_synced: dict[str, str] = {}
+    if folder_id:
+        for rec in get_pending_images(db):
+            scan_id    = rec["scan_id"]
+            local_path = Path(rec["local_path"])
+            if not local_path.exists():
+                local_path = _RESULTS_DIR / f"{scan_id}.jpg"
+            if not local_path.exists():
+                logger.warning("sync: image not found for scan {}, skipping Drive upload", scan_id)
+                continue
+            try:
+                file_id = drive_upload_image(
+                    local_path.read_bytes(), f"{scan_id}.jpg", folder_id, sa_file
+                )
+                mark_image_synced(scan_id, file_id, db)
+                if file_id:
+                    freshly_synced[scan_id] = file_id
+                synced_images += 1
+            except Exception as e:
+                logger.warning("sync: Drive upload failed for {}: {}", scan_id, e)
+
+    # Step 2: sync pending Sheets rows; include Drive hyperlink when available
+    if spreadsheet:
+        for scan_id in get_pending_scans(db):
+            json_path = _RESULTS_DIR / f"{scan_id}.json"
+            if not json_path.exists():
+                logger.warning("sync: scan JSON not found for {}, skipping Sheets sync", scan_id)
+                continue
+            try:
+                scan_result = json.loads(json_path.read_text())
+                # Prefer file_id from this session; fall back to one stored in SQLite
+                fid = freshly_synced.get(scan_id) or get_drive_file_id(scan_id, db)
+                append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
+                append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, drive_file_id=fid)
+                mark_scan_synced(scan_id, db)
+                synced_scans += 1
+            except Exception as e:
+                logger.warning("sync: Sheets sync failed for {}: {}", scan_id, e)
+
+    if synced_scans or synced_images:
+        logger.success("sync: synced {} scans, {} images", synced_scans, synced_images)
+    return {"synced_scans": synced_scans, "synced_images": synced_images}
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Urine Color Analyzer V3")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    db = _db_path()
+    init_db(db)
+    asyncio.create_task(_sync_pending())
+    yield
+
+
+app = FastAPI(title="Urine Color Analyzer V3", lifespan=_lifespan)
 
 app.mount(
     "/static",
@@ -155,6 +283,18 @@ async def settings_page(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/api/sync")
+async def api_sync():
+    """Manually trigger sync of pending offline data to Google Drive and Sheets."""
+    pending = count_pending(_db_path())
+    result  = await _sync_pending()
+    return {
+        "status": "ok",
+        "pending_before": pending,
+        **result,
+    }
 
 
 @app.get("/api/slots")
@@ -350,39 +490,46 @@ async def analyze(
         logger.exception("analyze: pipeline error")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
 
-    # Persist result files
-    scan_id = scan_result["scan_id"]
+    # Persist result files (always synchronous — never blocked by cloud state)
+    scan_id     = scan_result["scan_id"]
+    ts          = scan_result.get("timestamp", "")
+    img_backup  = _img_backup_dir() / f"{scan_id}.jpg"
+    db          = _db_path()
+
     (_RESULTS_DIR / f"{scan_id}.jpg").write_bytes(annotated_jpeg)
     (_RESULTS_DIR / f"{scan_id}.json").write_text(
         json.dumps(scan_result, ensure_ascii=False, indent=2)
     )
+    img_backup.write_bytes(annotated_jpeg)
 
-    # Google Drive + Sheets (fire-and-forget)
+    # SQLite backup (synchronous — never fails the response)
+    save_scan(scan_result, db)
+    save_image_path(scan_id, img_backup, ts, db)
+
+    # Google Drive + Sheets (fire-and-forget; mark synced on success)
     if _GOOGLE_AVAILABLE:
-        gcfg = _google_cfg()
-        sa_file = gcfg.get("service_account_file", "credentials.json")
+        gcfg        = _google_cfg()
+        sa_file     = gcfg.get("service_account_file", "credentials.json")
+        folder_id   = gcfg.get("drive_folder_id", "")
+        spreadsheet = gcfg.get("spreadsheet_id", "")
+        detail_tab  = gcfg.get("detail_tab",  "Detail")
+        summary_tab = gcfg.get("summary_tab", "Summary")
 
-        folder_id = gcfg.get("drive_folder_id", "")
+        drive_fid: str | None = None
         if folder_id:
             try:
-                drive_upload_image(
-                    annotated_jpeg,
-                    f"{scan_id}.jpg",
-                    folder_id,
-                    sa_file,
-                )
+                drive_fid = drive_upload_image(annotated_jpeg, f"{scan_id}.jpg", folder_id, sa_file)
+                mark_image_synced(scan_id, drive_fid, db)
             except Exception as e:
-                logger.warning("analyze: Drive upload failed: {}", e)
+                logger.warning("analyze: Drive upload failed (will retry on next sync): {}", e)
 
-        spreadsheet_id = gcfg.get("spreadsheet_id", "")
-        results_tab = gcfg.get("results_tab", "Results")
-        if spreadsheet_id:
+        if spreadsheet:
             try:
-                append_result_to_sheet(
-                    scan_result, spreadsheet_id, results_tab, sa_file
-                )
+                append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
+                append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, drive_file_id=drive_fid)
+                mark_scan_synced(scan_id, db)
             except Exception as e:
-                logger.warning("analyze: Sheets append failed: {}", e)
+                logger.warning("analyze: Sheets append failed (will retry on next sync): {}", e)
 
     logger.success(
         "analyze: scan_id={} detected={}/{} missing={}",

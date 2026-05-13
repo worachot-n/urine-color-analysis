@@ -1,33 +1,53 @@
 """
-Google Sheets integration — two tabs in a single spreadsheet.
+Google Sheets integration — three tabs in a single spreadsheet.
 
+Tab "Detail":         one row per bottle per scan (detailed metrics).
+Tab "Summary":        one row per scan (level distribution counts).
 Tab "SlotAssignment": cleared and rewritten whenever POST /api/slots saves.
-Tab "Results":        one batch appended per successful /analyze call.
 
-Both calls are fire-and-forget; any failure is logged but never surfaces to
+All calls are fire-and-forget; any failure is logged but never surfaces to
 the caller.
 
 Config (configs/config.toml [google]):
     spreadsheet_id       = "..."
+    detail_tab           = "Detail"
+    summary_tab          = "Summary"
     slots_tab            = "SlotAssignment"
-    results_tab          = "Results"
     service_account_file = "credentials.json"
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from loguru import logger
 
-_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
+_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+_DETAIL_HEADER = [
+    "scan_id", "created_at",
+    "is_reference", "ref_level",
+    "slot_id", "cell_index", "row", "column",
+    "L", "a", "b", "hex",
+    "path_idx", "path_delta", "hist_delta", "delta_e",
+    "color_level", "is_forced", "is_achromatic",
+    "detected", "confident",
 ]
 
+_SUMMARY_HEADER = [
+    "scan_id", "created_at",
+    "detected_count", "total_assigned", "missing_slots",
+    "L0", "L1", "L2", "L3", "L4", "image_url",
+]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 def _get_creds(service_account_file: str):
     try:
         from google.oauth2 import service_account as sa
-
         if not Path(service_account_file).exists():
             logger.debug("sheets: {} not found — skipping", service_account_file)
             return None
@@ -57,6 +77,221 @@ def _hex_to_rgb_float(hex_color: str) -> dict:
         "green": int(h[2:4], 16) / 255.0,
         "blue":  int(h[4:6], 16) / 255.0,
     }
+
+
+def _get_sheet_id(service, spreadsheet_id: str, tab_name: str) -> int:
+    """Return the numeric sheetId for a tab by name; 0 if not found."""
+    try:
+        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        for s in meta.get("sheets", []):
+            if s["properties"]["title"] == tab_name:
+                return s["properties"]["sheetId"]
+    except Exception:
+        pass
+    return 0
+
+
+def _ensure_header(service, spreadsheet_id: str, tab: str, header: list[str]) -> None:
+    """Write the header row to the tab only if the tab is currently empty."""
+    try:
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab}!A1:A1",
+        ).execute()
+        if result.get("values"):
+            return  # already has data
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab}!A1",
+            valueInputOption="RAW",
+            body={"values": [header]},
+        ).execute()
+    except Exception as e:
+        logger.debug("sheets: _ensure_header failed for {}: {}", tab, e)
+
+
+def _apply_hex_backgrounds(
+    service,
+    spreadsheet_id: str,
+    tab: str,
+    start_row_1based: int,
+    rows: list[list],
+    hex_col_index: int,
+) -> None:
+    """Apply cell background color to rows that have a hex value in hex_col_index."""
+    requests = []
+    sheet_id = _get_sheet_id(service, spreadsheet_id, tab)
+    for i, row in enumerate(rows):
+        hex_color = row[hex_col_index] if hex_col_index < len(row) else ""
+        if hex_color and isinstance(hex_color, str) and hex_color.startswith("#") and len(hex_color) == 7:
+            abs_row = start_row_1based + i - 1  # 0-based for API
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": abs_row,
+                        "endRowIndex": abs_row + 1,
+                        "startColumnIndex": hex_col_index,
+                        "endColumnIndex": hex_col_index + 1,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": _hex_to_rgb_float(hex_color)
+                        }
+                    },
+                    "fields": "userEnteredFormat.backgroundColor",
+                }
+            })
+    if requests:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": requests},
+        ).execute()
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def append_detail_to_sheet(
+    scan_result: dict,
+    spreadsheet_id: str,
+    tab: str,
+    service_account_file: str = "credentials.json",
+) -> None:
+    """Append one row per bottle (samples + references) to the Detail tab."""
+    try:
+        service = _build_service(service_account_file)
+        if service is None:
+            return
+
+        sid       = scan_result.get("scan_id", "")
+        ts        = scan_result.get("timestamp", "")
+        grid_cols = scan_result.get("grid_cols", 15)
+
+        def _row_col(ci):
+            if ci is None:
+                return "", ""
+            return (ci - 1) // grid_cols + 1, (ci - 1) % grid_cols + 1
+
+        rows: list[list] = []
+
+        for slot_id, d in scan_result.get("slots", {}).items():
+            ci  = d.get("cell_index")
+            lab = d.get("lab") or [None, None, None]
+            r, c = _row_col(ci)
+            rows.append([
+                sid, ts,
+                False, "",
+                slot_id, ci if ci is not None else "", r, c,
+                lab[0] if lab[0] is not None else "",
+                lab[1] if lab[1] is not None else "",
+                lab[2] if lab[2] is not None else "",
+                d.get("hex") or "",
+                d.get("concentration_index") if d.get("concentration_index") is not None else "",
+                d.get("path_distance")       if d.get("path_distance")       is not None else "",
+                d.get("hist_bhatt")          if d.get("hist_bhatt")          is not None else "",
+                d.get("delta_e")             if d.get("delta_e")             is not None else "",
+                d.get("color_level")         if d.get("color_level")         is not None else "",
+                bool(d.get("best_fit")),
+                bool(d.get("force_l0")),
+                bool(d.get("detected")),
+                bool(d.get("confident")),
+            ])
+
+        for ref_level_str, refs in scan_result.get("reference_labs", {}).items():
+            ref_level = int(ref_level_str)
+            for i, ref in enumerate(refs):
+                lab = ref.get("lab") or [None, None, None]
+                ci  = ref.get("cell_index")
+                r, c = _row_col(ci)
+                rows.append([
+                    sid, ts,
+                    True, ref_level,
+                    f"REF_L{ref_level}_{i}",
+                    ci if ci is not None else "", r, c,
+                    lab[0] if lab[0] is not None else "",
+                    lab[1] if lab[1] is not None else "",
+                    lab[2] if lab[2] is not None else "",
+                    ref.get("hex") or "",
+                    "", "", "", "",
+                    ref_level, False, False, True, True,
+                ])
+
+        if not rows:
+            return
+
+        _ensure_header(service, spreadsheet_id, tab, _DETAIL_HEADER)
+
+        append_resp = service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab}!A1",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": rows},
+        ).execute()
+
+        # Color the hex column (index 11 = column L)
+        updated_range = append_resp["updates"]["updatedRange"]
+        start_str = updated_range.split("!")[1].split(":")[0]
+        start_row = int(re.search(r"\d+", start_str).group())
+        _apply_hex_backgrounds(service, spreadsheet_id, tab, start_row, rows, hex_col_index=11)
+
+        logger.info("sheets: Detail tab — appended {} rows for scan {}", len(rows), sid)
+    except Exception as e:
+        logger.warning("sheets: append_detail_to_sheet failed: {}", e)
+
+
+def append_summary_to_sheet(
+    scan_result: dict,
+    spreadsheet_id: str,
+    tab: str,
+    service_account_file: str = "credentials.json",
+    drive_file_id: str | None = None,
+) -> None:
+    """Append one summary row to the Summary tab.
+
+    drive_file_id: Google Drive file ID of the annotated image. When provided,
+    the image_url column is written as a clickable =HYPERLINK() formula.
+    """
+    try:
+        service = _build_service(service_account_file)
+        if service is None:
+            return
+
+        sid     = scan_result.get("scan_id", "")
+        ts      = scan_result.get("timestamp", "")
+        summary = scan_result.get("summary", {})
+
+        if drive_file_id:
+            image_url = f'=HYPERLINK("https://drive.google.com/file/d/{drive_file_id}/view","View Image")'
+        else:
+            image_url = ""
+
+        row = [
+            sid, ts,
+            scan_result.get("detected_count", 0),
+            scan_result.get("total_assigned", 0),
+            ",".join(scan_result.get("missing_slots", [])),
+            summary.get("L0", 0), summary.get("L1", 0),
+            summary.get("L2", 0), summary.get("L3", 0),
+            summary.get("L4", 0),
+            image_url,
+        ]
+
+        _ensure_header(service, spreadsheet_id, tab, _SUMMARY_HEADER)
+
+        service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=f"{tab}!A1",
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [row]},
+        ).execute()
+
+        logger.info("sheets: Summary tab — appended scan {}", sid)
+    except Exception as e:
+        logger.warning("sheets: append_summary_to_sheet failed: {}", e)
 
 
 def write_slot_config_to_sheet(
@@ -92,149 +327,16 @@ def write_slot_config_to_sheet(
             ])
 
         sheet = service.spreadsheets()
-        range_name = f"{tab}!A1"
         sheet.values().clear(spreadsheetId=spreadsheet_id, range=f"{tab}!A:Z").execute()
         sheet.values().update(
             spreadsheetId=spreadsheet_id,
-            range=range_name,
+            range=f"{tab}!A1",
             valueInputOption="RAW",
             body={"values": rows},
         ).execute()
         logger.info("sheets: SlotAssignment tab updated ({} cells)", len(cfg.cells))
     except Exception as e:
         logger.warning("sheets: write_slot_config failed: {}", e)
-
-
-def append_result_to_sheet(
-    scan_result: dict,
-    spreadsheet_id: str,
-    tab: str,
-    service_account_file: str = "credentials.json",
-) -> None:
-    """Append one summary row + N detail rows to the Results tab."""
-    try:
-        service = _build_service(service_account_file)
-        if service is None:
-            return
-
-        sid = scan_result.get("scan_id", "")
-        ts  = scan_result.get("timestamp", "")
-        det = scan_result.get("detected_count", 0)
-        tot = scan_result.get("total_assigned", 0)
-        miss = ",".join(scan_result.get("missing_slots", []))
-        summary = scan_result.get("summary", {})
-
-        summary_row = [
-            f"SCAN:{sid}", ts, det, tot, miss,
-            summary.get("L0", 0), summary.get("L1", 0), summary.get("L2", 0),
-            summary.get("L3", 0), summary.get("L4", 0),
-            "", "", "", "", "", "", "", "", "", "",  # align with 15 detail columns
-        ]
-
-        detail_header = [
-            "scan_id", "slot_id", "cell_index", "is_reference", "ref_level",
-            "detected", "color_level", "delta_e", "confident", "L", "a", "b", "hex",
-            "hist_bhatt", "combined",
-        ]
-
-        rows_to_append = [summary_row, detail_header]
-        hex_indices: list[int] = []
-
-        base_row = len(rows_to_append)  # 0-indexed offset relative to first appended row
-
-        all_slots: dict = {}
-        # sample slots
-        for slot_id, slot_data in scan_result.get("slots", {}).items():
-            all_slots[slot_id] = {**slot_data, "_is_reference": False, "_ref_level": None}
-        # reference slots embedded in reference_labs
-        for ref_level_str, refs in scan_result.get("reference_labs", {}).items():
-            for i, ref in enumerate(refs):
-                key = f"REF_L{ref_level_str}_{i}"
-                all_slots[key] = {
-                    "cell_index": None,
-                    "detected": True,
-                    "_is_reference": True,
-                    "_ref_level": int(ref_level_str),
-                    "color_level": int(ref_level_str),
-                    "delta_e": None,
-                    "confident": True,
-                    "lab": ref.get("lab"),
-                    "hex": ref.get("hex"),
-                }
-
-        for slot_id, d in all_slots.items():
-            lab = d.get("lab") or [None, None, None]
-            hex_color = d.get("hex") or ""
-            row_data = [
-                sid,
-                slot_id,
-                d.get("cell_index", ""),
-                str(d.get("_is_reference", False)),
-                str(d.get("_ref_level", "")),
-                str(d.get("detected", False)),
-                str(d.get("color_level", "")),
-                d.get("delta_e", ""),
-                str(d.get("confident", False)),
-                lab[0] if lab[0] is not None else "",
-                lab[1] if lab[1] is not None else "",
-                lab[2] if lab[2] is not None else "",
-                hex_color,
-                d.get("hist_bhatt", "") if d.get("hist_bhatt") is not None else "",
-                d.get("combined", "") if d.get("combined") is not None else "",
-            ]
-            if hex_color:
-                hex_indices.append(len(rows_to_append))
-            rows_to_append.append(row_data)
-
-        sheet = service.spreadsheets()
-        # Append all rows
-        append_resp = sheet.values().append(
-            spreadsheetId=spreadsheet_id,
-            range=f"{tab}!A1",
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": rows_to_append},
-        ).execute()
-
-        # Apply background color to hex cells in the "hex" column (col M = index 12)
-        if hex_indices:
-            updated_range = append_resp["updates"]["updatedRange"]
-            start_row_str = updated_range.split("!")[1].split(":")[0]
-            import re
-            start_row_1based = int(re.search(r"\d+", start_row_str).group())
-            hex_col_index = 12  # 0-based: columns A-M → 0-12
-
-            requests = []
-            for rel_idx in hex_indices:
-                abs_row = start_row_1based + rel_idx - 1  # 1-based
-                hex_color = rows_to_append[rel_idx][12]
-                if hex_color and hex_color.startswith("#") and len(hex_color) == 7:
-                    requests.append({
-                        "repeatCell": {
-                            "range": {
-                                "sheetId": _get_sheet_id(service, spreadsheet_id, tab),
-                                "startRowIndex": abs_row - 1,
-                                "endRowIndex": abs_row,
-                                "startColumnIndex": hex_col_index,
-                                "endColumnIndex": hex_col_index + 1,
-                            },
-                            "cell": {
-                                "userEnteredFormat": {
-                                    "backgroundColor": _hex_to_rgb_float(hex_color)
-                                }
-                            },
-                            "fields": "userEnteredFormat.backgroundColor",
-                        }
-                    })
-            if requests:
-                service.spreadsheets().batchUpdate(
-                    spreadsheetId=spreadsheet_id,
-                    body={"requests": requests},
-                ).execute()
-
-        logger.info("sheets: appended scan {} ({} rows)", sid, len(rows_to_append))
-    except Exception as e:
-        logger.warning("sheets: append_result failed: {}", e)
 
 
 def read_slot_config_from_sheet(
@@ -281,10 +383,7 @@ def read_slot_config_from_sheet(
                     grid_rows_stored = int(row[6])
                 if len(row) > 7 and row[7] and grid_cols_stored is None:
                     grid_cols_stored = int(row[7])
-                is_wb = (
-                    len(row) > 8
-                    and row[8].strip().lower() == "true"
-                )
+                is_wb = len(row) > 8 and row[8].strip().lower() == "true"
                 cells[cell_idx] = CellConfig(
                     slot_id=slot_id,
                     is_reference=is_ref,
@@ -297,7 +396,6 @@ def read_slot_config_from_sheet(
         if not cells:
             return None
 
-        # Prefer explicit dimensions stored in the sheet; fall back to inference
         grid_cols = grid_cols_stored or (max(cols_set) if cols_set else 15)
         max_cell  = max(cells.keys())
         grid_rows = grid_rows_stored or ((max_cell - 1) // grid_cols + 1)
@@ -307,15 +405,3 @@ def read_slot_config_from_sheet(
     except Exception as e:
         logger.warning("sheets: read_slot_config failed: {}", e)
         return None
-
-
-def _get_sheet_id(service, spreadsheet_id: str, tab_name: str) -> int:
-    """Return the numeric sheetId for a tab by name; 0 if not found."""
-    try:
-        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        for s in meta.get("sheets", []):
-            if s["properties"]["title"] == tab_name:
-                return s["properties"]["sheetId"]
-    except Exception:
-        pass
-    return 0
