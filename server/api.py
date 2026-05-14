@@ -499,19 +499,19 @@ async def analyze(
         logger.exception("analyze: pipeline error")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
 
-    # Persist result files locally (fast, synchronous, always runs)
+    # Persist result files locally — run in a thread to avoid blocking the event loop
     scan_id    = scan_result["scan_id"]
-    ts         = scan_result.get("timestamp", "")
     img_backup = _IMG_BACKUP / f"{scan_id}.jpg"
 
-    (_RESULTS_DIR / f"{scan_id}.jpg").write_bytes(annotated_jpeg)
-    (_RESULTS_DIR / f"{scan_id}.json").write_text(
-        json.dumps(scan_result, ensure_ascii=False, indent=2)
-    )
-    img_backup.write_bytes(annotated_jpeg)
+    def _save_local():
+        (_RESULTS_DIR / f"{scan_id}.jpg").write_bytes(annotated_jpeg)
+        (_RESULTS_DIR / f"{scan_id}.json").write_text(
+            json.dumps(scan_result, ensure_ascii=False, indent=2)
+        )
+        img_backup.write_bytes(annotated_jpeg)
+        save_scan(scan_result, _DB_PATH)
 
-    # SQLite backup (fast local write — always runs before returning)
-    save_scan(scan_result, _DB_PATH)
+    await asyncio.to_thread(_save_local)
 
     # Sheets + Telegram — offloaded to a thread; response returns immediately
     asyncio.create_task(asyncio.to_thread(
