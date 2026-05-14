@@ -1,14 +1,15 @@
 """
-SQLite offline backup — persists scan data locally when Google services are unavailable.
+SQLite offline backup — persists scan data locally.
 
 Tables:
   scan_summary  — one row per scan (mirrors Summary sheet tab + synced flag)
   scan_detail   — one row per bottle per scan (mirrors Detail sheet tab)
-  scan_images   — image locations and Drive sync status
+  scan_images   — image locations
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from loguru import logger
@@ -36,7 +37,12 @@ def init_db(db_path: str | Path) -> None:
                 L2               INTEGER NOT NULL DEFAULT 0,
                 L3               INTEGER NOT NULL DEFAULT 0,
                 L4               INTEGER NOT NULL DEFAULT 0,
-                synced           INTEGER NOT NULL DEFAULT 0
+                synced           INTEGER NOT NULL DEFAULT 0,
+                grid_rows        INTEGER,
+                grid_cols        INTEGER,
+                wb_offset        TEXT,
+                master_path      TEXT,
+                weights_json     TEXT
             );
 
             CREATE TABLE IF NOT EXISTS scan_detail (
@@ -61,7 +67,9 @@ def init_db(db_path: str | Path) -> None:
                 is_forced        INTEGER NOT NULL DEFAULT 0,
                 is_achromatic    INTEGER NOT NULL DEFAULT 0,
                 detected         INTEGER NOT NULL DEFAULT 0,
-                confident        INTEGER NOT NULL DEFAULT 0
+                confident        INTEGER NOT NULL DEFAULT 0,
+                combined         REAL,
+                soft_penalty     INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_detail_scan ON scan_detail(scan_id);
@@ -74,7 +82,34 @@ def init_db(db_path: str | Path) -> None:
                 created_at       TEXT NOT NULL
             );
         """)
+
+        # Migrations for existing DBs — each ALTER is silently skipped if column exists
+        _migrate(conn, "scan_summary", [
+            "ADD COLUMN grid_rows    INTEGER",
+            "ADD COLUMN grid_cols    INTEGER",
+            "ADD COLUMN wb_offset    TEXT",
+            "ADD COLUMN master_path  TEXT",
+            "ADD COLUMN weights_json TEXT",
+        ])
+        _migrate(conn, "scan_detail", [
+            "ADD COLUMN combined     REAL",
+            "ADD COLUMN soft_penalty INTEGER NOT NULL DEFAULT 0",
+        ])
+        # Drop the old JSON blob column if SQLite ≥ 3.35 supports it
+        try:
+            conn.execute("ALTER TABLE scan_summary DROP COLUMN scan_json")
+        except Exception:
+            pass
+
     logger.debug("sqlite: DB initialised at {}", db_path)
+
+
+def _migrate(conn: sqlite3.Connection, table: str, statements: list[str]) -> None:
+    for stmt in statements:
+        try:
+            conn.execute(f"ALTER TABLE {table} {stmt}")
+        except Exception:
+            pass  # column already exists
 
 
 def save_scan(scan_result: dict, db_path: str | Path) -> None:
@@ -83,6 +118,10 @@ def save_scan(scan_result: dict, db_path: str | Path) -> None:
     ts        = scan_result.get("timestamp", "")
     summary   = scan_result.get("summary", {})
     grid_cols = scan_result.get("grid_cols", 15)
+
+    wb_offset   = scan_result.get("wb_offset")
+    master_path = scan_result.get("master_path")
+    weights     = scan_result.get("weights")
 
     detail_rows: list[tuple] = []
 
@@ -101,10 +140,12 @@ def save_scan(scan_result: dict, db_path: str | Path) -> None:
             d.get("concentration_index"), d.get("path_distance"),
             d.get("hist_bhatt"), d.get("delta_e"),
             d.get("color_level"),
-            1 if d.get("best_fit")  else 0,
-            1 if d.get("force_l0") else 0,
-            1 if d.get("detected") else 0,
-            1 if d.get("confident") else 0,
+            1 if d.get("best_fit")    else 0,
+            1 if d.get("force_l0")   else 0,
+            1 if d.get("detected")   else 0,
+            1 if d.get("confident")  else 0,
+            d.get("combined"),
+            1 if d.get("soft_penalty") else 0,
         ))
 
     for ref_level_str, refs in scan_result.get("reference_labs", {}).items():
@@ -118,6 +159,7 @@ def save_scan(scan_result: dict, db_path: str | Path) -> None:
                 lab[0], lab[1], lab[2], ref.get("hex"),
                 None, None, None, None, ref_level,
                 0, 0, 1, 1,
+                None, 0,  # combined, soft_penalty — not applicable for references
             ))
 
     try:
@@ -125,8 +167,9 @@ def save_scan(scan_result: dict, db_path: str | Path) -> None:
             conn.execute(
                 """INSERT OR IGNORE INTO scan_summary
                    (scan_id, created_at, detected_count, total_assigned,
-                    missing_slots, L0, L1, L2, L3, L4, synced)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,0)""",
+                    missing_slots, L0, L1, L2, L3, L4, synced,
+                    grid_rows, grid_cols, wb_offset, master_path, weights_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,0, ?,?,?,?,?)""",
                 (
                     sid, ts,
                     scan_result.get("detected_count", 0),
@@ -135,6 +178,11 @@ def save_scan(scan_result: dict, db_path: str | Path) -> None:
                     summary.get("L0", 0), summary.get("L1", 0),
                     summary.get("L2", 0), summary.get("L3", 0),
                     summary.get("L4", 0),
+                    scan_result.get("grid_rows"),
+                    grid_cols,
+                    json.dumps(wb_offset)   if wb_offset   is not None else None,
+                    json.dumps(master_path) if master_path is not None else None,
+                    json.dumps(weights)     if weights     is not None else None,
                 ),
             )
             conn.executemany(
@@ -142,8 +190,9 @@ def save_scan(scan_result: dict, db_path: str | Path) -> None:
                    (scan_id, created_at, is_reference, ref_level, slot_id,
                     cell_index, row, col, L, a, b, hex,
                     path_idx, path_delta, hist_delta, delta_e, color_level,
-                    is_forced, is_achromatic, detected, confident)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    is_forced, is_achromatic, detected, confident,
+                    combined, soft_penalty)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 detail_rows,
             )
         logger.debug("sqlite: saved scan {} ({} detail rows)", sid, len(detail_rows))
@@ -246,3 +295,102 @@ def count_pending(db_path: str | Path) -> dict[str, int]:
     except Exception as e:
         logger.warning("sqlite: count_pending failed: {}", e)
         return {"pending_scans": 0, "pending_images": 0}
+
+
+def load_scan(scan_id: str, db_path: str | Path) -> dict | None:
+    """Reconstruct the full scan result dict from structured tables."""
+    try:
+        with _connect(db_path) as conn:
+            s = conn.execute(
+                "SELECT * FROM scan_summary WHERE scan_id=?", (scan_id,)
+            ).fetchone()
+            if s is None:
+                return None
+            details = conn.execute(
+                "SELECT * FROM scan_detail WHERE scan_id=? ORDER BY id ASC", (scan_id,)
+            ).fetchall()
+
+        slots: dict = {}
+        reference_labs: dict = {}
+
+        for d in details:
+            lab = [d["L"], d["a"], d["b"]] if d["L"] is not None else None
+            if d["is_reference"]:
+                level_key = str(d["ref_level"])
+                reference_labs.setdefault(level_key, []).append({
+                    "lab":        lab,
+                    "hex":        d["hex"],
+                    "cell_index": d["cell_index"],
+                })
+            else:
+                slots[d["slot_id"]] = {
+                    "cell_index":          d["cell_index"],
+                    "detected":            bool(d["detected"]),
+                    "color_level":         d["color_level"],
+                    "concentration_index": d["path_idx"],
+                    "path_distance":       d["path_delta"],
+                    "hist_bhatt":          d["hist_delta"],
+                    "delta_e":             d["delta_e"],
+                    "combined":            d["combined"],
+                    "confident":           bool(d["confident"]),
+                    "best_fit":            bool(d["is_forced"]),
+                    "force_l0":            bool(d["is_achromatic"]),
+                    "soft_penalty":        bool(d["soft_penalty"]),
+                    "lab":                 lab,
+                    "hex":                 d["hex"],
+                }
+
+        def _maybe_json(val):
+            return json.loads(val) if val else None
+
+        return {
+            "status":         "success",
+            "scan_id":        s["scan_id"],
+            "timestamp":      s["created_at"],
+            "detected_count": s["detected_count"],
+            "total_assigned": s["total_assigned"],
+            "missing_slots":  [x for x in s["missing_slots"].split(",") if x],
+            "summary": {
+                "L0": s["L0"], "L1": s["L1"], "L2": s["L2"],
+                "L3": s["L3"], "L4": s["L4"],
+            },
+            "reference_labs": reference_labs,
+            "master_path":    _maybe_json(s["master_path"]),
+            "wb_offset":      _maybe_json(s["wb_offset"]),
+            "weights":        _maybe_json(s["weights_json"]) or {},
+            "grid_rows":      s["grid_rows"],
+            "grid_cols":      s["grid_cols"],
+            "image_url":      f"/img/{s['scan_id']}.jpg",
+            "slots":          slots,
+        }
+    except Exception as e:
+        logger.warning("sqlite: load_scan failed for {}: {}", scan_id, e)
+        return None
+
+
+def load_all_scans(db_path: str | Path) -> list[dict]:
+    """Return lightweight scan summary dicts for all scans, newest first."""
+    try:
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                """SELECT scan_id, created_at, detected_count, total_assigned,
+                          missing_slots, L0, L1, L2, L3, L4
+                   FROM scan_summary ORDER BY created_at DESC"""
+            ).fetchall()
+        result = []
+        for r in rows:
+            result.append({
+                "scan_id":        r["scan_id"],
+                "timestamp":      r["created_at"],
+                "detected_count": r["detected_count"],
+                "total_assigned": r["total_assigned"],
+                "missing_slots":  [x for x in r["missing_slots"].split(",") if x],
+                "summary": {
+                    "L0": r["L0"], "L1": r["L1"], "L2": r["L2"],
+                    "L3": r["L3"], "L4": r["L4"],
+                },
+            })
+        return result
+    except Exception as e:
+        logger.warning("sqlite: load_all_scans failed: {}", e)
+        return []

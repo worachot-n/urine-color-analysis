@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,9 +40,7 @@ from server.pipeline import run_pipeline, _load_yolo
 from app.shared.config import cfg as _app_cfg
 from utils.auto_grid_detector import detect_grid_full, draw_grid_lines
 
-_HERE        = Path(__file__).parent
-_RESULTS_DIR = _HERE / "static" / "results"
-_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+_HERE = Path(__file__).parent
 
 _API_KEY = os.environ.get("API_KEY", "test")
 
@@ -91,6 +88,8 @@ from server.integrations.sqlite_backup import (
     mark_scan_synced,
     get_pending_scans,
     count_pending,
+    load_scan as _db_load_scan,
+    load_all_scans as _db_load_all_scans,
 )
 
 # ---------------------------------------------------------------------------
@@ -136,8 +135,8 @@ def _img_backup_dir() -> Path:
 
 
 # Precompute at startup — avoids repeated lookups inside hot paths
-_DB_PATH       = _db_path()
-_IMG_BACKUP    = _img_backup_dir()
+_DB_PATH  = _db_path()
+_IMG_DIR  = _img_backup_dir()   # logs/img/ — the only local image store
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +146,6 @@ _IMG_BACKUP    = _img_backup_dir()
 def _cloud_and_notify(
     scan_id: str,
     scan_result: dict,
-    img_backup: Path,
     db: Path,
 ) -> None:
     """
@@ -164,7 +162,7 @@ def _cloud_and_notify(
         if spreadsheet:
             try:
                 server_url = _app_cfg.server_url.rstrip("/")
-                img_url = f"{server_url}/static/results/{scan_id}.jpg"
+                img_url = f"{server_url}/img/{scan_id}.jpg"
                 append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
                 append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, image_url=img_url)
                 mark_scan_synced(scan_id, db)
@@ -176,7 +174,7 @@ def _cloud_and_notify(
             _telegram_send(
                 count=scan_result["detected_count"],
                 color_summary=scan_result.get("summary", {}),
-                image_path=img_backup,
+                image_path=_IMG_DIR / f"{scan_id}.jpg",
             )
         except Exception as e:
             logger.warning("analyze: Telegram notification failed: {}", e)
@@ -205,13 +203,12 @@ def _sync_pending_sync() -> dict[str, int]:
     server_url   = _app_cfg.server_url.rstrip("/")
 
     for scan_id in get_pending_scans(db):
-        json_path = _RESULTS_DIR / f"{scan_id}.json"
-        if not json_path.exists():
-            logger.warning("sync: scan JSON not found for {}, skipping Sheets sync", scan_id)
+        scan_result = _db_load_scan(scan_id, db)
+        if scan_result is None:
+            logger.warning("sync: scan not found in SQLite for {}, skipping Sheets sync", scan_id)
             continue
         try:
-            scan_result = json.loads(json_path.read_text())
-            img_url = f"{server_url}/static/results/{scan_id}.jpg"
+            img_url = f"{server_url}/img/{scan_id}.jpg"
             append_detail_to_sheet(scan_result, spreadsheet, detail_tab, sa_file)
             append_summary_to_sheet(scan_result, spreadsheet, summary_tab, sa_file, image_url=img_url)
             mark_scan_synced(scan_id, db)
@@ -244,6 +241,11 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="Urine Color Analyzer V3", lifespan=_lifespan)
 
 app.mount(
+    "/img",
+    StaticFiles(directory=str(_IMG_DIR)),
+    name="scan_images",
+)
+app.mount(
     "/static",
     StaticFiles(directory=str(_HERE / "static")),
     name="static",
@@ -257,26 +259,12 @@ templates = Jinja2Templates(directory=str(_HERE / "templates"))
 # ---------------------------------------------------------------------------
 
 def _load_scan(scan_id: str) -> dict | None:
-    p = _RESULTS_DIR / f"{scan_id}.json"
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text())
-    except Exception:
-        return None
+    return _db_load_scan(scan_id, _DB_PATH)
 
 
 def _all_scans_sorted() -> list[dict]:
-    """Return all scan result dicts sorted newest-first."""
-    scans = []
-    for f in _RESULTS_DIR.glob("*.json"):
-        try:
-            data = json.loads(f.read_text())
-            scans.append(data)
-        except Exception:
-            pass
-    scans.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-    return scans
+    """Return all scan summary dicts sorted newest-first."""
+    return _db_load_all_scans(_DB_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -500,22 +488,18 @@ async def analyze(
         raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
 
     # Persist result files locally — run in a thread to avoid blocking the event loop
-    scan_id    = scan_result["scan_id"]
-    img_backup = _IMG_BACKUP / f"{scan_id}.jpg"
+    scan_id = scan_result["scan_id"]
+    scan_result["image_url"] = f"/img/{scan_id}.jpg"
 
     def _save_local():
-        (_RESULTS_DIR / f"{scan_id}.jpg").write_bytes(annotated_jpeg)
-        (_RESULTS_DIR / f"{scan_id}.json").write_text(
-            json.dumps(scan_result, ensure_ascii=False, indent=2)
-        )
-        img_backup.write_bytes(annotated_jpeg)
+        (_IMG_DIR / f"{scan_id}.jpg").write_bytes(annotated_jpeg)
         save_scan(scan_result, _DB_PATH)
 
     await asyncio.to_thread(_save_local)
 
     # Sheets + Telegram — offloaded to a thread; response returns immediately
     asyncio.create_task(asyncio.to_thread(
-        _cloud_and_notify, scan_id, scan_result, img_backup, _DB_PATH
+        _cloud_and_notify, scan_id, scan_result, _DB_PATH
     ))
 
     logger.success(
