@@ -1,0 +1,28 @@
+# Reference template — actual service is installed by scripts/setup-server.sh
+# Placeholders are filled in at install time with real paths.
+#
+# Manual install:
+#   sudo cp scripts/urine-server.service /etc/systemd/system/
+#   # Edit User=, WorkingDirectory=, EnvironmentFile=, ExecStart= manually
+#   sudo systemctl daemon-reload && sudo systemctl enable --now urine-server
+
+[Unit]
+Description=Urine Analyzer — Server
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=PLACEHOLDER_USER
+WorkingDirectory=PLACEHOLDER_DIR
+EnvironmentFile=PLACEHOLDER_DIR/.env
+ExecStart=PLACEHOLDER_UV run python main.py --role server
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=urine-server
+
+[Install]
+WantedBy=multi-user.target

@@ -42,6 +42,7 @@ import time
 from loguru import logger
 
 from app.shared.config import cfg
+from utils.camera_undistort import CameraUndistorter, lock_focus_picamera2
 
 
 # ─── Spinner frames for TM1637 ────────────────────────────────────────────────
@@ -113,7 +114,20 @@ def run_client(server_url: str) -> None:
         logger.warning("Relay setup failed ({}), continuing anyway", exc)
 
     _lcd(lcd, "Urine Analyzer", "Ready")
+    _lcd_line(lcd, "", 3)
+    _lcd_line(lcd, "", 4)
     _tm_all(tms, 0)   # 0000 on all displays at boot
+
+    undistorter = None
+    try:
+        undistorter = CameraUndistorter(
+            yaml_path    = "configs/camera_params.yaml",
+            capture_size = (cfg.camera_width, cfg.camera_height),
+            alpha        = 0.0,
+        )
+        logger.info("CameraUndistorter ready — output size: {}", undistorter.output_size)
+    except Exception as exc:
+        logger.warning("Undistortion disabled ({})", exc)
 
     logger.info(
         "System Ready — GPIO{} trigger | relay R={} Y={} G={} | server: {}",
@@ -143,7 +157,7 @@ def run_client(server_url: str) -> None:
                 if GPIO.input(cfg.gpio_trigger_pin) == GPIO.LOW:
                     logger.info("Button pressed! Starting analysis…")
                     time.sleep(0.05)   # debounce: ignore contact bounce
-                    _on_button_press(lcd, tms, GPIO, server_url)
+                    _on_button_press(lcd, tms, GPIO, server_url, undistorter)
                     time.sleep(1.0)    # lock-out: ignore spurious re-triggers
 
                 time.sleep(0.1)        # polling interval — keeps CPU idle
@@ -176,14 +190,15 @@ def run_client(server_url: str) -> None:
 
 # ─── Button handler ───────────────────────────────────────────────────────────
 
-def _on_button_press(lcd, tms: list, GPIO, server_url: str) -> None:
+def _on_button_press(lcd, tms: list, GPIO, server_url: str, undistorter=None) -> None:
     import requests
 
-    # Stop any previous error-coord scroll before starting a new scan
-    prev_scroll = getattr(_on_button_press, "_scroll_stop", None)
-    if prev_scroll is not None:
-        prev_scroll.set()
-        _on_button_press._scroll_stop = None
+    # Stop any previous scroll threads before starting a new scan
+    for attr in ("_scroll3_stop", "_scroll4_stop"):
+        ev = getattr(_on_button_press, attr, None)
+        if ev is not None:
+            ev.set()
+        setattr(_on_button_press, attr, None)
     _lcd_line(lcd, "", 3)
     _lcd_line(lcd, "", 4)
 
@@ -191,7 +206,7 @@ def _on_button_press(lcd, tms: list, GPIO, server_url: str) -> None:
     _lcd(lcd, "Capturing...", "")
     _tm_all(tms, 8888)
 
-    img_bytes = _capture_image()
+    img_bytes = _capture_image(undistorter)
     if img_bytes is None:
         logger.error("Camera capture failed")
         _relay(GPIO, "error")
@@ -273,85 +288,80 @@ def _on_button_press(lcd, tms: list, GPIO, server_url: str) -> None:
         _tm_all(tms, None)
         return
 
-    count         = data.get("total_physical_count", data.get("count", 0))
-    color_summary: dict = data.get("summary", data.get("color_summary", {}))
-    errors:       dict = data.get("errors", {})
-    aruco_id             = data.get("aruco_id")
-    error_count          = data.get("error_count", 0)
+    count   = data.get("detected_count", 0)
+    total   = data.get("total_assigned", 0)
+    missing = data.get("missing_slots", [])
+    scan_id = data.get("scan_id", "")
+    summary = data.get("summary", {})
+    result_url = f"{server_url}/result/{scan_id}"
 
-    # V2: wrong_color_slots is a list of "R01C05" coordinate strings
-    wc_coords: list[str] = errors.get("wrong_color_slots", [])
-    dup_n  = len(errors.get("duplicate_slots", []))
-    wc_n   = len(wc_coords)
+    # TM1637: H0→L0, H1→L1, H2→L2, H3→L3, H4→L4
+    _tm_levels(tms, summary)
 
-    # LCD line 1: tray ID + count
-    tray_str = str(aruco_id) if aruco_id is not None else "?"
-    lcd_line1 = f"Tray:{tray_str} N:{count}"
+    # ── LCD line 1: status ────────────────────────────────────────────────
+    lcd_line1 = "Recheck needed" if missing else "OK"
+    _lcd_line(lcd, lcd_line1, 1)
 
-    # Show per-level counts: H0→L0, H1→L1, H2→L2, H3→L3, H4→L4
-    _tm_levels(tms, color_summary)
+    # ── LCD line 2: bottle count ──────────────────────────────────────────
+    _lcd_line(lcd, f"Total:{count}/{total}", 2)
 
-    # Clear lines 3-4 before result display
-    _lcd_line(lcd, "", 3)
-    _lcd_line(lcd, "", 4)
-
-    if dup_n > 0 or wc_n > 0:
-        parts = []
-        if dup_n: parts.append(f"Dup:{dup_n}")
-        if wc_n:  parts.append(f"WC:{wc_n}")
-        logger.warning(
-            "Scan errors — count={}, aruco={}, {} | latency={:.2f}s",
-            count, aruco_id, " ".join(parts), elapsed,
-        )
-        _relay(GPIO, "error")
-        _lcd(lcd, lcd_line1, (" ".join(parts))[:16])
-
-        # Start scrolling error coordinates on LCD line 3 in a daemon thread.
-        # The scroll stops when stop_spin (already set above) is replaced by a
-        # new stop event that we fire at the start of the NEXT button press.
-        # We store it on the thread itself so the button handler can find it.
-        scroll_stop = threading.Event()
-        scroll_thread = threading.Thread(
-            target=_lcd_scroll, args=(lcd, wc_coords, scroll_stop), daemon=True
-        )
-        scroll_thread.stop_event = scroll_stop
-        # Stop previous scroll if still running (previous scan)
-        prev = getattr(_on_button_press, "_scroll_stop", None)
-        if prev is not None:
-            prev.set()
-        _on_button_press._scroll_stop = scroll_stop
-        scroll_thread.start()
-
+    # ── LCD line 3: missing slot IDs (scroll if long) ─────────────────────
+    if missing:
+        line3_text = "Recheck:" + " ".join(missing)
+        scroll3_stop = threading.Event()
+        threading.Thread(
+            target=_lcd_scroll_line,
+            args=(lcd, line3_text, 3, scroll3_stop),
+            daemon=True,
+        ).start()
+        _on_button_press._scroll3_stop = scroll3_stop
     else:
-        color_str = "  ".join(f"{k}:{v}" for k, v in color_summary.items())
-        logger.success(
-            "Result OK — count={}, aruco={}, colors={}, latency={:.2f}s",
-            count, aruco_id, color_summary, elapsed,
+        _lcd_line(lcd, "", 3)
+        _on_button_press._scroll3_stop = None
+
+    # ── LCD line 4: result URL (always scroll — URLs exceed 16 chars) ─────
+    line4_text = f"Full report:{result_url}"
+    scroll4_stop = threading.Event()
+    threading.Thread(
+        target=_lcd_scroll_line,
+        args=(lcd, line4_text, 4, scroll4_stop),
+        daemon=True,
+    ).start()
+    _on_button_press._scroll4_stop = scroll4_stop
+
+    # ── Relay ─────────────────────────────────────────────────────────────
+    _relay(GPIO, "error" if missing else "idle")
+
+    if missing:
+        logger.warning(
+            "Scan done — count={}/{}, missing={} | latency={:.2f}s",
+            count, total, missing, elapsed,
         )
-        # Stop any previous scroll
-        prev = getattr(_on_button_press, "_scroll_stop", None)
-        if prev is not None:
-            prev.set()
-        _on_button_press._scroll_stop = None
-        _relay(GPIO, "idle")
-        _lcd(lcd, lcd_line1, color_str[:16] or "No color data")
+    else:
+        logger.success(
+            "Result OK — count={}/{}, summary={} | latency={:.2f}s",
+            count, total, summary, elapsed,
+        )
 
 
-# Attribute slot for the active scroll-stop event (set by _on_button_press)
-_on_button_press._scroll_stop = None
+# Scroll-stop events for LCD lines 3 and 4 (set by _on_button_press)
+_on_button_press._scroll3_stop = None
+_on_button_press._scroll4_stop = None
 
 
 # ─── Camera capture ───────────────────────────────────────────────────────────
 
-def _capture_image() -> bytes | None:
+def _capture_image(undistorter=None) -> bytes | None:
     """Capture a still image and return it as JPEG bytes, or None on failure.
 
     Strategy:
       1. Start with AE + AWB enabled and wait 2 s for the algorithms to converge.
-      2. Read the converged ColourGains / ExposureTime / AnalogueGain from metadata.
-      3. Lock whichever of AWB / AE are enabled in config so the final capture is
+      2. Lock focus to the calibrated distance (via undistorter.params.focus_value).
+      3. Read the converged ColourGains / ExposureTime / AnalogueGain from metadata.
+      4. Lock whichever of AWB / AE are enabled in config so the final capture is
          taken with identical, stable settings — no colour shift mid-frame.
-      4. Encode as RGB JPEG (picamera2 RGB888 arrays are already in RGB order).
+      5. Apply lens undistortion (cv2.remap) if undistorter is available.
+      6. Encode as RGB JPEG.
     """
     try:
         import io
@@ -365,6 +375,14 @@ def _capture_image() -> bytes | None:
         picam2.configure(still_cfg)
         picam2.start()
         time.sleep(2)  # allow AE / AWB to converge under real scene lighting
+
+        # Lock focus to calibrated distance before locking AE/AWB.
+        if undistorter is not None:
+            try:
+                lock_focus_picamera2(picam2, undistorter.params.focus_value)
+                time.sleep(0.3)  # let lens settle
+            except Exception as exc:
+                logger.warning("Focus lock failed ({}), continuing", exc)
 
         # Lock gains/exposure so the actual capture frame is colour-stable.
         if cfg.camera_awb_lock or cfg.camera_ae_lock:
@@ -388,6 +406,15 @@ def _capture_image() -> bytes | None:
         frame = picam2.capture_array()
         picam2.stop()
         picam2.close()
+
+        # Apply lens undistortion before colour-channel conversion.
+        # undistort_frame() is a spatial remap — channel order is irrelevant.
+        if undistorter is not None:
+            try:
+                frame = undistorter.undistort_frame(frame)
+                logger.debug("Undistortion applied — frame shape after: {}", frame.shape)
+            except Exception as exc:
+                logger.warning("Undistortion failed ({}), using raw frame", exc)
 
         # picamera2 "RGB888" is a V4L2 format name where bytes are stored in
         # BGR order (Blue first).  Reverse the channel axis before handing to
@@ -520,30 +547,16 @@ def _lcd_line(lcd, text: str, line: int) -> None:
         logger.warning("LCD line {} write failed: {}", line, exc)
 
 
-def _lcd_scroll(lcd, error_coords: list[str], stop_event: threading.Event) -> None:
-    """
-    Scroll a list of error coordinates across LCD line 3 at 200 ms per shift.
-
-    Runs until stop_event is set.  Displays static text if total string < 16 chars.
-    Format: "ERR @ R01C05  R03C12  " (repeating scroll)
-    """
-    if not error_coords:
+def _lcd_scroll_line(lcd, text: str, line: int, stop_event: threading.Event) -> None:
+    """Scroll `text` across LCD `line` (1-4) at 200 ms/step. Static if ≤ 16 chars."""
+    if len(text) <= 16:
+        _lcd_line(lcd, text, line)
         return
-    sep     = "  "
-    payload = sep.join(error_coords) + sep
-    msg     = "ERR @ " + payload
-
-    if len(msg) <= 16:
-        # Short enough to display statically
-        _lcd_line(lcd, msg, 3)
-        _lcd_line(lcd, "", 4)
-        return
-
-    # Scroll continuously
+    msg = text + "  "
     pos = 0
     while not stop_event.is_set():
         window = (msg * 2)[pos:pos + 16]
-        _lcd_line(lcd, window, 3)
+        _lcd_line(lcd, window, line)
         pos = (pos + 1) % len(msg)
         stop_event.wait(0.2)
 
